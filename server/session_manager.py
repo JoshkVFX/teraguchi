@@ -99,7 +99,7 @@ class UserSession:
             "LOGNAME": self.username,
             "SHELL": pwd.getpwuid(self.uid).pw_shell,
             "XDG_RUNTIME_DIR": f"/run/user/{self.uid}",
-            "DBUS_SESSION_BUS_ADDRESS": f"unix:path=/run/user/{self.uid}/bus",
+            "DBUS_SESSION_BUS_ADDRESS": f"unix:path=/run/user/{self.uid}/teragucci-bus",
             "XDG_SESSION_TYPE": "x11",
         }
         if self.xauthority:
@@ -236,7 +236,9 @@ class SessionManager:
 
     def _start_dbus(self, session: UserSession):
         try:
-            bus_path = f"/run/user/{session.uid}/bus"
+            # Use a Teragucci-specific socket to avoid clobbering the user's
+            # existing D-Bus session (e.g. PCoIP/GNOME desktop)
+            bus_path = f"/run/user/{session.uid}/teragucci-bus"
             session.dbus_proc = subprocess.Popen(
                 ["dbus-daemon", "--session", "--nofork",
                  f"--address=unix:path={bus_path}"],
