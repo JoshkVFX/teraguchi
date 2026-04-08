@@ -71,6 +71,7 @@ class ClientProtocol:
 
         # Callbacks
         self.on_server_hello: Optional[Callable] = None
+        self._screen_size: Optional[tuple] = None
         self.on_video_frame: Optional[Callable] = None
         self.on_jpeg_frame: Optional[Callable] = None
         self.on_audio_frame: Optional[Callable] = None
@@ -213,6 +214,10 @@ class ClientProtocol:
                 self.on_connected()
 
             hello = ClientHelloMsg()
+            # Send actual client screen size
+            if self._screen_size:
+                hello.screen_width = self._screen_size[0]
+                hello.screen_height = self._screen_size[1]
             await ws.send(hello.to_json())
 
             if self._udp_enabled:

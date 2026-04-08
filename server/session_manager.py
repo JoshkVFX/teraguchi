@@ -207,6 +207,33 @@ class SessionManager:
 
         logger.info("Xvfb started on %s (pid %d)", display, xvfb_proc.pid)
 
+        # Xvfb starts at max size (3840x2160), resize to requested
+        if w != max_w or h != max_h:
+            try:
+                env_x = {"DISPLAY": display}
+                modeline = subprocess.run(
+                    ["cvt", str(w), str(h)],
+                    capture_output=True, text=True, timeout=5, env=env_x)
+                if modeline.returncode == 0:
+                    for line in modeline.stdout.strip().split("\n"):
+                        if line.startswith("Modeline"):
+                            parts = line.split(None, 2)
+                            mode_label = parts[1].strip('"')
+                            mode_params = parts[2]
+                            subprocess.run(
+                                ["xrandr", "--newmode", mode_label] + mode_params.split(),
+                                capture_output=True, timeout=5, env=env_x)
+                            subprocess.run(
+                                ["xrandr", "--addmode", "screen", mode_label],
+                                capture_output=True, timeout=5, env=env_x)
+                            subprocess.run(
+                                ["xrandr", "--output", "screen", "--mode", mode_label],
+                                capture_output=True, timeout=5, env=env_x)
+                            logger.info("Set initial display resolution to %dx%d", w, h)
+                            break
+            except Exception as e:
+                logger.warning("Initial resize failed: %s", e)
+
         session = UserSession(
             username=username, uid=uid, gid=gid, home=home,
             display=display, display_num=display_num,

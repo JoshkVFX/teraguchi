@@ -294,6 +294,7 @@ class MainWindow(QMainWindow):
         self._decoder_mgr = DecoderManager()
 
         self._setup_protocol_bridge()
+        self._update_protocol_screen_size()
 
         # Audio player
         self._audio_player = AudioPlayer()
@@ -408,6 +409,16 @@ class MainWindow(QMainWindow):
         self._monitor_combo.setMinimumWidth(150)
         self._monitor_combo.currentIndexChanged.connect(self._on_monitor_selected)
         toolbar.addWidget(self._monitor_combo)
+
+    def _update_protocol_screen_size(self):
+        """Set the protocol's screen size to the primary screen dimensions."""
+        from PySide6.QtWidgets import QApplication
+        screen = QApplication.primaryScreen()
+        if screen:
+            geom = screen.availableGeometry()
+            w = geom.width() - (geom.width() % 2)
+            h = geom.height() - (geom.height() % 2)
+            self._protocol._screen_size = (w, h)
 
     def _setup_protocol_bridge(self):
         """Wire protocol callbacks through Qt signals for thread safety."""

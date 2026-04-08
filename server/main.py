@@ -483,6 +483,8 @@ class SessionRuntime:
             session.supports_h265 = msg.get("supports_h265", False)
             session.supports_yuv444 = msg.get("supports_yuv444", True)
             session.supports_audio = msg.get("supports_audio", True)
+            session.client_screen_width = msg.get("screen_width", 0)
+            session.client_screen_height = msg.get("screen_height", 0)
 
         elapsed_ms = (time.time() - t0) * 1000
         self.health.record_input_latency(elapsed_ms)
@@ -526,6 +528,8 @@ class ClientSession:
         self.supports_h265 = False
         self.supports_yuv444 = True
         self.supports_audio = True
+        self.client_screen_width = 0
+        self.client_screen_height = 0
         self.runtime: Optional[SessionRuntime] = None
         self.send_queue: asyncio.Queue = asyncio.Queue(maxsize=30)
         self._send_task: Optional[asyncio.Task] = None
@@ -655,10 +659,12 @@ async def handle_client(websocket: WebSocketServerProtocol):
                 return
 
             from server.session_manager import SessionManager
+            # Use client screen size if available, fall back to server args
+            client_w = session.client_screen_width or (server_args.width if hasattr(server_args, 'width') else 0)
+            client_h = session.client_screen_height or (server_args.height if hasattr(server_args, 'height') else 0)
             user_session = session_mgr.create_session(
                 session.username, user_info["uid"], user_info["gid"], user_info["home"],
-                width=server_args.width if hasattr(server_args, 'width') else 0,
-                height=server_args.height if hasattr(server_args, 'height') else 0)
+                width=client_w, height=client_h)
 
             # Get or create runtime for this user
             if session.username not in runtimes:
