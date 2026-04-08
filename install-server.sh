@@ -86,9 +86,10 @@ case "$DISTRO" in
         apt-get update -qq
         apt-get install -y -qq \
             python3 python3-pip python3-venv \
+            xvfb x11-xserver-utils \
             ffmpeg \
             pulseaudio-utils \
-            xclip xrandr \
+            xclip \
             linux-tools-common \
             libsvtav1enc-dev \
             2>/dev/null
@@ -101,6 +102,7 @@ case "$DISTRO" in
     fedora)
         dnf install -y -q \
             python3 python3-pip \
+            xorg-x11-server-Xvfb xorg-x11-utils \
             ffmpeg-free \
             pulseaudio-utils \
             xclip \
@@ -115,6 +117,7 @@ case "$DISTRO" in
             dnf config-manager --set-enabled powertools 2>/dev/null || true
         dnf install -y -q \
             python3 python3-pip \
+            xorg-x11-server-Xvfb xorg-x11-utils \
             ffmpeg \
             pulseaudio-utils \
             xclip \
@@ -124,6 +127,7 @@ case "$DISTRO" in
     arch|manjaro|endeavouros)
         pacman -Sy --noconfirm --needed \
             python python-pip \
+            xorg-server-xvfb xorg-xrandr \
             ffmpeg \
             pulseaudio \
             xclip \
@@ -133,6 +137,7 @@ case "$DISTRO" in
     opensuse*|suse*)
         zypper install -y \
             python3 python3-pip \
+            xorg-x11-server-Xvfb xrandr \
             ffmpeg \
             pulseaudio-utils \
             xclip \
@@ -141,7 +146,7 @@ case "$DISTRO" in
         ;;
     *)
         warn "Unknown distro '$DISTRO'. Please install manually:"
-        warn "  python3, python3-pip, python3-venv, ffmpeg, pulseaudio-utils, xclip"
+        warn "  python3, python3-pip, python3-venv, Xvfb, xrandr, ffmpeg, pulseaudio-utils, xclip"
         ;;
 esac
 

@@ -6,6 +6,12 @@ mss>=9.0
 numpy>=1.24
 Pillow>=10.0
 
+# PAM authentication
+python-pam>=2.0
+
+# X11 input injection (XTest)
+python-xlib>=0.33
+
 # QUIC transport (optional, recommended)
 aioquic>=1.0
 cryptography>=41.0
