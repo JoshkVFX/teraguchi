@@ -1,0 +1,346 @@
+#!/usr/bin/env bash
+#
+# Teragucci Server Installer (Linux)
+#
+# Installs all system dependencies, Python packages, configures uinput,
+# and optionally sets up a systemd service.
+#
+# Usage:
+#   sudo bash install-server.sh
+#   sudo bash install-server.sh --no-service    # skip systemd setup
+#   sudo bash install-server.sh --no-auth       # skip user creation
+#
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_DIR="/opt/teragucci"
+VENV_DIR="$INSTALL_DIR/.venv"
+SERVICE_NAME="teragucci-server"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+info()  { echo -e "${CYAN}[INFO]${NC}  $*"; }
+ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
+warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
+err()   { echo -e "${RED}[ERROR]${NC} $*"; }
+
+# Parse args
+SETUP_SERVICE=true
+SETUP_AUTH=true
+for arg in "$@"; do
+    case "$arg" in
+        --no-service) SETUP_SERVICE=false ;;
+        --no-auth)    SETUP_AUTH=false ;;
+        --help|-h)
+            echo "Usage: sudo bash install-server.sh [--no-service] [--no-auth]"
+            exit 0
+            ;;
+    esac
+done
+
+# ── Preflight ─────────────────────────────────────────────────────
+
+if [ "$EUID" -ne 0 ]; then
+    err "This script must be run as root (sudo)."
+    echo "  sudo bash install-server.sh"
+    exit 1
+fi
+
+REAL_USER="${SUDO_USER:-$USER}"
+if [ "$REAL_USER" = "root" ]; then
+    warn "Could not detect your normal username."
+    read -rp "Enter the username that will run the server: " REAL_USER
+fi
+
+info "Installing Teragucci server for user: $REAL_USER"
+echo ""
+
+# ── Detect distro ────────────────────────────────────────────────
+
+detect_distro() {
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        echo "$ID"
+    elif command -v lsb_release &>/dev/null; then
+        lsb_release -si | tr '[:upper:]' '[:lower:]'
+    else
+        echo "unknown"
+    fi
+}
+
+DISTRO=$(detect_distro)
+info "Detected distro: $DISTRO"
+
+# ── Install system packages ──────────────────────────────────────
+
+info "Installing system packages..."
+
+case "$DISTRO" in
+    ubuntu|debian|pop|linuxmint|elementary)
+        apt-get update -qq
+        apt-get install -y -qq \
+            python3 python3-pip python3-venv \
+            ffmpeg \
+            pulseaudio-utils \
+            xclip \
+            linux-tools-common \
+            2>/dev/null
+        ok "APT packages installed"
+        ;;
+    fedora)
+        dnf install -y -q \
+            python3 python3-pip \
+            ffmpeg-free \
+            pulseaudio-utils \
+            xclip \
+            usbip \
+            2>/dev/null
+        ok "DNF packages installed"
+        ;;
+    rhel|rocky|almalinux|centos)
+        # Enable EPEL and CRB/PowerTools for ffmpeg
+        dnf install -y -q epel-release 2>/dev/null || true
+        dnf config-manager --set-enabled crb 2>/dev/null || \
+            dnf config-manager --set-enabled powertools 2>/dev/null || true
+        dnf install -y -q \
+            python3 python3-pip \
+            ffmpeg \
+            pulseaudio-utils \
+            xclip \
+            2>/dev/null
+        ok "DNF packages installed"
+        ;;
+    arch|manjaro|endeavouros)
+        pacman -Sy --noconfirm --needed \
+            python python-pip \
+            ffmpeg \
+            pulseaudio \
+            xclip \
+            2>/dev/null
+        ok "Pacman packages installed"
+        ;;
+    opensuse*|suse*)
+        zypper install -y \
+            python3 python3-pip \
+            ffmpeg \
+            pulseaudio-utils \
+            xclip \
+            2>/dev/null
+        ok "Zypper packages installed"
+        ;;
+    *)
+        warn "Unknown distro '$DISTRO'. Please install manually:"
+        warn "  python3, python3-pip, python3-venv, ffmpeg, pulseaudio-utils, xclip"
+        ;;
+esac
+
+# ── Verify FFmpeg ────────────────────────────────────────────────
+
+echo ""
+if command -v ffmpeg &>/dev/null; then
+    FFMPEG_VERSION=$(ffmpeg -version 2>&1 | head -1)
+    ok "FFmpeg found: $FFMPEG_VERSION"
+
+    # Check for H.264 support
+    if ffmpeg -hide_banner -encoders 2>&1 | grep -q libx264; then
+        ok "H.264 (libx264) available"
+    else
+        warn "libx264 not found — H.264 encoding won't work."
+        warn "Install a full ffmpeg build with libx264 support."
+    fi
+
+    # Check for H.265 support
+    if ffmpeg -hide_banner -encoders 2>&1 | grep -q libx265; then
+        ok "H.265 (libx265) available"
+    else
+        info "libx265 not found — H.265 won't be available (H.264 is fine)"
+    fi
+else
+    err "FFmpeg not found! Video encoding will fall back to JPEG only."
+fi
+
+# ── Setup uinput ─────────────────────────────────────────────────
+
+echo ""
+info "Configuring uinput (virtual input devices)..."
+
+# Create uinput group
+if ! getent group uinput &>/dev/null; then
+    groupadd uinput
+    ok "Created 'uinput' group"
+fi
+
+# Add user to uinput group
+usermod -aG uinput "$REAL_USER"
+ok "Added '$REAL_USER' to 'uinput' group"
+
+# udev rule
+UDEV_RULE="/etc/udev/rules.d/99-teragucci-uinput.rules"
+cat > "$UDEV_RULE" << 'EOF'
+# Teragucci: Allow uinput group to access /dev/uinput
+KERNEL=="uinput", GROUP="uinput", MODE="0660"
+EOF
+ok "Created udev rule: $UDEV_RULE"
+
+# Load kernel modules
+modprobe uinput
+ok "Loaded uinput module"
+
+modprobe usbip-core 2>/dev/null && ok "Loaded usbip-core module" || info "usbip-core not available (USB passthrough disabled)"
+modprobe vhci-hcd 2>/dev/null && ok "Loaded vhci-hcd module" || info "vhci-hcd not available (USB passthrough disabled)"
+
+# Persist modules
+cat > /etc/modules-load.d/teragucci.conf << 'EOF'
+uinput
+usbip-core
+vhci-hcd
+EOF
+
+# Reload udev
+udevadm control --reload-rules
+udevadm trigger
+ok "udev rules reloaded"
+
+# ── Install Teragucci ────────────────────────────────────────────
+
+echo ""
+info "Installing Teragucci to $INSTALL_DIR ..."
+
+mkdir -p "$INSTALL_DIR"
+
+# Copy project files
+cp -r "$SCRIPT_DIR/server"  "$INSTALL_DIR/"
+cp -r "$SCRIPT_DIR/common"  "$INSTALL_DIR/"
+cp    "$SCRIPT_DIR/requirements-server.txt" "$INSTALL_DIR/"
+cp    "$SCRIPT_DIR/pyproject.toml"          "$INSTALL_DIR/"
+ok "Copied source files"
+
+# Create venv and install Python deps
+python3 -m venv "$VENV_DIR"
+"$VENV_DIR/bin/pip" install --upgrade pip -q
+"$VENV_DIR/bin/pip" install -r "$INSTALL_DIR/requirements-server.txt" -q
+ok "Python dependencies installed"
+
+# Set ownership
+chown -R "$REAL_USER:$REAL_USER" "$INSTALL_DIR"
+ok "Set ownership to $REAL_USER"
+
+# ── Create user account ─────────────────────────────────────────
+
+if [ "$SETUP_AUTH" = true ]; then
+    echo ""
+    info "Setting up authentication..."
+    echo "  Create a login for remote connections."
+    echo "  (You can skip this and use --no-auth on the server later.)"
+    echo ""
+    read -rp "  Username [teragucci]: " AUTH_USER
+    AUTH_USER="${AUTH_USER:-teragucci}"
+
+    # Use the venv Python to add the user
+    sudo -u "$REAL_USER" "$VENV_DIR/bin/python" -c "
+import sys, getpass
+sys.path.insert(0, '$INSTALL_DIR')
+from server.auth import Authenticator
+auth = Authenticator(enabled=True)
+password = getpass.getpass('  Password: ')
+auth.add_user('$AUTH_USER', password)
+print('  User created: $AUTH_USER')
+" || warn "Could not create user. You can do it later: python -m server.main --add-user USERNAME"
+fi
+
+# ── Systemd service ──────────────────────────────────────────────
+
+if [ "$SETUP_SERVICE" = true ]; then
+    echo ""
+    info "Setting up systemd service..."
+
+    cat > "/etc/systemd/system/${SERVICE_NAME}.service" << SVCEOF
+[Unit]
+Description=Teragucci Remote Desktop Server
+After=network.target graphical.target
+Wants=graphical.target
+
+[Service]
+Type=simple
+User=$REAL_USER
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/$REAL_USER/.Xauthority
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$VENV_DIR/bin/python -m server.main --port 9876 --fps 30 --codec h264 --chroma yuv444
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+
+    systemctl daemon-reload
+    ok "Systemd service created: $SERVICE_NAME"
+
+    read -rp "  Start the service now? [y/N]: " START_NOW
+    if [[ "$START_NOW" =~ ^[Yy] ]]; then
+        systemctl enable --now "$SERVICE_NAME"
+        ok "Service started and enabled on boot"
+    else
+        info "Start later with: sudo systemctl enable --now $SERVICE_NAME"
+    fi
+fi
+
+# ── Firewall ─────────────────────────────────────────────────────
+
+echo ""
+info "Firewall: Teragucci uses port 9876/tcp."
+
+if command -v ufw &>/dev/null; then
+    read -rp "  Open port 9876 in UFW? [y/N]: " OPEN_FW
+    if [[ "$OPEN_FW" =~ ^[Yy] ]]; then
+        ufw allow 9876/tcp
+        ok "UFW: port 9876 opened"
+    fi
+elif command -v firewall-cmd &>/dev/null; then
+    read -rp "  Open port 9876 in firewalld? [y/N]: " OPEN_FW
+    if [[ "$OPEN_FW" =~ ^[Yy] ]]; then
+        firewall-cmd --permanent --add-port=9876/tcp
+        firewall-cmd --reload
+        ok "firewalld: port 9876 opened"
+    fi
+else
+    info "No firewall tool detected. Make sure port 9876/tcp is open."
+fi
+
+# ── Done ─────────────────────────────────────────────────────────
+
+echo ""
+echo "═══════════════════════════════════════════════════════════"
+echo -e "${GREEN}  Teragucci server installation complete!${NC}"
+echo "═══════════════════════════════════════════════════════════"
+echo ""
+echo "  Install dir:  $INSTALL_DIR"
+echo "  Python venv:  $VENV_DIR"
+echo "  User:         $REAL_USER"
+echo ""
+echo -e "${YELLOW}  IMPORTANT: Log out and back in for uinput group to take effect.${NC}"
+echo ""
+echo "  Start manually:"
+echo "    cd $INSTALL_DIR"
+echo "    $VENV_DIR/bin/python -m server.main --verbose"
+echo ""
+if [ "$SETUP_SERVICE" = true ]; then
+    echo "  Or via systemd:"
+    echo "    sudo systemctl start $SERVICE_NAME"
+    echo "    sudo systemctl status $SERVICE_NAME"
+    echo "    journalctl -u $SERVICE_NAME -f"
+    echo ""
+fi
+echo "  Your IP addresses:"
+hostname -I 2>/dev/null | tr ' ' '\n' | grep -v '^$' | sed 's/^/    /'
+echo ""
+echo "  Connect from client:"
+echo "    python -m client.main --host <IP_ABOVE> --port 9876"
+echo ""
