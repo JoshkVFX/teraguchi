@@ -210,7 +210,7 @@ class SessionManager:
         # Xvfb starts at max size (3840x2160), resize to requested
         if w != max_w or h != max_h:
             try:
-                env_x = {"DISPLAY": display}
+                env_x = {**os.environ, "DISPLAY": display}
                 modeline = subprocess.run(
                     ["cvt", str(w), str(h)],
                     capture_output=True, text=True, timeout=5, env=env_x)
@@ -397,7 +397,7 @@ class SessionManager:
 
         try:
             display = session.display
-            env = {"DISPLAY": display}
+            env = {**os.environ, "DISPLAY": display}
 
             # Add the new mode if it doesn't exist
             mode_name = f"{width}x{height}"

@@ -385,7 +385,7 @@ class SessionRuntime:
 
         # Direct xrandr resize
         try:
-            env = {"DISPLAY": self.display}
+            env = {**os.environ, "DISPLAY": self.display}
             mode_name = f"{width}x{height}"
 
             modeline = subprocess.run(

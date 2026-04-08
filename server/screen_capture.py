@@ -148,9 +148,39 @@ class ScreenCapture:
             index = 1  # Fall back to primary
         self.monitor_index = index
         self._monitor = monitors[index]
-        self.width = self._monitor["width"]
-        self.height = self._monitor["height"]
+
+        # Use xrandr current mode if available (mss reports Xvfb max, not xrandr mode)
+        xrandr_size = self._get_xrandr_current_size()
+        if xrandr_size:
+            self.width, self.height = xrandr_size
+            # Override mss monitor to capture only the active area
+            self._monitor = {
+                "left": self._monitor["left"],
+                "top": self._monitor["top"],
+                "width": self.width,
+                "height": self.height,
+            }
+        else:
+            self.width = self._monitor["width"]
+            self.height = self._monitor["height"]
         self._last_frame = None
+
+    def _get_xrandr_current_size(self):
+        """Get the current xrandr output resolution (active mode, not framebuffer)."""
+        try:
+            result = subprocess.run(
+                ["xrandr", "--query"],
+                capture_output=True, text=True, timeout=5,
+                env={**os.environ})
+            if result.returncode == 0:
+                import re
+                # Parse connected output geometry: "screen connected primary WxH+X+Y"
+                match = re.search(r'connected\s+(?:primary\s+)?(\d+)x(\d+)\+', result.stdout)
+                if match:
+                    return int(match.group(1)), int(match.group(2))
+        except Exception:
+            pass
+        return None
 
     def reinit(self, width: int = 0, height: int = 0):
         """Reinitialize capture after a resolution change."""
