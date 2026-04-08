@@ -4,9 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "teragucci"
-version = "1.0.0"
-description = "Remote desktop application with Wacom pen pressure support - Teradici/HP Anywhere replacement"
+version = "2.0.0"
+description = "Open-source remote desktop with Wacom pen pressure, H.264 4:4:4, health monitoring — Teradici/Parsec/RGS replacement"
 requires-python = ">=3.10"
+license = {text = "MIT"}
 
 [project.optional-dependencies]
 server = [

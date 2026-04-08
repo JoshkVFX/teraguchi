@@ -1,135 +1,380 @@
 """
-Teragucci Protocol Message Definitions
+Teragucci Protocol Message Definitions - v2
 
-All control messages are JSON over WebSocket text frames.
-Screen frame data is sent as binary WebSocket frames with a small header.
+Comprehensive protocol supporting:
+- H.264/H.265 video with YUV 4:4:4 chroma
+- Audio streaming (Opus)
+- Pen/tablet with full pressure sensitivity
+- Connection health monitoring
+- Authentication
+- Clipboard sync
+- Multi-monitor
+- Quality control (sharpness ↔ temporal stability)
+- Bookmarks
 
-Binary frame format:
-  [1 byte: frame type] [4 bytes: x uint16 BE, y uint16 BE] [4 bytes: w uint16 BE, h uint16 BE] [JPEG data]
+Binary frame format (video):
+  [1 byte: frame type] [1 byte: codec] [1 byte: chroma] [1 byte: flags]
+  [4 bytes: timestamp_ms uint32 BE]
+  [2 bytes: monitor_id uint16 BE]
+  [payload...]
 
-Frame types:
-  0x01 = full frame
-  0x02 = partial/dirty-rect update
+Binary frame format (audio):
+  [1 byte: frame type = 0x10] [1 byte: codec] [2 bytes: reserved]
+  [4 bytes: timestamp_ms uint32 BE]
+  [payload...]
+
+JSON control messages for everything else.
 """
 
 import json
 import struct
-from enum import IntEnum, auto
+import time
+import hashlib
+import secrets
+from enum import IntEnum
 from dataclasses import dataclass, asdict, field
-from typing import Optional
+from typing import Optional, List
 
 
-# --- Binary frame constants ---
+# ============================================================
+# Binary Frame Types
+# ============================================================
 
 class FrameType(IntEnum):
-    FULL = 0x01
-    PARTIAL = 0x02
+    VIDEO_FULL = 0x01       # Full keyframe
+    VIDEO_PARTIAL = 0x02    # Dirty-rect update (JPEG fallback mode)
+    VIDEO_H264 = 0x03       # H.264 NAL unit
+    VIDEO_H265 = 0x04       # H.265 NAL unit
+    AUDIO = 0x10            # Audio frame
 
 
-FRAME_HEADER_SIZE = 9  # 1 + 2 + 2 + 2 + 2
+class VideoCodec(IntEnum):
+    JPEG = 0x00
+    H264 = 0x01
+    H265 = 0x02
+    VP9 = 0x03
 
 
-def encode_frame_header(frame_type: FrameType, x: int, y: int, w: int, h: int) -> bytes:
+class ChromaSubsampling(IntEnum):
+    YUV420 = 0x00   # Standard, good compression
+    YUV422 = 0x01   # Better color for text
+    YUV444 = 0x02   # Full color fidelity (sharp text, no color bleed)
+
+
+class AudioCodec(IntEnum):
+    OPUS = 0x00
+    PCM = 0x01
+
+
+class VideoFrameFlags(IntEnum):
+    NONE = 0x00
+    KEYFRAME = 0x01
+    END_OF_STREAM = 0x02
+
+
+# Binary headers
+VIDEO_HEADER_SIZE = 10  # type(1) + codec(1) + chroma(1) + flags(1) + timestamp(4) + monitor(2)
+AUDIO_HEADER_SIZE = 8   # type(1) + codec(1) + reserved(2) + timestamp(4)
+JPEG_HEADER_SIZE = 9    # type(1) + x(2) + y(2) + w(2) + h(2) — legacy compat
+
+
+def encode_video_header(frame_type: FrameType, codec: VideoCodec,
+                        chroma: ChromaSubsampling, flags: int,
+                        timestamp_ms: int, monitor_id: int = 0) -> bytes:
+    return struct.pack("!BBBBIH", frame_type, codec, chroma, flags,
+                       timestamp_ms, monitor_id)
+
+
+def decode_video_header(data: bytes) -> tuple:
+    """Returns (frame_type, codec, chroma, flags, timestamp_ms, monitor_id, payload)"""
+    ft, codec, chroma, flags, ts, mon = struct.unpack("!BBBBIH", data[:VIDEO_HEADER_SIZE])
+    return FrameType(ft), VideoCodec(codec), ChromaSubsampling(chroma), flags, ts, mon, data[VIDEO_HEADER_SIZE:]
+
+
+def encode_audio_header(codec: AudioCodec, timestamp_ms: int) -> bytes:
+    return struct.pack("!BBHI", FrameType.AUDIO, codec, 0, timestamp_ms)
+
+
+def decode_audio_header(data: bytes) -> tuple:
+    """Returns (codec, timestamp_ms, payload)"""
+    _, codec, _, ts = struct.unpack("!BBHI", data[:AUDIO_HEADER_SIZE])
+    return AudioCodec(codec), ts, data[AUDIO_HEADER_SIZE:]
+
+
+# Legacy JPEG frame compat
+def encode_jpeg_header(frame_type: FrameType, x: int, y: int, w: int, h: int) -> bytes:
     return struct.pack("!BHHHH", frame_type, x, y, w, h)
 
 
-def decode_frame_header(data: bytes) -> tuple:
-    """Returns (frame_type, x, y, w, h, jpeg_data)"""
-    frame_type, x, y, w, h = struct.unpack("!BHHHH", data[:FRAME_HEADER_SIZE])
-    return FrameType(frame_type), x, y, w, h, data[FRAME_HEADER_SIZE:]
+def decode_jpeg_header(data: bytes) -> tuple:
+    ft, x, y, w, h = struct.unpack("!BHHHH", data[:JPEG_HEADER_SIZE])
+    return FrameType(ft), x, y, w, h, data[JPEG_HEADER_SIZE:]
 
 
-# --- JSON control messages ---
+# ============================================================
+# JSON Control Message Types
+# ============================================================
 
 class MsgType:
-    # Client -> Server
+    # --- Input (Client → Server) ---
     MOUSE_MOVE = "mouse_move"
     MOUSE_BUTTON = "mouse_button"
     MOUSE_SCROLL = "mouse_scroll"
     KEY_EVENT = "key_event"
     PEN_EVENT = "pen_event"
-    CLIENT_HELLO = "client_hello"
-    REQUEST_FULL_FRAME = "request_full_frame"
-    CLIPBOARD_SEND = "clipboard_send"
 
-    # Server -> Client
+    # --- Handshake ---
+    CLIENT_HELLO = "client_hello"
     SERVER_HELLO = "server_hello"
-    CURSOR_UPDATE = "cursor_update"
+    AUTH_REQUEST = "auth_request"
+    AUTH_RESPONSE = "auth_response"
+    AUTH_RESULT = "auth_result"
+
+    # --- Control ---
+    REQUEST_FULL_FRAME = "request_full_frame"
+    QUALITY_SETTINGS = "quality_settings"
+    SELECT_MONITOR = "select_monitor"
+
+    # --- Health ---
+    HEALTH_PING = "health_ping"
+    HEALTH_PONG = "health_pong"
+    HEALTH_STATS = "health_stats"
+
+    # --- Clipboard ---
+    CLIPBOARD_SEND = "clipboard_send"
     CLIPBOARD_RECV = "clipboard_recv"
 
+    # --- Multi-monitor ---
+    MONITOR_LIST = "monitor_list"
+
+    # --- Cursor ---
+    CURSOR_UPDATE = "cursor_update"
+
+
+# ============================================================
+# Quality Control
+# ============================================================
 
 @dataclass
-class MouseMoveMsg:
-    type: str = MsgType.MOUSE_MOVE
-    x: float = 0.0  # Normalized 0.0-1.0 relative to screen
-    y: float = 0.0
+class QualitySettings:
+    """
+    Quality control settings.
+
+    The quality_bias slider goes from 0.0 (favor temporal stability / smooth motion)
+    to 1.0 (favor sharpness / image quality). This maps to encoder parameters:
+
+    Bias 0.0 (Smooth):  Lower CRF, higher FPS, YUV420, more B-frames, temporal AQ
+    Bias 0.5 (Balanced): Medium CRF, medium FPS, YUV422
+    Bias 1.0 (Sharp):    Higher CRF, lower FPS if needed, YUV444, no B-frames, spatial AQ
+
+    Additional overrides are available for power users.
+    """
+    type: str = MsgType.QUALITY_SETTINGS
+    quality_bias: float = 0.5       # 0.0 = smooth motion, 1.0 = sharp/crisp
+    max_fps: int = 60               # Maximum frame rate
+    max_bandwidth_mbps: float = 50.0  # Bandwidth cap in Mbps
+    codec: str = "h264"             # "h264", "h265", "jpeg"
+    chroma: str = "yuv422"          # "yuv420", "yuv422", "yuv444"
+    force_lossless: bool = False    # True = use lossless H.264 (YUV444 auto)
+    enable_audio: bool = True
+    audio_bitrate_kbps: int = 128
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self))
+
+    def effective_crf(self) -> int:
+        """Calculate CRF from quality bias. Lower CRF = better quality."""
+        if self.force_lossless:
+            return 0
+        # Map bias 0.0→28 (lower quality, save bandwidth for FPS) to 1.0→15 (high quality)
+        return int(28 - (self.quality_bias * 13))
+
+    def effective_preset(self) -> str:
+        """FFmpeg preset based on bias."""
+        if self.quality_bias < 0.3:
+            return "ultrafast"
+        elif self.quality_bias < 0.6:
+            return "veryfast"
+        elif self.quality_bias < 0.8:
+            return "fast"
+        else:
+            return "medium"
+
+    def effective_chroma(self) -> ChromaSubsampling:
+        if self.force_lossless or self.chroma == "yuv444":
+            return ChromaSubsampling.YUV444
+        elif self.chroma == "yuv422":
+            return ChromaSubsampling.YUV422
+        return ChromaSubsampling.YUV420
+
+    def effective_fps(self) -> int:
+        """Target FPS adjusted by quality bias."""
+        if self.quality_bias > 0.8:
+            return min(self.max_fps, 30)  # Cap FPS when favoring sharpness
+        return self.max_fps
+
+
+# ============================================================
+# Authentication
+# ============================================================
+
+@dataclass
+class AuthRequest:
+    """Server sends this to request authentication."""
+    type: str = MsgType.AUTH_REQUEST
+    auth_methods: list = field(default_factory=lambda: ["password", "token"])
+    challenge: str = ""  # Random challenge for password hashing
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
 
 
 @dataclass
-class MouseButtonMsg:
-    type: str = MsgType.MOUSE_BUTTON
-    button: int = 1  # 1=left, 2=middle, 3=right
-    pressed: bool = True
-    x: float = 0.0
-    y: float = 0.0
+class AuthResponse:
+    """Client sends credentials."""
+    type: str = MsgType.AUTH_RESPONSE
+    method: str = "password"
+    username: str = ""
+    credential: str = ""  # Hashed password or token
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
 
 
 @dataclass
-class MouseScrollMsg:
-    type: str = MsgType.MOUSE_SCROLL
-    dx: int = 0
-    dy: int = 0
-    x: float = 0.0
-    y: float = 0.0
+class AuthResult:
+    """Server sends authentication result."""
+    type: str = MsgType.AUTH_RESULT
+    success: bool = False
+    message: str = ""
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self))
+
+
+def hash_password(password: str, challenge: str) -> str:
+    """Hash password with server challenge (challenge-response auth)."""
+    return hashlib.sha256(f"{password}:{challenge}".encode()).hexdigest()
+
+
+def generate_challenge() -> str:
+    """Generate a random authentication challenge."""
+    return secrets.token_hex(32)
+
+
+# ============================================================
+# Health Monitoring
+# ============================================================
+
+@dataclass
+class HealthPing:
+    type: str = MsgType.HEALTH_PING
+    timestamp_ms: int = 0
+    sequence: int = 0
+
+    def to_json(self) -> str:
+        self.timestamp_ms = int(time.time() * 1000)
+        return json.dumps(asdict(self))
+
+
+@dataclass
+class HealthPong:
+    type: str = MsgType.HEALTH_PONG
+    ping_timestamp_ms: int = 0
+    sequence: int = 0
+    server_timestamp_ms: int = 0
+
+    def to_json(self) -> str:
+        self.server_timestamp_ms = int(time.time() * 1000)
+        return json.dumps(asdict(self))
+
+
+@dataclass
+class HealthStats:
+    """Periodic health statistics from server."""
+    type: str = MsgType.HEALTH_STATS
+    rtt_ms: float = 0.0           # Round-trip time
+    fps_actual: float = 0.0       # Actual frame rate
+    fps_target: float = 0.0       # Target frame rate
+    bandwidth_mbps: float = 0.0   # Current bandwidth usage
+    frames_sent: int = 0
+    frames_dropped: int = 0       # Frames dropped due to backpressure
+    encode_time_ms: float = 0.0   # Average encode time per frame
+    capture_time_ms: float = 0.0  # Average capture time per frame
+    input_latency_ms: float = 0.0 # Input processing latency
+    codec: str = "h264"
+    chroma: str = "yuv444"
+    resolution: str = "1920x1080"
+    clients_connected: int = 0
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self))
+
+
+# ============================================================
+# Multi-Monitor
+# ============================================================
+
+@dataclass
+class MonitorInfo:
+    id: int = 0
+    name: str = ""
+    width: int = 1920
+    height: int = 1080
+    x: int = 0       # Position in virtual desktop
+    y: int = 0
+    primary: bool = False
+    scale: float = 1.0
+
+
+@dataclass
+class MonitorListMsg:
+    type: str = MsgType.MONITOR_LIST
+    monitors: list = field(default_factory=list)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
 
 
 @dataclass
-class KeyEventMsg:
-    type: str = MsgType.KEY_EVENT
-    key: str = ""        # Qt key name or X11 keysym name
-    scan_code: int = 0   # Platform scan code
-    pressed: bool = True
-    modifiers: int = 0   # Bitmask: 1=shift, 2=ctrl, 4=alt, 8=meta
+class SelectMonitorMsg:
+    type: str = MsgType.SELECT_MONITOR
+    monitor_id: int = 0      # -1 = all monitors (virtual desktop)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
 
+
+# ============================================================
+# Clipboard
+# ============================================================
 
 @dataclass
-class PenEventMsg:
-    """Pen/stylus event with full tablet data."""
-    type: str = MsgType.PEN_EVENT
-    x: float = 0.0           # Normalized 0.0-1.0
-    y: float = 0.0
-    pressure: float = 0.0    # 0.0-1.0
-    tilt_x: float = 0.0      # -90 to 90 degrees
-    tilt_y: float = 0.0      # -90 to 90 degrees
-    rotation: float = 0.0    # 0-360 degrees
-    button: int = 0           # 0=none, 1=tip, 2=eraser, 3=barrel button
-    pressed: bool = False     # Tip touching surface
-    hovering: bool = False    # Pen in proximity but not touching
-    pen_type: str = "pen"     # "pen", "eraser", "cursor"
+class ClipboardMsg:
+    type: str = MsgType.CLIPBOARD_SEND
+    content_type: str = "text/plain"  # MIME type
+    data: str = ""  # Base64-encoded for binary, plain for text
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
 
+
+# ============================================================
+# Connection Handshake
+# ============================================================
 
 @dataclass
 class ClientHelloMsg:
     type: str = MsgType.CLIENT_HELLO
     client_name: str = "Teragucci Client"
-    version: str = "1.0.0"
+    version: str = "2.0.0"
     screen_width: int = 1920
     screen_height: int = 1080
+    supports_h264: bool = True
+    supports_h265: bool = True
+    supports_yuv444: bool = True
+    supports_audio: bool = True
+    supports_pen: bool = True
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -139,15 +384,82 @@ class ClientHelloMsg:
 class ServerHelloMsg:
     type: str = MsgType.SERVER_HELLO
     server_name: str = "Teragucci Server"
-    version: str = "1.0.0"
+    version: str = "2.0.0"
     screen_width: int = 1920
     screen_height: int = 1080
+    monitors: list = field(default_factory=list)
+    supports_h264: bool = True
+    supports_h265: bool = False
+    supports_yuv444: bool = True
+    supports_audio: bool = True
     supports_pen: bool = True
+    requires_auth: bool = False
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
 
 
+# ============================================================
+# Input Messages
+# ============================================================
+
+@dataclass
+class PenEventMsg:
+    """Pen/stylus event with full tablet data."""
+    type: str = MsgType.PEN_EVENT
+    x: float = 0.0
+    y: float = 0.0
+    pressure: float = 0.0
+    tilt_x: float = 0.0
+    tilt_y: float = 0.0
+    rotation: float = 0.0
+    button: int = 0
+    pressed: bool = False
+    hovering: bool = False
+    pen_type: str = "pen"
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self))
+
+
+# ============================================================
+# Bookmark / Connection Profile
+# ============================================================
+
+@dataclass
+class ConnectionProfile:
+    """A saved connection with all settings."""
+    name: str = ""
+    host: str = ""
+    port: int = 9876
+    username: str = ""
+    password_encrypted: str = ""  # Encrypted with local machine key
+    use_tls: bool = False
+    auto_connect: bool = False
+    quality_bias: float = 0.5
+    preferred_codec: str = "h264"
+    preferred_chroma: str = "yuv444"
+    max_fps: int = 60
+    max_bandwidth_mbps: float = 50.0
+    enable_audio: bool = True
+    monitor_id: int = -1  # -1 = all
+    notes: str = ""
+    last_connected: str = ""
+    created: str = ""
+    color_label: str = ""  # For visual organization
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ConnectionProfile":
+        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
+
+
+# ============================================================
+# Helpers
+# ============================================================
+
 def parse_message(json_str: str) -> dict:
-    """Parse a JSON control message and return as dict."""
+    """Parse a JSON control message."""
     return json.loads(json_str)

@@ -5,3 +5,9 @@ websockets>=12.0
 mss>=9.0
 numpy>=1.24
 Pillow>=10.0
+
+# System dependencies (install via package manager):
+# - ffmpeg (with libx264, libx265, libopus)
+# - pulseaudio-utils or pipewire-pulse (for pactl)
+# - xclip or xsel (for clipboard sync)
+# - Linux kernel uinput module (modprobe uinput)

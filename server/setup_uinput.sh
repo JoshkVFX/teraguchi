@@ -39,11 +39,21 @@ EOF
 echo "Loading uinput kernel module..."
 modprobe uinput
 
-# Ensure uinput loads on boot
-if ! grep -q "^uinput" /etc/modules-load.d/*.conf 2>/dev/null; then
-    echo "Configuring uinput to load on boot..."
-    echo "uinput" > /etc/modules-load.d/uinput.conf
-fi
+# Load USB/IP modules for USB passthrough
+echo "Loading USB/IP kernel modules..."
+modprobe usbip-core 2>/dev/null || echo "  usbip-core not available (USB passthrough won't work)"
+modprobe vhci-hcd 2>/dev/null || echo "  vhci-hcd not available (USB passthrough won't work)"
+
+# Ensure modules load on boot
+MODULES_FILE="/etc/modules-load.d/teragucci.conf"
+echo "Configuring kernel modules to load on boot..."
+cat > "$MODULES_FILE" << 'MODEOF'
+# Teragucci: virtual input devices
+uinput
+# Teragucci: USB/IP passthrough (optional)
+usbip-core
+vhci-hcd
+MODEOF
 
 # Reload udev rules
 echo "Reloading udev rules..."
