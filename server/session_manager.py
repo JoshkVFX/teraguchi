@@ -13,6 +13,7 @@ The server runs as root and spawns per-user processes with demoted privileges.
 import logging
 import os
 import pwd
+import signal
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -80,6 +81,8 @@ class UserSession:
     xvfb_proc: Optional[subprocess.Popen] = None
     wm_proc: Optional[subprocess.Popen] = None
     dbus_proc: Optional[subprocess.Popen] = None
+    dbus_pid: Optional[int] = None  # PID from dbus-launch (for cleanup)
+    dbus_address: str = ""  # D-Bus session bus address from dbus-launch
     pulseaudio_proc: Optional[subprocess.Popen] = None
     connected_clients: int = 0
     created_at: float = field(default_factory=time.time)
@@ -99,7 +102,7 @@ class UserSession:
             "LOGNAME": self.username,
             "SHELL": pwd.getpwuid(self.uid).pw_shell,
             "XDG_RUNTIME_DIR": f"/run/user/{self.uid}",
-            "DBUS_SESSION_BUS_ADDRESS": f"unix:path=/run/user/{self.uid}/teragucci-bus",
+            "DBUS_SESSION_BUS_ADDRESS": self.dbus_address,
             "XDG_SESSION_TYPE": "x11",
         }
         if self.xauthority:
@@ -236,16 +239,32 @@ class SessionManager:
 
     def _start_dbus(self, session: UserSession):
         try:
+            # Use dbus-launch to get a proper session bus with X11 integration.
+            # This allows GNOME services (gnome-terminal, etc.) to register.
             # Use a Teragucci-specific socket to avoid clobbering the user's
-            # existing D-Bus session (e.g. PCoIP/GNOME desktop)
-            bus_path = f"/run/user/{session.uid}/teragucci-bus"
-            session.dbus_proc = subprocess.Popen(
-                ["dbus-daemon", "--session", "--nofork",
-                 f"--address=unix:path={bus_path}"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            # existing D-Bus session (e.g. PCoIP/GNOME desktop).
+            result = subprocess.run(
+                ["dbus-launch", "--sh-syntax"],
+                capture_output=True, text=True, timeout=5,
                 preexec_fn=lambda: self._demote(session.uid, session.gid),
                 env=session.env)
-            logger.info("D-Bus started for %s", session.username)
+            # Parse DBUS_SESSION_BUS_ADDRESS and PID from output
+            bus_addr = ""
+            bus_pid = None
+            for line in result.stdout.splitlines():
+                if line.startswith("DBUS_SESSION_BUS_ADDRESS="):
+                    bus_addr = line.split("=", 1)[1].strip(" ;'\"")
+                elif line.startswith("DBUS_SESSION_BUS_PID="):
+                    try:
+                        bus_pid = int(line.split("=", 1)[1].strip(" ;'\""))
+                    except ValueError:
+                        pass
+            if bus_addr:
+                session.dbus_address = bus_addr
+                session.dbus_pid = bus_pid
+                logger.info("D-Bus started for %s: %s (pid %s)", session.username, bus_addr, bus_pid)
+            else:
+                logger.warning("D-Bus launch returned no address for %s", session.username)
         except Exception as e:
             logger.warning("D-Bus failed for %s: %s", session.username, e)
 
@@ -340,6 +359,10 @@ class SessionManager:
                 env["GNOME_SHELL_SESSION_MODE"] = "classic"
                 env["XDG_CURRENT_DESKTOP"] = "GNOME-Classic:GNOME"
                 env["GDK_BACKEND"] = "x11"
+                # Force software rendering for Xvfb — the GPU's EGL/GLX
+                # context isn't available on virtual displays
+                env["LIBGL_ALWAYS_SOFTWARE"] = "1"
+                env["__GLX_VENDOR_LIBRARY_NAME"] = "mesa"
 
             wm_cmd = list(self._wm_cmd)
             if wm_cmd[0] == "gnome-shell":
@@ -433,6 +456,14 @@ class SessionManager:
                     proc.wait(timeout=2)
                 logger.debug("Stopped %s (pid %d) for %s",
                              name, proc.pid, session.username)
+
+        # Kill dbus-launch daemon if we have its PID
+        if session.dbus_pid:
+            try:
+                os.kill(session.dbus_pid, signal.SIGTERM)
+                logger.debug("Stopped D-Bus (pid %d) for %s", session.dbus_pid, session.username)
+            except OSError:
+                pass
 
         if session.xauthority and os.path.exists(session.xauthority):
             try:
