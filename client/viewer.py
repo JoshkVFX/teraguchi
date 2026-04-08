@@ -163,6 +163,14 @@ class RemoteViewer(QWidget):
 
     def tabletEvent(self, event: QTabletEvent):
         """Handle Wacom/stylus tablet events with full pressure data."""
+        # Only handle real pen/eraser devices — macOS trackpads generate
+        # tablet events that would block normal mouse input
+        pointer_type = event.pointerType()
+        if pointer_type not in (QTabletEvent.PointerType.Pen,
+                                QTabletEvent.PointerType.Eraser):
+            event.ignore()
+            return
+
         self._pen_active = True
         event.accept()
 
@@ -170,7 +178,6 @@ class RemoteViewer(QWidget):
         nx, ny = self._widget_to_remote(pos.x(), pos.y())
 
         # Determine pen type
-        pointer_type = event.pointerType()
         if pointer_type == QTabletEvent.PointerType.Eraser:
             pen_type = "eraser"
         else:
