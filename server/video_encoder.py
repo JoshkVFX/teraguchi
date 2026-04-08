@@ -134,7 +134,7 @@ class VideoEncoder:
         self.width = width
         self.height = height
         self.settings = settings
-        self._available = available_encoders or detect_encoders()
+        self._available = available_encoders if available_encoders is not None else detect_encoders()
         self._active_encoder: Optional[HWEncoder] = None
         self._process: Optional[subprocess.Popen] = None
         self._reader_thread: Optional[threading.Thread] = None
