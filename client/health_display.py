@@ -39,6 +39,12 @@ class HealthData:
         self.chroma: str = ""
         self.resolution: str = ""
 
+        # Transport
+        self.transport_mode: str = "tcp"  # "tcp" or "udp"
+        self.packet_loss_pct: float = 0.0
+        self.jitter_ms: float = 0.0
+        self.buffer_depth_ms: float = 0.0
+
         # Local measurements
         self._ping_times: collections.deque = collections.deque(maxlen=60)
         self._local_frame_count = 0
@@ -134,7 +140,7 @@ class HealthOverlay(QWidget):
 
         margin = 10
         box_w = 280
-        box_h = 260
+        box_h = 320
         x = self.width() - box_w - margin
         y = margin
         painter.drawRoundedRect(QRectF(x, y, box_w, box_h), 8, 8)
@@ -150,7 +156,9 @@ class HealthOverlay(QWidget):
         tx = x + 12
         ty = y + 20
 
+        transport = "UDP" if d.transport_mode == "udp" else "TCP"
         lines = [
+            f"Transport:  {transport}",
             f"Latency:    {d.rtt_ms:.0f} ms",
             f"FPS:        {d.fps_actual:.0f} / {d.fps_target:.0f}",
             f"Local FPS:  {d.local_fps:.0f}",
@@ -162,6 +170,9 @@ class HealthOverlay(QWidget):
             f"Capture:    {d.capture_time_ms:.1f} ms",
             f"Input lag:  {d.input_latency_ms:.1f} ms",
             "",
+            f"Pkt loss:   {d.packet_loss_pct:.1f}%",
+            f"Jitter:     {d.jitter_ms:.1f} ms",
+            f"Buffer:     {d.buffer_depth_ms:.1f} ms",
             f"Sent:       {d.frames_sent}",
             f"Dropped:    {d.frames_dropped}",
         ]

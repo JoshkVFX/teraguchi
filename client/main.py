@@ -65,7 +65,7 @@ class ThreadBridge(QObject):
 class ConnectionDialog(QDialog):
     """Connection dialog with full settings."""
 
-    def __init__(self, parent=None, default_host="", default_port=9876,
+    def __init__(self, parent=None, default_host="", default_port=443,
                  default_username="", default_password=""):
         super().__init__(parent)
         self.setWindowTitle("Connect to Server")
@@ -256,7 +256,7 @@ class BookmarkPanel(QWidget):
 class MainWindow(QMainWindow):
     """Main application window with all features."""
 
-    def __init__(self, initial_host="", initial_port=9876, initial_user="", initial_pass=""):
+    def __init__(self, initial_host="", initial_port=443, initial_user="", initial_pass=""):
         super().__init__()
 
         self._host = initial_host
@@ -575,7 +575,7 @@ class MainWindow(QMainWindow):
 def main():
     parser = argparse.ArgumentParser(description="Teragucci Remote Desktop Client")
     parser.add_argument("--host", default="", help="Server hostname or IP")
-    parser.add_argument("--port", type=int, default=9876, help="Server port")
+    parser.add_argument("--port", type=int, default=443, help="Server port (default: 443)")
     parser.add_argument("--username", "-u", default="", help="Username")
     parser.add_argument("--password", "-p", default="", help="Password")
     parser.add_argument("--verbose", "-v", action="store_true")

@@ -2,17 +2,19 @@
 Client-side WebSocket protocol handler v2.
 
 Manages the connection to the Teragucci server with:
-- TLS support
+- Hybrid TCP+UDP transport (UDP for video/audio, TCP for control)
+- TLS support (wss:// on port 443)
 - Authentication handshake
 - Auto-reconnect
 - Health ping/pong
-- Video and audio frame reception
-- Input event sending
+- Jitter buffer for smooth UDP playback
+- Automatic fallback to TCP-only when UDP is blocked
 """
 
 import hashlib
 import json
 import logging
+import socket
 import threading
 import asyncio
 import time
@@ -27,13 +29,19 @@ from common.messages import (
     HealthPing, HealthPong, QualitySettings,
     AuthResponse, parse_message,
 )
+from common.udp_transport import UDPMediaClient, CHANNEL_VIDEO, CHANNEL_AUDIO, FLAG_KEYFRAME
+from common.hybrid_transport import HybridClientTransport, TransportMsg
+from common.jitter_buffer import JitterBuffer
 
 logger = logging.getLogger(__name__)
 
 
 class ClientProtocol:
     """
-    WebSocket client with TLS, auth, auto-reconnect, and full protocol support.
+    Hybrid TCP+UDP client with TLS, auth, auto-reconnect, jitter buffer.
+
+    Control messages (input, health, clipboard) go over TCP WebSocket.
+    Media (video, audio) comes over UDP when available, TCP as fallback.
     """
 
     def __init__(self):
@@ -53,6 +61,13 @@ class ClientProtocol:
 
         # TLS
         self._use_tls = False
+
+        # UDP transport
+        self._udp_client: Optional[UDPMediaClient] = None
+        self._hybrid: Optional[HybridClientTransport] = None
+        self._jitter_buffer: Optional[JitterBuffer] = None
+        self._udp_enabled = True
+        self._udp_stats_interval = 5.0  # Report stats every 5s
 
         # Callbacks (thread-safe via Qt signals in main.py)
         self.on_server_hello: Optional[Callable] = None
@@ -100,6 +115,15 @@ class ClientProtocol:
         """Disconnect and stop auto-reconnect."""
         self._closing = True
         self._auto_reconnect = False
+        # Stop UDP
+        if self._hybrid:
+            self._hybrid.stop()
+            self._hybrid = None
+        if self._jitter_buffer:
+            self._jitter_buffer.stop()
+            self._jitter_buffer = None
+        self._udp_client = None
+        # Stop TCP
         if self._loop and self._loop.is_running():
             self._loop.call_soon_threadsafe(self._loop.stop)
         if self._thread:
@@ -236,7 +260,15 @@ class ClientProtocol:
             hello = ClientHelloMsg()
             await ws.send(hello.to_json())
 
-            # Main receive loop
+            # --- Start UDP media transport ---
+            if self._udp_enabled:
+                await self._negotiate_udp(ws, host)
+
+            # Start periodic UDP stats reporting
+            if self._hybrid and self._hybrid.state.udp_confirmed:
+                asyncio.ensure_future(self._udp_stats_loop(ws))
+
+            # Main receive loop (TCP control messages + fallback media)
             async for message in ws:
                 if self._closing:
                     break
@@ -244,6 +276,89 @@ class ClientProtocol:
                     self._handle_json(message)
                 elif isinstance(message, bytes):
                     self._handle_binary(message)
+
+    async def _negotiate_udp(self, ws, server_host: str):
+        """Set up UDP transport and negotiate with server."""
+        try:
+            self._udp_client = UDPMediaClient()
+            self._hybrid = HybridClientTransport(self._udp_client)
+
+            # Set up jitter buffer for smooth playback
+            self._jitter_buffer = JitterBuffer(on_frame_ready=self._on_jitter_frame)
+            self._jitter_buffer.start()
+
+            # Wire UDP frames through jitter buffer
+            self._udp_client.on_video_frame = self._on_udp_video
+            self._udp_client.on_audio_frame = self._on_udp_audio
+
+            # Start UDP receiver and get local port
+            local_port = self._hybrid.start_udp()
+
+            # Get our local IP as seen by the server
+            # (connect a temp socket to server to find our outbound IP)
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect((server_host, 1))
+                local_addr = s.getsockname()[0]
+                s.close()
+            except Exception:
+                local_addr = ""
+
+            # Announce our UDP port to the server
+            announce = self._hybrid.get_announce_message(local_addr)
+            await ws.send(json.dumps(announce))
+            logger.info("UDP announced: port %d, addr %s", local_port, local_addr)
+
+            # Wait briefly for probe confirmation
+            await asyncio.sleep(1.0)
+            if self._hybrid.check_probe_received():
+                confirm = self._hybrid.get_confirm_message()
+                await ws.send(json.dumps(confirm))
+                logger.info("UDP confirmed — media will use UDP transport")
+            else:
+                logger.info("UDP probe not received — using TCP fallback for media")
+
+        except Exception as e:
+            logger.warning("UDP setup failed: %s — using TCP fallback", e)
+            self._hybrid = None
+
+    async def _udp_stats_loop(self, ws):
+        """Periodically report UDP stats to server."""
+        while self._connected and not self._closing and self._hybrid:
+            await asyncio.sleep(self._udp_stats_interval)
+            if self._hybrid and self._connected:
+                try:
+                    stats_msg = self._hybrid.get_stats_message()
+                    await ws.send(json.dumps(stats_msg))
+                except Exception:
+                    break
+
+    def _on_udp_video(self, flags: int, timestamp_ms: int, data: bytes):
+        """Handle video frame from UDP — route through jitter buffer."""
+        is_keyframe = bool(flags & FLAG_KEYFRAME)
+        if self._jitter_buffer:
+            self._jitter_buffer.push(
+                CHANNEL_VIDEO, flags, timestamp_ms, data, is_keyframe)
+        else:
+            # No jitter buffer — deliver directly
+            self._on_jitter_frame(CHANNEL_VIDEO, flags, timestamp_ms, data)
+
+    def _on_udp_audio(self, timestamp_ms: int, data: bytes):
+        """Handle audio frame from UDP — route through jitter buffer."""
+        if self._jitter_buffer:
+            self._jitter_buffer.push(CHANNEL_AUDIO, 0, timestamp_ms, data)
+        elif self.on_audio_frame:
+            self.on_audio_frame(0, timestamp_ms, data)
+
+    def _on_jitter_frame(self, channel: int, flags: int,
+                         timestamp_ms: int, data: bytes):
+        """Callback from jitter buffer when a frame is ready for display."""
+        if channel == CHANNEL_VIDEO:
+            if self.on_video_frame:
+                self.on_video_frame(0, 0, 0, flags, timestamp_ms, 0, data)
+        elif channel == CHANNEL_AUDIO:
+            if self.on_audio_frame:
+                self.on_audio_frame(0, timestamp_ms, data)
 
     def _handle_server_hello(self, msg: dict):
         if msg.get("type") == MsgType.SERVER_HELLO and self.on_server_hello:
@@ -257,6 +372,13 @@ class ClientProtocol:
             if msg_type == MsgType.SERVER_HELLO:
                 if self.on_server_hello:
                     self.on_server_hello(msg)
+
+            # Handle UDP transport messages
+            elif msg_type == TransportMsg.UDP_ACTIVE:
+                logger.info("Server confirmed UDP active (RTT: %.1f ms)",
+                            msg.get("udp_rtt_ms", 0))
+            elif msg_type == TransportMsg.UDP_FALLBACK:
+                logger.warning("Server: UDP fallback - %s", msg.get("reason", ""))
 
             elif msg_type == MsgType.HEALTH_PING:
                 # Respond with pong

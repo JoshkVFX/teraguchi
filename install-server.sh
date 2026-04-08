@@ -272,7 +272,7 @@ User=$REAL_USER
 Environment=DISPLAY=:0
 Environment=XAUTHORITY=/home/$REAL_USER/.Xauthority
 WorkingDirectory=$INSTALL_DIR
-ExecStart=$VENV_DIR/bin/python -m server.main --port 9876 --fps 30 --codec h264 --chroma yuv444
+ExecStart=$VENV_DIR/bin/python -m server.main --port 443 --fps 30 --codec h264 --chroma yuv444
 Restart=on-failure
 RestartSec=5
 
@@ -295,23 +295,25 @@ fi
 # ── Firewall ─────────────────────────────────────────────────────
 
 echo ""
-info "Firewall: Teragucci uses port 9876/tcp."
+info "Firewall: Teragucci uses port 443 (TCP for control + UDP for media)."
 
 if command -v ufw &>/dev/null; then
-    read -rp "  Open port 9876 in UFW? [y/N]: " OPEN_FW
+    read -rp "  Open port 443 (TCP+UDP) in UFW? [y/N]: " OPEN_FW
     if [[ "$OPEN_FW" =~ ^[Yy] ]]; then
-        ufw allow 9876/tcp
-        ok "UFW: port 9876 opened"
+        ufw allow 443/tcp
+        ufw allow 443/udp
+        ok "UFW: port 443 TCP+UDP opened"
     fi
 elif command -v firewall-cmd &>/dev/null; then
-    read -rp "  Open port 9876 in firewalld? [y/N]: " OPEN_FW
+    read -rp "  Open port 443 (TCP+UDP) in firewalld? [y/N]: " OPEN_FW
     if [[ "$OPEN_FW" =~ ^[Yy] ]]; then
-        firewall-cmd --permanent --add-port=9876/tcp
+        firewall-cmd --permanent --add-port=443/tcp
+        firewall-cmd --permanent --add-port=443/udp
         firewall-cmd --reload
-        ok "firewalld: port 9876 opened"
+        ok "firewalld: port 443 TCP+UDP opened"
     fi
 else
-    info "No firewall tool detected. Make sure port 9876/tcp is open."
+    info "No firewall tool detected. Make sure port 443 TCP+UDP is open."
 fi
 
 # ── Done ─────────────────────────────────────────────────────────
@@ -342,5 +344,5 @@ echo "  Your IP addresses:"
 hostname -I 2>/dev/null | tr ' ' '\n' | grep -v '^$' | sed 's/^/    /'
 echo ""
 echo "  Connect from client:"
-echo "    python -m client.main --host <IP_ABOVE> --port 9876"
+echo "    python -m client.main --host <IP_ABOVE>"
 echo ""

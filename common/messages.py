@@ -431,7 +431,7 @@ class ConnectionProfile:
     """A saved connection with all settings."""
     name: str = ""
     host: str = ""
-    port: int = 9876
+    port: int = 443
     username: str = ""
     password_encrypted: str = ""  # Encrypted with local machine key
     use_tls: bool = False

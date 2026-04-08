@@ -124,7 +124,7 @@ class BookmarkManager:
         except Exception as e:
             logger.error("Failed to save bookmarks: %s", e)
 
-    def add(self, name: str, host: str, port: int = 9876,
+    def add(self, name: str, host: str, port: int = 443,
             username: str = "", password: str = "",
             use_tls: bool = False, **kwargs) -> str:
         """

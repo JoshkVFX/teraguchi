@@ -51,6 +51,8 @@ from server.audio_capture import AudioCapture, check_audio_available
 from server.health import HealthMonitor
 from server.auth import Authenticator
 from server.clipboard import ClipboardSync
+from common.udp_transport import UDPMediaServer, BandwidthEstimator, CHANNEL_VIDEO, CHANNEL_AUDIO
+from common.hybrid_transport import HybridServerTransport, TransportMsg, TransportMode
 
 logger = logging.getLogger("teragucci.server")
 
@@ -60,6 +62,7 @@ class ClientSession:
 
     def __init__(self, ws: WebSocketServerProtocol):
         self.ws = ws
+        self.client_id = str(id(ws))
         self.authenticated = False
         self.challenge = ""
         self.quality = QualitySettings()
@@ -110,10 +113,14 @@ audio: Optional[AudioCapture] = None
 health: HealthMonitor = None
 auth: Authenticator = None
 clipboard: Optional[ClipboardSync] = None
+udp_server: Optional[UDPMediaServer] = None
+hybrid_transport: Optional[HybridServerTransport] = None
+bandwidth_estimator: Optional[BandwidthEstimator] = None
 quality_settings: QualitySettings = QualitySettings()
 running = True
 use_h264 = False
 ffmpeg_caps: dict = {}
+event_loop: Optional[asyncio.AbstractEventLoop] = None
 
 
 async def handle_client(websocket: WebSocketServerProtocol):
@@ -189,6 +196,8 @@ async def handle_client(websocket: WebSocketServerProtocol):
         logger.error("Client error %s: %s", addr, e)
     finally:
         session.stop()
+        if hybrid_transport:
+            hybrid_transport.remove_client(session.client_id)
         clients.pop(websocket, None)
         health.clients_connected = len(clients)
         logger.info("Client removed: %s (total: %d)", addr, len(clients))
@@ -199,6 +208,27 @@ async def _handle_control_message(session: ClientSession, msg: dict):
     msg_type = msg.get("type")
     t0 = time.time()
 
+    # --- UDP transport negotiation ---
+    if msg_type in (TransportMsg.UDP_ANNOUNCE, TransportMsg.UDP_CONFIRMED,
+                    TransportMsg.UDP_STATS):
+        if hybrid_transport:
+            # Fill in the client's IP from the WebSocket connection
+            if msg_type == TransportMsg.UDP_ANNOUNCE:
+                ws_addr = session.ws.remote_address
+                if ws_addr:
+                    msg["udp_addr"] = ws_addr[0]
+            response = await hybrid_transport.handle_transport_message(
+                session.client_id, msg, session.ws.send)
+            if response:
+                await session.ws.send(json.dumps(response))
+
+            # Update bandwidth estimator from client stats
+            if msg_type == TransportMsg.UDP_STATS and bandwidth_estimator:
+                loss = msg.get("packet_loss_pct", 0.0)
+                bandwidth_estimator.report_loss_rate(loss)
+        return
+
+    # --- Input events ---
     if msg_type == MsgType.KEY_EVENT:
         qt_key = msg.get("scan_code", 0)
         linux_code = qt_key_to_linux_scancode(qt_key)
@@ -285,25 +315,40 @@ def _restart_encoder():
 
 def _on_encoded_frame(frame_data: bytes, is_keyframe: bool):
     """Callback from encoder thread when a frame is ready."""
+    timestamp = int(time.time() * 1000) & 0xFFFFFFFF
+
+    # Send via UDP to clients that support it
+    udp_sent = False
+    if udp_server and hybrid_transport:
+        has_udp_clients = any(
+            hybrid_transport.should_use_udp(session.client_id)
+            for session in clients.values()
+            if session.authenticated
+        )
+        if has_udp_clients:
+            udp_server.send_video_frame(frame_data, timestamp, is_keyframe)
+            udp_sent = True
+
+    # Send via TCP WebSocket to clients without UDP (fallback)
     codec = VideoCodec.H264 if quality_settings.codec == "h264" else VideoCodec.H265
     chroma = quality_settings.effective_chroma()
     flags = VideoFrameFlags.KEYFRAME if is_keyframe else VideoFrameFlags.NONE
-    timestamp = int(time.time() * 1000) & 0xFFFFFFFF
 
     header = encode_video_header(
         FrameType.VIDEO_H264 if codec == VideoCodec.H264 else FrameType.VIDEO_H265,
         codec, chroma, flags, timestamp,
     )
-    data = header + frame_data
+    tcp_data = header + frame_data
 
-    # Enqueue to all clients
-    loop = asyncio.get_event_loop() if asyncio.get_event_loop().is_running() else None
     for ws, session in list(clients.items()):
         if session.authenticated:
-            if loop:
-                asyncio.run_coroutine_threadsafe(_enqueue_frame(session, data), loop)
+            # Skip TCP send for clients already getting UDP
+            if hybrid_transport and hybrid_transport.should_use_udp(session.client_id):
+                continue
+            if event_loop:
+                asyncio.run_coroutine_threadsafe(_enqueue_frame(session, tcp_data), event_loop)
 
-    health.record_frame_sent(len(data))
+    health.record_frame_sent(len(frame_data))
 
 
 async def _enqueue_frame(session: ClientSession, data: bytes):
@@ -314,14 +359,27 @@ async def _enqueue_frame(session: ClientSession, data: bytes):
 
 def _on_audio_frame(audio_data: bytes, timestamp_ms: int):
     """Callback from audio capture thread."""
-    header = encode_audio_header(AudioCodec.OPUS, timestamp_ms & 0xFFFFFFFF)
+    ts = timestamp_ms & 0xFFFFFFFF
+
+    # Send via UDP where available
+    if udp_server and hybrid_transport:
+        has_udp_audio = any(
+            hybrid_transport.should_use_udp(s.client_id) and s.supports_audio
+            for s in clients.values() if s.authenticated
+        )
+        if has_udp_audio:
+            udp_server.send_audio_frame(audio_data, ts)
+
+    # TCP fallback for non-UDP clients
+    header = encode_audio_header(AudioCodec.OPUS, ts)
     data = header + audio_data
 
-    loop = asyncio.get_event_loop() if asyncio.get_event_loop().is_running() else None
     for ws, session in list(clients.items()):
         if session.authenticated and session.supports_audio:
-            if loop:
-                asyncio.run_coroutine_threadsafe(session.enqueue(data), loop)
+            if hybrid_transport and hybrid_transport.should_use_udp(session.client_id):
+                continue
+            if event_loop:
+                asyncio.run_coroutine_threadsafe(session.enqueue(data), event_loop)
 
 
 def _on_clipboard_change(text: str):
@@ -415,13 +473,23 @@ async def health_ping_loop():
                     pass
 
 
-async def run_server(host: str, port: int, fps: int, tls_context: Optional[ssl.SSLContext]):
+async def run_server(host: str, port: int, fps: int, tls_context: Optional[ssl.SSLContext],
+                     udp_port: int = 0):
     """Start the WebSocket server and all subsystems."""
-    global running
+    global running, event_loop
 
+    event_loop = asyncio.get_event_loop()
     logger.info("Starting Teragucci server on %s:%d (target %d fps)", host, port, fps)
     if tls_context:
         logger.info("TLS enabled")
+
+    # Start UDP media server
+    if udp_server:
+        try:
+            udp_server.start()
+            logger.info("UDP media transport on %s:%d", host, udp_port or port)
+        except Exception as e:
+            logger.warning("UDP server failed to start: %s (TCP-only mode)", e)
 
     # Start subsystems
     if use_h264 and encoder:
@@ -486,7 +554,9 @@ def main():
 
     parser = argparse.ArgumentParser(description="Teragucci Remote Desktop Server")
     parser.add_argument("--host", default="0.0.0.0", help="Listen address")
-    parser.add_argument("--port", type=int, default=9876, help="Listen port")
+    parser.add_argument("--port", type=int, default=443, help="Listen port (TCP WebSocket + UDP media)")
+    parser.add_argument("--udp-port", type=int, default=0, help="UDP media port (default: same as --port)")
+    parser.add_argument("--no-udp", action="store_true", help="Disable UDP transport (TCP-only)")
     parser.add_argument("--fps", type=int, default=30, help="Target FPS")
     parser.add_argument("--quality", type=int, default=60, help="JPEG quality (fallback)")
     parser.add_argument("--monitor", type=int, default=1, help="Monitor index (0=all)")
@@ -556,6 +626,19 @@ def main():
         jpeg_encoder = JpegFallbackEncoder(quality=args.quality)
         logger.info("Using JPEG fallback encoder")
 
+    # UDP media transport
+    actual_udp_port = args.udp_port or args.port
+    if not args.no_udp:
+        udp_server = UDPMediaServer(host=args.host, port=actual_udp_port)
+        hybrid_transport = HybridServerTransport(udp_server)
+        bandwidth_estimator = BandwidthEstimator(
+            initial_mbps=quality_settings.max_bandwidth_mbps,
+            max_mbps=quality_settings.max_bandwidth_mbps,
+        )
+        logger.info("UDP media transport configured on port %d", actual_udp_port)
+    else:
+        logger.info("UDP disabled, TCP-only mode")
+
     # Health monitor
     health = HealthMonitor(target_fps=args.fps)
     health.current_codec = args.codec
@@ -580,10 +663,13 @@ def main():
 
     # Run
     try:
-        asyncio.run(run_server(args.host, args.port, args.fps, tls_context))
+        asyncio.run(run_server(args.host, args.port, args.fps, tls_context,
+                               udp_port=actual_udp_port))
     except KeyboardInterrupt:
         logger.info("Interrupted")
     finally:
+        if udp_server:
+            udp_server.stop()
         if encoder:
             encoder.stop()
         if audio:

@@ -10,7 +10,7 @@ User=CHANGEME
 Environment=DISPLAY=:0
 # Adjust the path to your Teragucci installation
 WorkingDirectory=/opt/teragucci
-ExecStart=/usr/bin/python3 -m server.main --port 9876 --fps 30 --quality 60
+ExecStart=/usr/bin/python3 -m server.main --port 443 --fps 30 --codec h264 --chroma yuv444
 Restart=on-failure
 RestartSec=5
 

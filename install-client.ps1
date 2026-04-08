@@ -200,7 +200,7 @@ Write-Host "  Launch:"
 Write-Host "    teragucci.bat" -ForegroundColor White
 Write-Host ""
 Write-Host "  Or with a direct connection:"
-Write-Host "    teragucci.bat --host 192.168.1.100 --port 9876" -ForegroundColor White
+Write-Host "    teragucci.bat --host 192.168.1.100" -ForegroundColor White
 Write-Host ""
 Write-Host "  With credentials:"
 Write-Host "    teragucci.bat --host 192.168.1.100 -u myuser" -ForegroundColor White
