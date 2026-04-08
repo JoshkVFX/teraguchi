@@ -317,20 +317,20 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self._viewer)
 
         # --- Dock: Bookmarks ---
-        bookmark_dock = QDockWidget("Bookmarks", self)
-        bookmark_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self._bookmark_dock = QDockWidget("Bookmarks", self)
+        self._bookmark_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
         self._bookmark_panel = BookmarkPanel(self._bookmarks)
         self._bookmark_panel.connect_requested.connect(self._connect_bookmark)
-        bookmark_dock.setWidget(self._bookmark_panel)
-        self.addDockWidget(Qt.LeftDockWidgetArea, bookmark_dock)
+        self._bookmark_dock.setWidget(self._bookmark_panel)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self._bookmark_dock)
 
         # --- Dock: Quality Settings ---
-        quality_dock = QDockWidget("Quality", self)
-        quality_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self._quality_dock = QDockWidget("Quality", self)
+        self._quality_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
         self._quality_panel = QualityControlPanel()
         self._quality_panel.settings_changed.connect(self._on_quality_changed)
-        quality_dock.setWidget(self._quality_panel)
-        self.addDockWidget(Qt.RightDockWidgetArea, quality_dock)
+        self._quality_dock.setWidget(self._quality_panel)
+        self.addDockWidget(Qt.RightDockWidgetArea, self._quality_dock)
 
         # --- Toolbar ---
         self._setup_toolbar()
@@ -381,12 +381,26 @@ class MainWindow(QMainWindow):
         fullscreen_action.triggered.connect(self._toggle_fullscreen)
         toolbar.addAction(fullscreen_action)
 
+        bookmarks_action = QAction("Bookmarks", self)
+        bookmarks_action.setShortcut(QKeySequence("Ctrl+B"))
+        bookmarks_action.triggered.connect(self._toggle_bookmarks)
+        toolbar.addAction(bookmarks_action)
+
         health_action = QAction("Health Overlay", self)
         health_action.setShortcut(QKeySequence("F9"))
         health_action.triggered.connect(self._health_overlay.toggle)
         toolbar.addAction(health_action)
 
         toolbar.addSeparator()
+
+        # View menu for toggling panels
+        menu_bar = self.menuBar()
+        view_menu = menu_bar.addMenu("View")
+        view_menu.addAction(self._bookmark_dock.toggleViewAction())
+        view_menu.addAction(self._quality_dock.toggleViewAction())
+        view_menu.addSeparator()
+        view_menu.addAction(fullscreen_action)
+        view_menu.addAction(health_action)
 
         # Monitor selector
         toolbar.addWidget(QLabel(" Monitor: "))
@@ -603,6 +617,9 @@ class MainWindow(QMainWindow):
     def _do_disconnect(self):
         self._protocol.disconnect()
         self._status_label.setText("Disconnected")
+
+    def _toggle_bookmarks(self):
+        self._bookmark_dock.setVisible(not self._bookmark_dock.isVisible())
 
     def _toggle_fullscreen(self):
         if self.isFullScreen():
