@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 sys.path.insert(0, ".")
 from client.viewer import RemoteViewer
 from client.protocol import ClientProtocol
+from client.audio_player import AudioPlayer
 from client.bookmarks import BookmarkManager
 from client.health_display import HealthOverlay, HealthStatusWidget, HealthData
 from client.quality_control import QualityControlPanel
