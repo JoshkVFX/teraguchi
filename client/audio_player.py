@@ -1,39 +1,29 @@
 """
 Audio player for Teragucci client.
 
-Receives OGG/Opus chunks from the server, decodes with PyAV,
-and plays PCM audio via Qt's QAudioSink.
+Receives raw PCM s16le audio from the server and plays via Qt QAudioSink.
 """
 
-import io
 import logging
-import threading
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 try:
     from PySide6.QtMultimedia import QAudioFormat, QAudioSink, QMediaDevices
-    from PySide6.QtCore import QBuffer, QIODevice, QByteArray
+    from PySide6.QtCore import QIODevice, QByteArray
     QT_AUDIO_AVAILABLE = True
 except ImportError:
     QT_AUDIO_AVAILABLE = False
     logger.warning("PySide6.QtMultimedia not available — audio playback disabled")
 
-try:
-    import av
-    PYAV_AVAILABLE = True
-except ImportError:
-    PYAV_AVAILABLE = False
-    logger.warning("PyAV not available — audio decode disabled")
-
 
 class AudioPlayer:
     """
-    Decodes Opus audio from server and plays via Qt audio output.
+    Plays raw PCM s16le audio from the Teragucci server.
 
-    The server sends raw OGG/Opus bytestream chunks. We accumulate them
-    in a ring buffer and decode with PyAV, then write PCM to QAudioSink.
+    The server captures system audio via PulseAudio and sends raw
+    PCM (signed 16-bit little-endian, 48kHz, stereo) chunks.
     """
 
     def __init__(self, sample_rate: int = 48000, channels: int = 2):
@@ -41,20 +31,17 @@ class AudioPlayer:
         self.channels = channels
         self._sink: Optional[QAudioSink] = None
         self._io_device: Optional[QIODevice] = None
-        self._decoder_thread: Optional[threading.Thread] = None
-        self._running = False
-        self._ogg_buffer = io.BytesIO()
-        self._lock = threading.Lock()
         self._started = False
+        self._frame_count = 0
 
     @property
     def available(self) -> bool:
-        return QT_AUDIO_AVAILABLE and PYAV_AVAILABLE
+        return QT_AUDIO_AVAILABLE
 
     def start(self):
         """Initialize Qt audio output."""
-        if not self.available:
-            logger.warning("Audio player not available")
+        if not QT_AUDIO_AVAILABLE:
+            logger.warning("Audio player not available (no Qt Multimedia)")
             return
 
         fmt = QAudioFormat()
@@ -63,48 +50,32 @@ class AudioPlayer:
         fmt.setSampleFormat(QAudioFormat.SampleFormat.Int16)
 
         device = QMediaDevices.defaultAudioOutput()
-        if not device.isNull():
-            logger.info("Audio output device: %s", device.description())
-        else:
+        if device.isNull():
             logger.warning("No audio output device found")
             return
+
+        logger.info("Audio output device: %s", device.description())
 
         self._sink = QAudioSink(device, fmt)
         self._sink.setBufferSize(self.sample_rate * self.channels * 2)  # 1s buffer
         self._io_device = self._sink.start()
         self._started = True
-        logger.info("Audio player started (%dHz, %dch)", self.sample_rate, self.channels)
+        logger.info("Audio player started (%dHz, %dch, s16le)", self.sample_rate, self.channels)
 
     def feed(self, codec: int, timestamp_ms: int, data: bytes):
         """
-        Feed an audio chunk from the server.
+        Feed a raw PCM audio chunk from the server.
 
-        The server sends OGG/Opus container chunks. We decode them
-        with PyAV and write raw PCM to the audio output.
+        Data is s16le, 48kHz, stereo — written directly to QAudioSink.
         """
         if not self._started or not self._io_device:
             return
 
-        try:
-            # Decode OGG/Opus chunk with PyAV
-            container = av.open(io.BytesIO(data), format='ogg')
-            for frame in container.decode(audio=0):
-                # Resample to s16 interleaved
-                resampler = av.AudioResampler(
-                    format='s16',
-                    layout='stereo' if self.channels == 2 else 'mono',
-                    rate=self.sample_rate,
-                )
-                resampled = resampler.resample(frame)
-                for out_frame in resampled:
-                    pcm = bytes(out_frame.planes[0])
-                    self._io_device.write(QByteArray(pcm))
-            container.close()
-        except av.error.InvalidDataError:
-            pass  # Incomplete OGG page, will work with next chunk
-        except Exception as e:
-            if self._started:
-                logger.debug("Audio decode error: %s", e)
+        self._frame_count += 1
+        if self._frame_count <= 3:
+            logger.info("Audio frame %d: %d bytes", self._frame_count, len(data))
+
+        self._io_device.write(QByteArray(data))
 
     def stop(self):
         """Stop audio playback."""
