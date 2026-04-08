@@ -576,7 +576,7 @@ class MainWindow(QMainWindow):
         self._protocol.send_quality_settings(settings)
         # Toggle local audio playback
         if hasattr(self, '_audio_player') and self._audio_player:
-            if settings.get("enable_audio", True):
+            if getattr(settings, "enable_audio", True):
                 if not self._audio_player._started:
                     self._audio_player.start()
             else:
@@ -622,7 +622,7 @@ class MainWindow(QMainWindow):
 
         self._do_connect(use_tls=profile.use_tls, auto_reconnect=profile.auto_connect)
 
-    def _do_connect(self, use_tls=False, auto_reconnect=True):
+    def _do_connect(self, use_tls=True, auto_reconnect=True):
         if not self._host:
             self._show_connect_dialog()
             return
