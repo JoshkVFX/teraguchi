@@ -114,7 +114,7 @@ def _setup_abs(fd, code, minimum, maximum, fuzz=0, flat=0, resolution=0):
     """Set up an absolute axis using UI_ABS_SETUP ioctl."""
     data = struct.pack(UINPUT_ABS_SETUP_FORMAT,
                        code, 0,  # code + padding
-                       minimum, maximum, fuzz, flat, resolution, 0)
+                       0, minimum, maximum, fuzz, flat, resolution)
     fcntl.ioctl(fd, UI_ABS_SETUP, data)
 
 
