@@ -28,7 +28,7 @@ except ImportError:
 class PAMAuthenticator:
     """Authenticate users via Linux PAM."""
 
-    def __init__(self, service: str = "login"):
+    def __init__(self, service: str = "teragucci"):
         self.service = service
         self._pam = pam_module.pam() if PAM_AVAILABLE else None
 
