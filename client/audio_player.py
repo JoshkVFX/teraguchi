@@ -2,9 +2,11 @@
 Audio player for Teragucci client.
 
 Receives raw PCM s16le audio from the server and plays via Qt QAudioSink.
+Keeps latency low by using a small buffer and dropping old data if behind.
 """
 
 import logging
+import time
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -22,9 +24,14 @@ class AudioPlayer:
     """
     Plays raw PCM s16le audio from the Teragucci server.
 
-    The server captures system audio via PulseAudio and sends raw
-    PCM (signed 16-bit little-endian, 48kHz, stereo) chunks.
+    Keeps latency low (~100ms) by using a small Qt audio buffer
+    and skipping frames if the buffer gets too full.
     """
+
+    # Target latency in milliseconds
+    TARGET_LATENCY_MS = 100
+    # Max buffered audio before we skip frames (ms)
+    MAX_BUFFER_MS = 200
 
     def __init__(self, sample_rate: int = 48000, channels: int = 2):
         self.sample_rate = sample_rate
@@ -33,6 +40,8 @@ class AudioPlayer:
         self._io_device: Optional[QIODevice] = None
         self._started = False
         self._frame_count = 0
+        # Bytes per millisecond of audio
+        self._bytes_per_ms = sample_rate * channels * 2 // 1000
 
     @property
     def available(self) -> bool:
@@ -57,23 +66,35 @@ class AudioPlayer:
         logger.info("Audio output device: %s", device.description())
 
         self._sink = QAudioSink(device, fmt)
-        self._sink.setBufferSize(self.sample_rate * self.channels * 2)  # 1s buffer
+        # Small buffer for low latency
+        buf_bytes = self._bytes_per_ms * self.TARGET_LATENCY_MS
+        self._sink.setBufferSize(buf_bytes)
         self._io_device = self._sink.start()
         self._started = True
-        logger.info("Audio player started (%dHz, %dch, s16le)", self.sample_rate, self.channels)
+        actual_buf = self._sink.bufferSize()
+        logger.info("Audio player started (%dHz, %dch, buffer=%d bytes / %dms)",
+                     self.sample_rate, self.channels, actual_buf,
+                     actual_buf // self._bytes_per_ms)
 
     def feed(self, codec: int, timestamp_ms: int, data: bytes):
-        """
-        Feed a raw PCM audio chunk from the server.
-
-        Data is s16le, 48kHz, stereo — written directly to QAudioSink.
-        """
+        """Feed a raw PCM audio chunk from the server."""
         if not self._started or not self._io_device:
             return
 
         self._frame_count += 1
-        if self._frame_count <= 3:
-            logger.info("Audio frame %d: %d bytes", self._frame_count, len(data))
+
+        # Check how much is already buffered
+        if self._sink:
+            buf_size = self._sink.bufferSize()
+            free = self._sink.bytesFree()
+            buffered = buf_size - free
+            buffered_ms = buffered // self._bytes_per_ms
+
+            # If too far behind, skip this frame to catch up
+            if buffered_ms > self.MAX_BUFFER_MS:
+                if self._frame_count % 100 == 0:
+                    logger.debug("Audio buffer full (%dms), skipping", buffered_ms)
+                return
 
         self._io_device.write(QByteArray(data))
 
