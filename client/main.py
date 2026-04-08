@@ -227,9 +227,25 @@ class BookmarkPanel(QWidget):
         profile = self._mgr.get(bid)
         if not profile:
             return
-        name, ok = QInputDialog.getText(self, "Edit Name", "Bookmark name:", text=profile.name)
-        if ok and name:
-            self._mgr.update(bid, name=name)
+        dialog = ConnectionDialog(self)
+        dialog.setWindowTitle(f"Edit Bookmark: {profile.name}")
+        dialog.save_bookmark_check.setChecked(True)
+        dialog.save_bookmark_check.setEnabled(False)
+        dialog.bookmark_name_input.setText(profile.name)
+        dialog.host_input.setText(profile.host)
+        dialog.port_input.setValue(profile.port)
+        dialog.username_input.setText(profile.username)
+        dialog.password_input.setText(self._mgr.get_password(bid))
+        if hasattr(dialog, 'tls_check'):
+            dialog.tls_check.setChecked(profile.use_tls)
+        if dialog.exec() == QDialog.Accepted:
+            self._mgr.update(bid,
+                             name=dialog.bookmark_name or profile.name,
+                             host=dialog.host,
+                             port=dialog.port,
+                             username=dialog.username,
+                             password=dialog.password,
+                             use_tls=dialog.use_tls)
             self._refresh()
 
     def _delete_bookmark(self, bid):
