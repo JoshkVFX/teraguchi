@@ -51,6 +51,7 @@ from common.messages import (
 from common.keymap import qt_key_to_linux_scancode
 from server.screen_capture import ScreenCapture
 from server.input_injector import InputInjector
+from server.xtest_injector import XTestInputInjector
 from server.video_encoder import VideoEncoder, JpegFallbackEncoder, check_ffmpeg_available, detect_encoders
 from server.audio_capture import AudioCapture, check_audio_available
 from server.health import HealthMonitor
@@ -98,8 +99,19 @@ class SessionRuntime:
         try:
             self.capture = ScreenCapture(monitor_index=monitor_index,
                                          jpeg_quality=jpeg_quality)
-            self.injector = InputInjector(screen_width=self.capture.width,
-                                          screen_height=self.capture.height)
+            # Use XTest for virtual displays (Xvfb), uinput for physical
+            if display.startswith(":") and int(display[1:]) >= 10:
+                try:
+                    self.injector = XTestInputInjector(display,
+                                                       screen_width=self.capture.width,
+                                                       screen_height=self.capture.height)
+                except Exception as xinj_err:
+                    logger.warning("XTest unavailable: %s, using uinput", xinj_err)
+                    self.injector = InputInjector(screen_width=self.capture.width,
+                                                   screen_height=self.capture.height)
+            else:
+                self.injector = InputInjector(screen_width=self.capture.width,
+                                              screen_height=self.capture.height)
         finally:
             if old_display:
                 os.environ["DISPLAY"] = old_display
@@ -351,9 +363,13 @@ class SessionRuntime:
 
     def _restart_encoder(self):
         if self.encoder:
+            old_available = self.encoder._available
             self.encoder.stop()
+        else:
+            old_available = None
         self.encoder = VideoEncoder(self.capture.width, self.capture.height,
-                                     self.quality)
+                                     self.quality,
+                                     available_encoders=old_available)
         self.encoder.start(self._on_encoded_frame)
         self.health.current_resolution = f"{self.capture.width}x{self.capture.height}"
 
@@ -364,12 +380,16 @@ class SessionRuntime:
         t0 = time.time()
 
         if msg_type == MsgType.KEY_EVENT:
-            qt_key = msg.get("scan_code", 0)
-            linux_code = qt_key_to_linux_scancode(qt_key)
-            if linux_code == 0:
-                return
-            msg["scan_code"] = linux_code
-            self.injector.handle_message(msg)
+            if isinstance(self.injector, XTestInputInjector):
+                # XTest uses Qt key codes directly
+                self.injector.handle_message(msg)
+            else:
+                qt_key = msg.get("scan_code", 0)
+                linux_code = qt_key_to_linux_scancode(qt_key)
+                if linux_code == 0:
+                    return
+                msg["scan_code"] = linux_code
+                self.injector.handle_message(msg)
 
         elif msg_type in (MsgType.MOUSE_MOVE, MsgType.MOUSE_BUTTON,
                           MsgType.MOUSE_SCROLL, MsgType.PEN_EVENT):
