@@ -278,6 +278,11 @@ class MainWindow(QMainWindow):
 
         self._setup_protocol_bridge()
 
+        # Audio player
+        self._audio_player = AudioPlayer()
+        if self._audio_player.available:
+            self._audio_player.start()
+
         # --- Central Layout ---
         central = QWidget()
         self.setCentralWidget(central)
@@ -401,6 +406,7 @@ class MainWindow(QMainWindow):
         self._bridge.health_stats.connect(self._on_health_stats)
         self._bridge.monitor_list.connect(self._on_monitor_list)
         self._bridge.clipboard_recv.connect(self._on_clipboard_recv)
+        self._bridge.audio_frame.connect(self._on_audio_frame)
 
     def _connect_viewer_signals(self):
         self._viewer.mouse_moved.connect(self._send_mouse_move)
@@ -508,6 +514,10 @@ class MainWindow(QMainWindow):
             label = f"{mon.get('name', 'Monitor')} ({mon['width']}x{mon['height']})"
             self._monitor_combo.addItem(label, mon.get("id", 0))
         self._monitor_combo.blockSignals(False)
+
+    def _on_audio_frame(self, codec: int, timestamp_ms: int, data: bytes):
+        if self._audio_player and self._audio_player.available:
+            self._audio_player.feed(codec, timestamp_ms, data)
 
     def _on_clipboard_recv(self, text):
         clipboard = QApplication.clipboard()
