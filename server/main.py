@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
 """
-Teragucci Server - Linux Remote Desktop Server v3
+Teragucci Server - Linux Remote Desktop Server v4
 
-Full-featured remote desktop server with:
-- H.264/H.265/AV1 video encoding with GPU acceleration (NVENC/VAAPI/AMF)
+PCoIP / HP Anyware-like remote desktop with:
+- PAM authentication (Linux system users, LDAP, FreeIPA)
+- Per-user X sessions via Xvfb (sessions persist across disconnections)
+- H.264/H.265/AV1 video encoding with GPU acceleration
 - YUV 4:4:4 chroma support
-- JPEG fallback for low-resource environments
+- Wacom pen/tablet pressure injection via uinput
 - Audio streaming via PulseAudio/PipeWire
-- Pen/tablet pressure input injection via uinput
-- Connection health monitoring
-- TLS support
-- Authentication
-- Clipboard sync
-- Multi-monitor support with hotplug detection
+- Multi-monitor support
 - Adaptive quality control
-- QUIC transport (in addition to TCP+UDP)
+- Hybrid TCP+UDP+QUIC transport
+
+Auth modes:
+  --auth-mode pam    Authenticate via PAM (PCoIP-like, per-user sessions)
+  --auth-mode local  Legacy JSON user database, single shared display
+  --auth-mode none   No authentication, single shared display
 
 Usage:
-    python -m server.main [options]
-    python -m server.main --add-user USERNAME  # Add/update a user
+    sudo python -m server.main --auth-mode pam
+    python -m server.main --auth-mode none --verbose
 """
 
 import asyncio
@@ -30,9 +32,10 @@ import pathlib
 import signal
 import ssl
 import sys
+import threading
 import time
 from dataclasses import asdict
-from typing import Set, Optional
+from typing import Set, Optional, Dict
 
 import websockets
 from websockets.server import WebSocketServerProtocol
@@ -60,20 +63,387 @@ from common.quic_transport import QUICTransportServer, quic_available
 logger = logging.getLogger("teragucci.server")
 
 
+# ═══════════════════════════════════════════════════════════════
+# Per-User Session Runtime
+# ═══════════════════════════════════════════════════════════════
+
+class SessionRuntime:
+    """
+    Runtime state for one user's remote desktop session.
+
+    In PAM mode, each authenticated user gets their own SessionRuntime
+    with an isolated Xvfb display, capture pipeline, input injection,
+    and video encoder. Multiple clients can share a session (reconnection).
+
+    In legacy mode (local/none auth), there is one global SessionRuntime
+    attached to the host's DISPLAY.
+    """
+
+    def __init__(self, display: str, username: str, quality: QualitySettings,
+                 ffmpeg_caps: dict, available_encoders: dict,
+                 no_audio: bool = False, no_clipboard: bool = False,
+                 sw_only: bool = False, monitor_index: int = 1,
+                 jpeg_quality: int = 60):
+        self.display = display
+        self.username = username
+        self.quality = quality
+        self.clients: Dict[WebSocketServerProtocol, "ClientSession"] = {}
+        self._lock = threading.Lock()
+        self._event_loop: Optional[asyncio.AbstractEventLoop] = None
+
+        # Set DISPLAY for this session's subsystems
+        old_display = os.environ.get("DISPLAY", "")
+        os.environ["DISPLAY"] = display
+
+        try:
+            self.capture = ScreenCapture(monitor_index=monitor_index,
+                                         jpeg_quality=jpeg_quality)
+            self.injector = InputInjector(screen_width=self.capture.width,
+                                          screen_height=self.capture.height)
+        finally:
+            if old_display:
+                os.environ["DISPLAY"] = old_display
+            else:
+                os.environ.pop("DISPLAY", None)
+
+        # Video encoder
+        self.encoder: Optional[VideoEncoder] = None
+        self.jpeg_encoder: Optional[JpegFallbackEncoder] = None
+        self.use_h264 = False
+        self.ffmpeg_caps = ffmpeg_caps
+        self.available_encoders = available_encoders
+
+        codec = quality.codec
+        if codec in ("h264", "h265", "av1") and ffmpeg_caps.get(codec, False):
+            self.use_h264 = True
+            enc_list = available_encoders
+            if sw_only:
+                enc_list = {}
+                for c, encs in available_encoders.items():
+                    enc_list[c] = [e for e in encs if e.backend == "software"]
+            self.encoder = VideoEncoder(self.capture.width, self.capture.height,
+                                        quality, available_encoders=enc_list)
+            self.encoder.start(self._on_encoded_frame)
+            logger.info("[%s] Encoder: %s (%s) %s", username, codec.upper(),
+                        self.encoder.active_backend, quality.chroma.upper())
+        else:
+            self.jpeg_encoder = JpegFallbackEncoder(quality=jpeg_quality)
+            logger.info("[%s] Using JPEG fallback encoder", username)
+
+        # Health monitor
+        self.health = HealthMonitor(target_fps=quality.effective_fps())
+        self.health.current_codec = quality.codec
+        self.health.current_chroma = quality.chroma
+        self.health.current_resolution = f"{self.capture.width}x{self.capture.height}"
+
+        # Audio
+        self.audio: Optional[AudioCapture] = None
+        if not no_audio and check_audio_available():
+            self.audio = AudioCapture(bitrate_kbps=quality.audio_bitrate_kbps)
+
+        # Clipboard
+        self.clipboard: Optional[ClipboardSync] = None
+        if not no_clipboard:
+            old_display2 = os.environ.get("DISPLAY", "")
+            os.environ["DISPLAY"] = display
+            try:
+                self.clipboard = ClipboardSync()
+            finally:
+                if old_display2:
+                    os.environ["DISPLAY"] = old_display2
+                else:
+                    os.environ.pop("DISPLAY", None)
+
+        # Streaming state
+        self._streaming = False
+        self._stream_task: Optional[asyncio.Task] = None
+        self._health_task: Optional[asyncio.Task] = None
+        self._hotplug_task: Optional[asyncio.Task] = None
+        self._running = True
+
+        logger.info("[%s] Session runtime ready on %s (%dx%d)",
+                    username, display, self.capture.width, self.capture.height)
+
+    def set_event_loop(self, loop: asyncio.AbstractEventLoop):
+        self._event_loop = loop
+
+    # ── Client management ────────────────────────────────────
+
+    def add_client(self, ws: WebSocketServerProtocol, session: "ClientSession"):
+        with self._lock:
+            self.clients[ws] = session
+            self.health.clients_connected = len(self.clients)
+        if not self._streaming:
+            self._start_streaming()
+
+    def remove_client(self, ws: WebSocketServerProtocol):
+        with self._lock:
+            self.clients.pop(ws, None)
+            self.health.clients_connected = len(self.clients)
+        # Session persists — don't stop streaming
+        # (PCoIP behavior: session stays alive for reconnection)
+
+    @property
+    def client_count(self) -> int:
+        return len(self.clients)
+
+    # ── Streaming ────────────────────────────────────────────
+
+    def _start_streaming(self):
+        if self._streaming:
+            return
+        self._streaming = True
+        fps = self.quality.effective_fps()
+
+        if self.use_h264 and self.encoder:
+            self._stream_task = asyncio.ensure_future(self._stream_h264(fps))
+        else:
+            self._stream_task = asyncio.ensure_future(self._stream_jpeg(fps))
+
+        self._health_task = asyncio.ensure_future(self._health_ping_loop())
+        self._hotplug_task = asyncio.ensure_future(self._monitor_hotplug_loop())
+
+        if self.audio and self.audio.available and self.quality.enable_audio:
+            self.audio.start(self._on_audio_frame)
+
+        if self.clipboard and self.clipboard.available:
+            self.clipboard.start_monitoring(self._on_clipboard_change)
+
+        logger.info("[%s] Streaming started (%d fps)", self.username, fps)
+
+    async def _stream_h264(self, fps: int):
+        interval = 1.0 / fps
+        while self._running:
+            start = time.time()
+            if self.clients and self.encoder:
+                try:
+                    t0 = time.time()
+                    raw = self.capture.capture_raw_bgra()
+                    self.health.record_capture_time((time.time() - t0) * 1000)
+                    self.encoder.feed_frame(raw)
+                except Exception as e:
+                    logger.error("[%s] H264 capture error: %s", self.username, e)
+            elapsed = time.time() - start
+            await asyncio.sleep(max(interval - elapsed, 0.001))
+
+    async def _stream_jpeg(self, fps: int):
+        interval = 1.0 / fps
+        while self._running:
+            start = time.time()
+            if self.clients:
+                try:
+                    t0 = time.time()
+                    regions = self.capture.capture_dirty_regions()
+                    self.health.record_capture_time((time.time() - t0) * 1000)
+                    for x, y, w, h, jpeg_data in regions:
+                        ft = (FrameType.VIDEO_FULL
+                              if (x == 0 and y == 0 and
+                                  w == self.capture.width and h == self.capture.height)
+                              else FrameType.VIDEO_PARTIAL)
+                        header = encode_jpeg_header(ft, x, y, w, h)
+                        data = header + jpeg_data
+                        self.health.record_frame_sent(len(data))
+                        for ws, cs in list(self.clients.items()):
+                            if cs.authenticated:
+                                if not await cs.enqueue(data):
+                                    self.health.record_frame_dropped()
+                except Exception as e:
+                    logger.error("[%s] JPEG capture error: %s", self.username, e)
+            elapsed = time.time() - start
+            await asyncio.sleep(max(interval - elapsed, 0.001))
+
+    async def _health_ping_loop(self):
+        while self._running:
+            await asyncio.sleep(2.0)
+            if not self.clients:
+                continue
+            seq = self.health.next_ping_sequence()
+            ping_json = HealthPing(sequence=seq).to_json()
+            stats_json = self.health.get_stats().to_json()
+            for ws, cs in list(self.clients.items()):
+                if cs.authenticated:
+                    try:
+                        await cs.enqueue(ping_json)
+                        await cs.enqueue(stats_json)
+                    except Exception:
+                        pass
+
+    async def _monitor_hotplug_loop(self):
+        while self._running:
+            await asyncio.sleep(5.0)
+            if self.capture and self.capture.detect_hotplug():
+                monitors = [asdict(m) for m in self.capture.list_monitors()]
+                msg_json = MonitorListMsg(monitors=monitors).to_json()
+                for ws, cs in list(self.clients.items()):
+                    if cs.authenticated:
+                        try:
+                            await cs.enqueue(msg_json)
+                        except Exception:
+                            pass
+                if self.encoder:
+                    self._restart_encoder()
+
+    # ── Encoder callbacks ────────────────────────────────────
+
+    def _on_encoded_frame(self, frame_data: bytes, is_keyframe: bool):
+        timestamp = int(time.time() * 1000) & 0xFFFFFFFF
+        codec_name = self.quality.codec.lower()
+        if codec_name == "av1":
+            codec, frame_type = VideoCodec.AV1, FrameType.VIDEO_AV1
+        elif codec_name == "h265":
+            codec, frame_type = VideoCodec.H265, FrameType.VIDEO_H265
+        else:
+            codec, frame_type = VideoCodec.H264, FrameType.VIDEO_H264
+
+        chroma = self.quality.effective_chroma()
+        flags = VideoFrameFlags.KEYFRAME if is_keyframe else VideoFrameFlags.NONE
+        header = encode_video_header(frame_type, codec, chroma, flags, timestamp)
+        tcp_data = header + frame_data
+
+        for ws, cs in list(self.clients.items()):
+            if cs.authenticated and self._event_loop:
+                asyncio.run_coroutine_threadsafe(
+                    self._enqueue_frame(cs, tcp_data), self._event_loop)
+
+        self.health.record_frame_sent(len(frame_data))
+
+    async def _enqueue_frame(self, cs: "ClientSession", data: bytes):
+        if not await cs.enqueue(data):
+            self.health.record_frame_dropped()
+
+    def _on_audio_frame(self, audio_data: bytes, timestamp_ms: int):
+        ts = timestamp_ms & 0xFFFFFFFF
+        header = encode_audio_header(AudioCodec.OPUS, ts)
+        data = header + audio_data
+        for ws, cs in list(self.clients.items()):
+            if cs.authenticated and cs.supports_audio and self._event_loop:
+                asyncio.run_coroutine_threadsafe(cs.enqueue(data), self._event_loop)
+
+    def _on_clipboard_change(self, text: str):
+        msg_json = ClipboardMsg(type=MsgType.CLIPBOARD_RECV, data=text).to_json()
+        for ws, cs in list(self.clients.items()):
+            if cs.authenticated and self._event_loop:
+                asyncio.run_coroutine_threadsafe(cs.enqueue(msg_json), self._event_loop)
+
+    # ── Quality / encoder management ─────────────────────────
+
+    def apply_quality(self, session: "ClientSession", msg: dict):
+        session.quality = QualitySettings(**{k: v for k, v in msg.items()
+                                             if k in QualitySettings.__dataclass_fields__})
+        self.quality = session.quality
+
+        if self.quality.codec in ("h264", "h265", "av1") and \
+           self.ffmpeg_caps.get(self.quality.codec, False):
+            if not self.use_h264:
+                self.use_h264 = True
+                self._restart_encoder()
+            elif self.encoder:
+                self.encoder.update_settings(self.quality)
+        else:
+            self.use_h264 = False
+
+        self.health.current_codec = self.quality.codec
+        self.health.current_chroma = self.quality.chroma
+        self.health.target_fps = self.quality.effective_fps()
+
+        if self.audio:
+            self.audio.update_bitrate(self.quality.audio_bitrate_kbps)
+
+    def _restart_encoder(self):
+        if self.encoder:
+            self.encoder.stop()
+        self.encoder = VideoEncoder(self.capture.width, self.capture.height,
+                                     self.quality)
+        self.encoder.start(self._on_encoded_frame)
+        self.health.current_resolution = f"{self.capture.width}x{self.capture.height}"
+
+    # ── Input handling ───────────────────────────────────────
+
+    def handle_input(self, session: "ClientSession", msg: dict):
+        msg_type = msg.get("type")
+        t0 = time.time()
+
+        if msg_type == MsgType.KEY_EVENT:
+            qt_key = msg.get("scan_code", 0)
+            linux_code = qt_key_to_linux_scancode(qt_key)
+            if linux_code == 0:
+                return
+            msg["scan_code"] = linux_code
+            self.injector.handle_message(msg)
+
+        elif msg_type in (MsgType.MOUSE_MOVE, MsgType.MOUSE_BUTTON,
+                          MsgType.MOUSE_SCROLL, MsgType.PEN_EVENT):
+            self.injector.handle_message(msg)
+
+        elif msg_type == MsgType.REQUEST_FULL_FRAME:
+            self.capture.invalidate()
+            if self.encoder:
+                self.encoder.request_keyframe()
+
+        elif msg_type == MsgType.QUALITY_SETTINGS:
+            self.apply_quality(session, msg)
+
+        elif msg_type == MsgType.SELECT_MONITOR:
+            self.capture.switch_monitor(msg.get("monitor_id", 1))
+            self._restart_encoder()
+
+        elif msg_type == MsgType.HEALTH_PONG:
+            self.health.record_pong(msg.get("sequence", 0),
+                                    msg.get("ping_timestamp_ms", 0))
+
+        elif msg_type == MsgType.CLIPBOARD_SEND:
+            if self.clipboard:
+                self.clipboard.set_clipboard(msg.get("data", ""))
+
+        elif msg_type == MsgType.CLIENT_HELLO:
+            session.supports_h264 = msg.get("supports_h264", True)
+            session.supports_h265 = msg.get("supports_h265", False)
+            session.supports_yuv444 = msg.get("supports_yuv444", True)
+            session.supports_audio = msg.get("supports_audio", True)
+
+        elapsed_ms = (time.time() - t0) * 1000
+        self.health.record_input_latency(elapsed_ms)
+
+    # ── Shutdown ─────────────────────────────────────────────
+
+    def stop(self):
+        self._running = False
+        for task in (self._stream_task, self._health_task, self._hotplug_task):
+            if task:
+                task.cancel()
+        if self.encoder:
+            self.encoder.stop()
+        if self.audio:
+            self.audio.stop()
+        if self.clipboard:
+            self.clipboard.stop()
+        if self.injector:
+            self.injector.close()
+        if self.capture:
+            self.capture.close()
+        logger.info("[%s] Session runtime stopped", self.username)
+
+
+# ═══════════════════════════════════════════════════════════════
+# Client Session (per WebSocket connection)
+# ═══════════════════════════════════════════════════════════════
+
 class ClientSession:
-    """Tracks per-client state."""
+    """Tracks per-client connection state."""
 
     def __init__(self, ws: WebSocketServerProtocol):
         self.ws = ws
         self.client_id = str(id(ws))
         self.authenticated = False
+        self.username = ""
         self.challenge = ""
         self.quality = QualitySettings()
-        self.monitor_id = 1  # Default to primary
+        self.monitor_id = 1
         self.supports_h264 = True
         self.supports_h265 = False
         self.supports_yuv444 = True
         self.supports_audio = True
+        self.runtime: Optional[SessionRuntime] = None
         self.send_queue: asyncio.Queue = asyncio.Queue(maxsize=30)
         self._send_task: Optional[asyncio.Task] = None
 
@@ -81,7 +451,6 @@ class ClientSession:
         self._send_task = asyncio.create_task(self._send_loop())
 
     async def _send_loop(self):
-        """Drain send queue to avoid blocking the capture loop."""
         try:
             while True:
                 data = await self.send_queue.get()
@@ -94,7 +463,6 @@ class ClientSession:
             logger.debug("Send error: %s", e)
 
     async def enqueue(self, data):
-        """Non-blocking enqueue; drops frames if queue is full."""
         try:
             self.send_queue.put_nowait(data)
             return True
@@ -106,26 +474,20 @@ class ClientSession:
             self.send_queue.put_nowait(None)
 
 
-# --- Global state ---
-clients: dict = {}  # ws -> ClientSession
-capture: ScreenCapture = None
-injector: InputInjector = None
-encoder: Optional[VideoEncoder] = None
-jpeg_encoder: Optional[JpegFallbackEncoder] = None
-audio: Optional[AudioCapture] = None
-health: HealthMonitor = None
+# ═══════════════════════════════════════════════════════════════
+# Server
+# ═══════════════════════════════════════════════════════════════
+
+# Global state
 auth: Authenticator = None
-clipboard: Optional[ClipboardSync] = None
-udp_server: Optional[UDPMediaServer] = None
-hybrid_transport: Optional[HybridServerTransport] = None
-bandwidth_estimator: Optional[BandwidthEstimator] = None
-quic_server: Optional[QUICTransportServer] = None
+session_mgr = None   # SessionManager (PAM mode only)
+runtimes: Dict[str, SessionRuntime] = {}   # username -> SessionRuntime
+default_runtime: Optional[SessionRuntime] = None  # Legacy mode
 quality_settings: QualitySettings = QualitySettings()
-running = True
-use_h264 = False
 ffmpeg_caps: dict = {}
 available_encoders: dict = {}
-event_loop: Optional[asyncio.AbstractEventLoop] = None
+running = True
+server_args = None  # Parsed CLI args
 
 
 async def handle_client(websocket: WebSocketServerProtocol):
@@ -133,48 +495,132 @@ async def handle_client(websocket: WebSocketServerProtocol):
     addr = websocket.remote_address
     session = ClientSession(websocket)
     logger.info("Client connected: %s", addr)
+    runtime = None
 
     try:
-        # Authentication
+        # ── Authentication ───────────────────────────────────
         if auth.enabled:
-            challenge = auth.create_challenge()
-            session.challenge = challenge
-            auth_req = AuthRequest(challenge=challenge)
-            await websocket.send(auth_req.to_json())
+            if auth.mode == "pam":
+                # PAM mode: request username + password directly
+                auth_req = AuthRequest(
+                    challenge="",
+                    auth_methods=["pam"],
+                )
+                # Add auth_mode to the JSON so client knows to send password
+                req_dict = json.loads(auth_req.to_json())
+                req_dict["auth_mode"] = "pam"
+                await websocket.send(json.dumps(req_dict))
 
-            # Wait for auth response
-            raw = await asyncio.wait_for(websocket.recv(), timeout=30)
-            msg = parse_message(raw)
-            if msg.get("type") != MsgType.AUTH_RESPONSE:
-                await websocket.send(AuthResult(success=False, message="Expected auth response").to_json())
-                return
+                raw = await asyncio.wait_for(websocket.recv(), timeout=30)
+                msg = parse_message(raw)
+                if msg.get("type") != MsgType.AUTH_RESPONSE:
+                    await websocket.send(
+                        AuthResult(success=False, message="Expected auth response").to_json())
+                    return
 
-            success = auth.verify(msg.get("username", ""), msg.get("credential", ""), challenge)
-            await websocket.send(AuthResult(success=success,
-                                           message="OK" if success else "Invalid credentials").to_json())
-            if not success:
-                return
-            session.authenticated = True
+                username = msg.get("username", "")
+                password = msg.get("credential", "")
+                success = auth.verify_pam(username, password)
+
+                await websocket.send(
+                    AuthResult(success=success,
+                               message="OK" if success else "Invalid credentials").to_json())
+                if not success:
+                    return
+
+                session.authenticated = True
+                session.username = username
+
+            else:
+                # Local mode: challenge-response
+                challenge = auth.create_challenge()
+                session.challenge = challenge
+                auth_req = AuthRequest(challenge=challenge)
+                req_dict = json.loads(auth_req.to_json())
+                req_dict["auth_mode"] = "local"
+                await websocket.send(json.dumps(req_dict))
+
+                raw = await asyncio.wait_for(websocket.recv(), timeout=30)
+                msg = parse_message(raw)
+                if msg.get("type") != MsgType.AUTH_RESPONSE:
+                    await websocket.send(
+                        AuthResult(success=False, message="Expected auth response").to_json())
+                    return
+
+                success = auth.verify(msg.get("username", ""),
+                                      msg.get("credential", ""), challenge)
+                await websocket.send(
+                    AuthResult(success=success,
+                               message="OK" if success else "Invalid credentials").to_json())
+                if not success:
+                    return
+
+                session.authenticated = True
+                session.username = msg.get("username", "unknown")
         else:
             session.authenticated = True
+            session.username = "anonymous"
 
-        # Send server hello
-        monitors = [asdict(m) for m in capture.list_monitors()]
+        # ── Get or create session runtime ────────────────────
+        if auth.mode == "pam" and session_mgr is not None:
+            # PAM mode: per-user X session
+            user_info = auth.get_user_info(session.username)
+            if not user_info:
+                await websocket.send(
+                    AuthResult(success=False,
+                               message=f"System user '{session.username}' not found").to_json())
+                return
 
-        # Determine active encoder backend
-        encoder_backend = ""
-        if encoder:
-            encoder_backend = encoder.active_backend
+            from server.session_manager import SessionManager
+            user_session = session_mgr.create_session(
+                session.username, user_info["uid"], user_info["gid"], user_info["home"],
+                width=server_args.width if hasattr(server_args, 'width') else 0,
+                height=server_args.height if hasattr(server_args, 'height') else 0)
+
+            # Get or create runtime for this user
+            if session.username not in runtimes:
+                runtime = SessionRuntime(
+                    display=user_session.display,
+                    username=session.username,
+                    quality=quality_settings,
+                    ffmpeg_caps=ffmpeg_caps,
+                    available_encoders=available_encoders,
+                    no_audio=server_args.no_audio,
+                    no_clipboard=server_args.no_clipboard,
+                    sw_only=server_args.sw_only,
+                    monitor_index=server_args.monitor,
+                    jpeg_quality=server_args.quality,
+                )
+                runtime.set_event_loop(asyncio.get_event_loop())
+                runtimes[session.username] = runtime
+            else:
+                runtime = runtimes[session.username]
+
+            logger.info("User %s → session %s", session.username, user_session.display)
+
+        else:
+            # Legacy mode: single shared runtime
+            runtime = default_runtime
+
+        if runtime is None:
+            logger.error("No runtime available")
+            return
+
+        session.runtime = runtime
+
+        # ── Send server hello ────────────────────────────────
+        monitors = [asdict(m) for m in runtime.capture.list_monitors()]
+        encoder_backend = runtime.encoder.active_backend if runtime.encoder else ""
 
         hello = ServerHelloMsg(
-            screen_width=capture.width,
-            screen_height=capture.height,
+            screen_width=runtime.capture.width,
+            screen_height=runtime.capture.height,
             monitors=monitors,
             supports_h264=ffmpeg_caps.get("h264", False),
             supports_h265=ffmpeg_caps.get("h265", False),
             supports_av1=ffmpeg_caps.get("av1", False),
             supports_yuv444=ffmpeg_caps.get("h264_444", False),
-            supports_audio=audio is not None and audio.available,
+            supports_audio=runtime.audio is not None and runtime.audio.available,
             supports_pen=True,
             requires_auth=auth.enabled,
             encoder_backend=encoder_backend,
@@ -182,25 +628,23 @@ async def handle_client(websocket: WebSocketServerProtocol):
         )
         await websocket.send(hello.to_json())
 
-        # Send monitor list
         mon_msg = MonitorListMsg(monitors=monitors)
         await websocket.send(mon_msg.to_json())
 
-        # Register client and start sender
-        clients[websocket] = session
+        # Register client
+        runtime.add_client(websocket, session)
         session.start_sender()
-        health.clients_connected = len(clients)
 
-        # Process incoming messages
+        # ── Process messages ─────────────────────────────────
         async for message in websocket:
             if isinstance(message, str):
                 try:
                     msg = parse_message(message)
-                    await _handle_control_message(session, msg)
+                    runtime.handle_input(session, msg)
                 except json.JSONDecodeError:
                     logger.warning("Invalid JSON from %s", addr)
                 except Exception as e:
-                    logger.error("Error handling message from %s: %s", addr, e)
+                    logger.error("Error from %s: %s", addr, e)
 
     except asyncio.TimeoutError:
         logger.warning("Client %s: auth timeout", addr)
@@ -210,360 +654,24 @@ async def handle_client(websocket: WebSocketServerProtocol):
         logger.error("Client error %s: %s", addr, e)
     finally:
         session.stop()
-        if hybrid_transport:
-            hybrid_transport.remove_client(session.client_id)
-        clients.pop(websocket, None)
-        health.clients_connected = len(clients)
-        logger.info("Client removed: %s (total: %d)", addr, len(clients))
+        if runtime:
+            runtime.remove_client(websocket)
+        logger.info("Client removed: %s (%s)", addr, session.username)
 
 
-async def _handle_control_message(session: ClientSession, msg: dict):
-    """Route control messages."""
-    msg_type = msg.get("type")
-    t0 = time.time()
+async def run_server(host: str, port: int, tls_context: Optional[ssl.SSLContext]):
+    """Start the WebSocket server."""
+    global running
 
-    # --- UDP transport negotiation ---
-    if msg_type in (TransportMsg.UDP_ANNOUNCE, TransportMsg.UDP_CONFIRMED,
-                    TransportMsg.UDP_STATS):
-        if hybrid_transport:
-            # Fill in the client's IP from the WebSocket connection
-            if msg_type == TransportMsg.UDP_ANNOUNCE:
-                ws_addr = session.ws.remote_address
-                if ws_addr:
-                    msg["udp_addr"] = ws_addr[0]
-            response = await hybrid_transport.handle_transport_message(
-                session.client_id, msg, session.ws.send)
-            if response:
-                await session.ws.send(json.dumps(response))
-
-            # Update bandwidth estimator from client stats
-            if msg_type == TransportMsg.UDP_STATS and bandwidth_estimator:
-                loss = msg.get("packet_loss_pct", 0.0)
-                bandwidth_estimator.report_loss_rate(loss)
-        return
-
-    # --- Input events ---
-    if msg_type == MsgType.KEY_EVENT:
-        qt_key = msg.get("scan_code", 0)
-        linux_code = qt_key_to_linux_scancode(qt_key)
-        if linux_code == 0:
-            return
-        msg["scan_code"] = linux_code
-        injector.handle_message(msg)
-
-    elif msg_type in (MsgType.MOUSE_MOVE, MsgType.MOUSE_BUTTON,
-                      MsgType.MOUSE_SCROLL, MsgType.PEN_EVENT):
-        injector.handle_message(msg)
-
-    elif msg_type == MsgType.REQUEST_FULL_FRAME:
-        capture.invalidate()
-        if encoder:
-            encoder.request_keyframe()
-
-    elif msg_type == MsgType.QUALITY_SETTINGS:
-        _apply_quality_settings(session, msg)
-
-    elif msg_type == MsgType.SELECT_MONITOR:
-        mon_id = msg.get("monitor_id", 1)
-        capture.switch_monitor(mon_id)
-        session.monitor_id = mon_id
-        # Restart encoder for new resolution
-        _restart_encoder()
-
-    elif msg_type == MsgType.HEALTH_PONG:
-        health.record_pong(msg.get("sequence", 0), msg.get("ping_timestamp_ms", 0))
-
-    elif msg_type == MsgType.CLIPBOARD_SEND:
-        if clipboard:
-            clipboard.set_clipboard(msg.get("data", ""))
-
-    elif msg_type == MsgType.CLIENT_HELLO:
-        session.supports_h264 = msg.get("supports_h264", True)
-        session.supports_h265 = msg.get("supports_h265", False)
-        session.supports_yuv444 = msg.get("supports_yuv444", True)
-        session.supports_audio = msg.get("supports_audio", True)
-
-    # Track input latency
-    elapsed_ms = (time.time() - t0) * 1000
-    health.record_input_latency(elapsed_ms)
-
-
-def _apply_quality_settings(session: ClientSession, msg: dict):
-    """Apply quality settings from client."""
-    global quality_settings, use_h264
-    session.quality = QualitySettings(**{k: v for k, v in msg.items()
-                                        if k in QualitySettings.__dataclass_fields__})
-    quality_settings = session.quality
-
-    if quality_settings.codec in ("h264", "h265", "av1") and ffmpeg_caps.get(quality_settings.codec, False):
-        if not use_h264:
-            use_h264 = True
-            _restart_encoder()
-        elif encoder:
-            encoder.update_settings(quality_settings)
-    else:
-        use_h264 = False
-
-    # Update health monitor display
-    health.current_codec = quality_settings.codec
-    health.current_chroma = quality_settings.chroma
-    health.target_fps = quality_settings.effective_fps()
-
-    if audio:
-        audio.update_bitrate(quality_settings.audio_bitrate_kbps)
-
-    logger.info("Quality updated: bias=%.2f codec=%s chroma=%s fps=%d",
-                quality_settings.quality_bias, quality_settings.codec,
-                quality_settings.chroma, quality_settings.effective_fps())
-
-
-def _restart_encoder():
-    """Restart the video encoder for new settings/resolution."""
-    global encoder
-    if encoder:
-        encoder.stop()
-    encoder = VideoEncoder(capture.width, capture.height, quality_settings)
-    encoder.start(_on_encoded_frame)
-    health.current_resolution = f"{capture.width}x{capture.height}"
-
-
-def _on_encoded_frame(frame_data: bytes, is_keyframe: bool):
-    """Callback from encoder thread when a frame is ready."""
-    timestamp = int(time.time() * 1000) & 0xFFFFFFFF
-
-    # Send via QUIC to clients using QUIC transport
-    if quic_server and quic_server.is_running and quic_server.client_count > 0:
-        quic_server.send_video_to_all(frame_data, timestamp, is_keyframe)
-
-    # Send via UDP to clients that support it
-    if udp_server and hybrid_transport:
-        has_udp_clients = any(
-            hybrid_transport.should_use_udp(session.client_id)
-            for session in clients.values()
-            if session.authenticated
-        )
-        if has_udp_clients:
-            udp_server.send_video_frame(frame_data, timestamp, is_keyframe)
-
-    # Determine frame type and codec for TCP header
-    codec_name = quality_settings.codec.lower()
-    if codec_name == "av1":
-        codec = VideoCodec.AV1
-        frame_type = FrameType.VIDEO_AV1
-    elif codec_name == "h265":
-        codec = VideoCodec.H265
-        frame_type = FrameType.VIDEO_H265
-    else:
-        codec = VideoCodec.H264
-        frame_type = FrameType.VIDEO_H264
-
-    chroma = quality_settings.effective_chroma()
-    flags = VideoFrameFlags.KEYFRAME if is_keyframe else VideoFrameFlags.NONE
-
-    header = encode_video_header(frame_type, codec, chroma, flags, timestamp)
-    tcp_data = header + frame_data
-
-    for ws, session in list(clients.items()):
-        if session.authenticated:
-            # Skip TCP send for clients already getting UDP or QUIC
-            if hybrid_transport and hybrid_transport.should_use_udp(session.client_id):
-                continue
-            if event_loop:
-                asyncio.run_coroutine_threadsafe(_enqueue_frame(session, tcp_data), event_loop)
-
-    health.record_frame_sent(len(frame_data))
-
-
-async def _enqueue_frame(session: ClientSession, data: bytes):
-    """Enqueue a frame for a client, tracking drops."""
-    if not await session.enqueue(data):
-        health.record_frame_dropped()
-
-
-def _on_audio_frame(audio_data: bytes, timestamp_ms: int):
-    """Callback from audio capture thread."""
-    ts = timestamp_ms & 0xFFFFFFFF
-
-    # Send via QUIC
-    if quic_server and quic_server.is_running and quic_server.client_count > 0:
-        quic_server.send_audio_to_all(audio_data, ts)
-
-    # Send via UDP where available
-    if udp_server and hybrid_transport:
-        has_udp_audio = any(
-            hybrid_transport.should_use_udp(s.client_id) and s.supports_audio
-            for s in clients.values() if s.authenticated
-        )
-        if has_udp_audio:
-            udp_server.send_audio_frame(audio_data, ts)
-
-    # TCP fallback for non-UDP clients
-    header = encode_audio_header(AudioCodec.OPUS, ts)
-    data = header + audio_data
-
-    for ws, session in list(clients.items()):
-        if session.authenticated and session.supports_audio:
-            if hybrid_transport and hybrid_transport.should_use_udp(session.client_id):
-                continue
-            if event_loop:
-                asyncio.run_coroutine_threadsafe(session.enqueue(data), event_loop)
-
-
-def _on_clipboard_change(text: str):
-    """Callback from clipboard monitor when content changes."""
-    msg = ClipboardMsg(type=MsgType.CLIPBOARD_RECV, data=text)
-    json_str = msg.to_json()
-
-    loop = asyncio.get_event_loop() if asyncio.get_event_loop().is_running() else None
-    for ws, session in list(clients.items()):
-        if session.authenticated and loop:
-            asyncio.run_coroutine_threadsafe(session.enqueue(json_str), loop)
-
-
-async def stream_frames_jpeg(fps: int):
-    """JPEG fallback: capture and stream dirty regions."""
-    frame_interval = 1.0 / fps
-    while running:
-        start = time.time()
-        if clients:
-            try:
-                capture_start = time.time()
-                regions = capture.capture_dirty_regions()
-                health.record_capture_time((time.time() - capture_start) * 1000)
-
-                for x, y, w, h, jpeg_data in regions:
-                    ft = FrameType.VIDEO_FULL if (x == 0 and y == 0 and
-                         w == capture.width and h == capture.height) else FrameType.VIDEO_PARTIAL
-                    header = encode_jpeg_header(ft, x, y, w, h)
-                    data = header + jpeg_data
-                    health.record_frame_sent(len(data))
-
-                    for ws, session in list(clients.items()):
-                        if session.authenticated:
-                            if not await session.enqueue(data):
-                                health.record_frame_dropped()
-            except Exception as e:
-                logger.error("JPEG frame capture error: %s", e)
-
-        elapsed = time.time() - start
-        sleep_time = frame_interval - elapsed
-        if sleep_time > 0:
-            await asyncio.sleep(sleep_time)
-        else:
-            await asyncio.sleep(0.001)
-
-
-async def stream_frames_h264(fps: int):
-    """H.264/H.265 mode: feed raw frames to FFmpeg encoder."""
-    frame_interval = 1.0 / fps
-    while running:
-        start = time.time()
-        if clients and encoder:
-            try:
-                capture_start = time.time()
-                raw = capture.capture_raw_bgra()
-                health.record_capture_time((time.time() - capture_start) * 1000)
-                encoder.feed_frame(raw)
-            except Exception as e:
-                logger.error("H264 frame capture error: %s", e)
-
-        elapsed = time.time() - start
-        sleep_time = frame_interval - elapsed
-        if sleep_time > 0:
-            await asyncio.sleep(sleep_time)
-        else:
-            await asyncio.sleep(0.001)
-
-
-async def health_ping_loop():
-    """Periodically ping clients and broadcast health stats."""
-    while running:
-        await asyncio.sleep(2.0)
-        if not clients:
-            continue
-
-        # Send pings
-        seq = health.next_ping_sequence()
-        ping = HealthPing(sequence=seq)
-        ping_json = ping.to_json()
-
-        # Send stats
-        stats = health.get_stats()
-        stats_json = stats.to_json()
-
-        for ws, session in list(clients.items()):
-            if session.authenticated:
-                try:
-                    await session.enqueue(ping_json)
-                    await session.enqueue(stats_json)
-                except Exception:
-                    pass
-
-
-async def monitor_hotplug_loop():
-    """Periodically check for monitor configuration changes."""
-    while running:
-        await asyncio.sleep(5.0)
-        if capture and capture.detect_hotplug():
-            # Notify all clients of new monitor list
-            monitors = [asdict(m) for m in capture.list_monitors()]
-            msg = MonitorListMsg(monitors=monitors)
-            msg_json = msg.to_json()
-            for ws, session in list(clients.items()):
-                if session.authenticated:
-                    try:
-                        await session.enqueue(msg_json)
-                    except Exception:
-                        pass
-            # Restart encoder for potentially new resolution
-            if encoder:
-                _restart_encoder()
-
-
-async def run_server(host: str, port: int, fps: int, tls_context: Optional[ssl.SSLContext],
-                     udp_port: int = 0, quic_port: int = 0,
-                     tls_cert: str = None, tls_key: str = None):
-    """Start the WebSocket server and all subsystems."""
-    global running, event_loop
-
-    event_loop = asyncio.get_event_loop()
-    logger.info("Starting Teragucci server on %s:%d (target %d fps)", host, port, fps)
+    logger.info("Starting Teragucci server on %s:%d", host, port)
     if tls_context:
         logger.info("TLS enabled")
-
-    # Start UDP media server
-    if udp_server:
-        try:
-            udp_server.start()
-            logger.info("UDP media transport on %s:%d", host, udp_port or port)
-        except Exception as e:
-            logger.warning("UDP server failed to start: %s (TCP-only mode)", e)
-
-    # Start QUIC transport
-    if quic_server:
-        try:
-            started = await quic_server.start(cert_file=tls_cert, key_file=tls_key)
-            if started:
-                logger.info("QUIC transport on %s:%d", host, quic_port or port)
-        except Exception as e:
-            logger.warning("QUIC server failed to start: %s", e)
-
-    # Start subsystems
-    if use_h264 and encoder:
-        stream_task = asyncio.create_task(stream_frames_h264(fps))
+    if auth.mode == "pam":
+        logger.info("PAM authentication — per-user X sessions")
+    elif auth.mode == "local":
+        logger.info("Local authentication — shared display")
     else:
-        stream_task = asyncio.create_task(stream_frames_jpeg(fps))
-
-    health_task = asyncio.create_task(health_ping_loop())
-    hotplug_task = asyncio.create_task(monitor_hotplug_loop())
-
-    # Start audio if available
-    if audio and audio.available and quality_settings.enable_audio:
-        audio.start(_on_audio_frame)
-
-    # Start clipboard sync
-    if clipboard and clipboard.available:
-        clipboard.start_monitoring(_on_clipboard_change)
+        logger.info("No authentication — shared display")
 
     # Signal handling
     stop = asyncio.Future()
@@ -589,18 +697,9 @@ async def run_server(host: str, port: int, fps: int, tls_context: Optional[ssl.S
         await stop
 
     running = False
-    stream_task.cancel()
-    health_task.cancel()
-    hotplug_task.cancel()
-    for task in (stream_task, health_task, hotplug_task):
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
 
 
 def create_tls_context(cert_file: str, key_file: str) -> ssl.SSLContext:
-    """Create TLS context for secure WebSocket connections."""
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(cert_file, key_file)
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -608,71 +707,84 @@ def create_tls_context(cert_file: str, key_file: str) -> ssl.SSLContext:
 
 
 def main():
-    global capture, injector, encoder, jpeg_encoder, audio, health, auth
-    global clipboard, quality_settings, use_h264, ffmpeg_caps, available_encoders
-    global quic_server
+    global auth, session_mgr, default_runtime, quality_settings
+    global ffmpeg_caps, available_encoders, server_args
 
     parser = argparse.ArgumentParser(description="Teragucci Remote Desktop Server")
     parser.add_argument("--host", default="0.0.0.0", help="Listen address")
-    parser.add_argument("--port", type=int, default=443, help="Listen port (TCP WebSocket + UDP media)")
-    parser.add_argument("--udp-port", type=int, default=0, help="UDP media port (default: same as --port)")
-    parser.add_argument("--quic-port", type=int, default=0, help="QUIC transport port (default: same as --port)")
-    parser.add_argument("--no-udp", action="store_true", help="Disable UDP transport")
-    parser.add_argument("--no-quic", action="store_true", help="Disable QUIC transport")
+    parser.add_argument("--port", type=int, default=443, help="Listen port")
     parser.add_argument("--fps", type=int, default=30, help="Target FPS")
     parser.add_argument("--quality", type=int, default=60, help="JPEG quality (fallback)")
     parser.add_argument("--monitor", type=int, default=1, help="Monitor index (0=all)")
-    parser.add_argument("--codec", choices=["h264", "h265", "av1", "jpeg"], default="h264",
-                        help="Video codec")
-    parser.add_argument("--chroma", choices=["yuv420", "yuv422", "yuv444"], default="yuv444",
-                        help="Chroma subsampling")
-    parser.add_argument("--lossless", action="store_true", help="Lossless mode")
-    parser.add_argument("--max-bandwidth", type=float, default=50.0, help="Max bandwidth (Mbps)")
+    parser.add_argument("--codec", choices=["h264", "h265", "av1", "jpeg"], default="h264")
+    parser.add_argument("--chroma", choices=["yuv420", "yuv422", "yuv444"], default="yuv444")
+    parser.add_argument("--lossless", action="store_true")
+    parser.add_argument("--max-bandwidth", type=float, default=50.0, help="Max Mbps")
     parser.add_argument("--tls-cert", help="TLS certificate file")
     parser.add_argument("--tls-key", help="TLS key file")
-    parser.add_argument("--no-auth", action="store_true", help="Disable authentication")
-    parser.add_argument("--no-audio", action="store_true", help="Disable audio")
-    parser.add_argument("--no-clipboard", action="store_true", help="Disable clipboard sync")
-    parser.add_argument("--sw-only", action="store_true", help="Force software encoding (no GPU)")
-    parser.add_argument("--add-user", metavar="USERNAME", help="Add/update a user and exit")
+    parser.add_argument("--sw-only", action="store_true", help="Software encoding only")
     parser.add_argument("--verbose", "-v", action="store_true")
+
+    # Auth
+    auth_group = parser.add_argument_group("authentication")
+    auth_group.add_argument("--auth-mode", choices=["pam", "local", "none"],
+                            default="pam",
+                            help="pam=Linux users (PCoIP-like), local=JSON db, none=disabled")
+    auth_group.add_argument("--no-auth", action="store_true",
+                            help="Shortcut for --auth-mode none")
+    auth_group.add_argument("--add-user", metavar="USERNAME",
+                            help="Add a local user and exit")
+
+    # Session
+    sess_group = parser.add_argument_group("session")
+    sess_group.add_argument("--width", type=int, default=1920,
+                            help="Virtual display width (PAM mode)")
+    sess_group.add_argument("--height", type=int, default=1080,
+                            help="Virtual display height (PAM mode)")
+    sess_group.add_argument("--dpi", type=int, default=96,
+                            help="Virtual display DPI (PAM mode)")
+
+    # Features
+    parser.add_argument("--no-audio", action="store_true")
+    parser.add_argument("--no-clipboard", action="store_true")
+
     args = parser.parse_args()
+    server_args = args
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    # Handle --add-user
+    if args.no_auth:
+        args.auth_mode = "none"
+
+    # Handle --add-user (local mode only)
     if args.add_user:
         import getpass
-        auth = Authenticator(enabled=True)
+        a = Authenticator(mode="local")
         password = getpass.getpass(f"Password for '{args.add_user}': ")
-        auth.add_user(args.add_user, password)
+        a.add_user(args.add_user, password)
         print(f"User '{args.add_user}' added/updated.")
         return
 
-    # Check capabilities
+    # PAM mode requires root
+    if args.auth_mode == "pam" and os.geteuid() != 0:
+        logger.error("PAM auth mode requires root. Run with sudo or as root.")
+        logger.error("  sudo python -m server.main --auth-mode pam")
+        logger.error("Or use --auth-mode none for testing without auth.")
+        sys.exit(1)
+
+    # Check FFmpeg capabilities
     ffmpeg_caps = check_ffmpeg_available()
     available_encoders = detect_encoders()
-    logger.info("FFmpeg capabilities: %s", {k: v for k, v in ffmpeg_caps.items() if k != "encoders"})
+    logger.info("FFmpeg: %s", {k: v for k, v in ffmpeg_caps.items() if k != "encoders"})
 
-    # Log detected hardware encoders
     hw_backends = ffmpeg_caps.get("hw_backends", [])
     if hw_backends:
-        logger.info("GPU encoding available: %s", ", ".join(hw_backends))
-    else:
-        logger.info("No GPU encoding detected — using software encoders")
+        logger.info("GPU encoding: %s", ", ".join(hw_backends))
 
-    for codec, encs in available_encoders.items():
-        if encs:
-            names = [e.name for e in encs]
-            logger.info("  %s encoders: %s", codec.upper(), ", ".join(names))
-
-    audio_available = not args.no_audio and check_audio_available()
-    logger.info("Audio available: %s", audio_available)
-
-    # Quality settings from CLI args
+    # Quality settings
     quality_settings = QualitySettings(
         quality_bias=0.5,
         max_fps=args.fps,
@@ -683,74 +795,37 @@ def main():
         enable_audio=not args.no_audio,
     )
 
-    # Initialize subsystems
-    try:
-        capture = ScreenCapture(monitor_index=args.monitor, jpeg_quality=args.quality)
-        injector = InputInjector(screen_width=capture.width, screen_height=capture.height)
-    except Exception as e:
-        logger.error("Failed to initialize: %s", e)
-        logger.error("Ensure access to /dev/uinput and a display. Run: sudo bash server/setup_uinput.sh")
-        sys.exit(1)
+    # Initialize auth
+    auth = Authenticator(mode=args.auth_mode)
 
-    # Video encoder (with GPU acceleration auto-detection)
-    use_h264 = args.codec in ("h264", "h265", "av1") and ffmpeg_caps.get(args.codec, False)
-    if use_h264:
-        # If --sw-only, filter out hardware encoders
-        enc_list = available_encoders if not args.sw_only else None
-        if args.sw_only:
-            from server.video_encoder import HWEncoder
-            enc_list = {}
-            for codec, encs in available_encoders.items():
-                enc_list[codec] = [e for e in encs if e.backend == "software"]
-
-        encoder = VideoEncoder(capture.width, capture.height, quality_settings,
-                               available_encoders=enc_list)
-        encoder.start(_on_encoded_frame)
-        logger.info("Using %s encoder (%s backend) with %s",
-                     args.codec.upper(), encoder.active_backend, args.chroma.upper())
+    # Initialize session manager (PAM mode) or default runtime (legacy)
+    if args.auth_mode == "pam":
+        from server.session_manager import SessionManager
+        session_mgr = SessionManager(
+            width=args.width, height=args.height, dpi=args.dpi)
+        logger.info("Session manager ready (per-user Xvfb sessions)")
+        # Runtimes are created on-demand when users authenticate
     else:
-        jpeg_encoder = JpegFallbackEncoder(quality=args.quality)
-        logger.info("Using JPEG fallback encoder")
-
-    # UDP media transport
-    actual_udp_port = args.udp_port or args.port
-    if not args.no_udp:
-        udp_server = UDPMediaServer(host=args.host, port=actual_udp_port)
-        hybrid_transport = HybridServerTransport(udp_server)
-        bandwidth_estimator = BandwidthEstimator(
-            initial_mbps=quality_settings.max_bandwidth_mbps,
-            max_mbps=quality_settings.max_bandwidth_mbps,
-        )
-        logger.info("UDP media transport configured on port %d", actual_udp_port)
-    else:
-        logger.info("UDP disabled")
-
-    # QUIC transport
-    actual_quic_port = args.quic_port or (args.port + 1)
-    if not args.no_quic and quic_available():
-        quic_server = QUICTransportServer(host=args.host, port=actual_quic_port)
-        logger.info("QUIC transport configured on port %d", actual_quic_port)
-    elif args.no_quic:
-        logger.info("QUIC disabled")
-    else:
-        logger.info("QUIC unavailable (install aioquic)")
-
-    # Health monitor
-    health = HealthMonitor(target_fps=args.fps)
-    health.current_codec = args.codec
-    health.current_chroma = args.chroma
-    health.current_resolution = f"{capture.width}x{capture.height}"
-
-    # Auth
-    auth = Authenticator(enabled=not args.no_auth)
-
-    # Audio
-    if audio_available:
-        audio = AudioCapture(bitrate_kbps=quality_settings.audio_bitrate_kbps)
-
-    # Clipboard
-    if not args.no_clipboard:
-        clipboard = ClipboardSync()
+        # Legacy mode: single runtime on current DISPLAY
+        display = os.environ.get("DISPLAY", ":0")
+        logger.info("Legacy mode: using DISPLAY=%s", display)
+        try:
+            default_runtime = SessionRuntime(
+                display=display,
+                username="shared",
+                quality=quality_settings,
+                ffmpeg_caps=ffmpeg_caps,
+                available_encoders=available_encoders,
+                no_audio=args.no_audio,
+                no_clipboard=args.no_clipboard,
+                sw_only=args.sw_only,
+                monitor_index=args.monitor,
+                jpeg_quality=args.quality,
+            )
+        except Exception as e:
+            logger.error("Failed to initialize: %s", e)
+            logger.error("Make sure DISPLAY is set and accessible.")
+            sys.exit(1)
 
     # TLS
     tls_context = None
@@ -759,27 +834,23 @@ def main():
 
     # Run
     try:
-        asyncio.run(run_server(args.host, args.port, args.fps, tls_context,
-                               udp_port=actual_udp_port,
-                               quic_port=actual_quic_port,
-                               tls_cert=args.tls_cert, tls_key=args.tls_key))
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        if default_runtime:
+            default_runtime.set_event_loop(loop)
+        loop.run_until_complete(run_server(args.host, args.port, tls_context))
     except KeyboardInterrupt:
         logger.info("Interrupted")
     finally:
-        if quic_server:
-            quic_server.stop()
-        if udp_server:
-            udp_server.stop()
-        if encoder:
-            encoder.stop()
-        if audio:
-            audio.stop()
-        if clipboard:
-            clipboard.stop()
-        if injector:
-            injector.close()
-        if capture:
-            capture.close()
+        # Clean up all runtimes
+        for rt in runtimes.values():
+            rt.stop()
+        if default_runtime:
+            default_runtime.stop()
+        # Destroy all X sessions
+        if session_mgr:
+            session_mgr.destroy_all()
+        logger.info("Server shutdown complete")
 
 
 if __name__ == "__main__":
