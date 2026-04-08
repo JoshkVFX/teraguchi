@@ -58,8 +58,25 @@ class XTestInputInjector:
             raise RuntimeError(f"XTest extension not available on {display_name}")
 
         self._root = self._dpy.screen().root
+        self.reset_modifiers()
         logger.info("XTest input injector ready on %s (%dx%d)",
                      display_name, screen_width, screen_height)
+
+    def reset_modifiers(self):
+        """Release all modifier keys to prevent stuck state."""
+        modifier_keysyms = [
+            'Shift_L', 'Shift_R', 'Control_L', 'Control_R',
+            'Alt_L', 'Alt_R', 'Super_L', 'Super_R',
+            'Meta_L', 'Meta_R', 'Caps_Lock', 'Num_Lock',
+        ]
+        for name in modifier_keysyms:
+            keysym = string_to_keysym(name)
+            if keysym:
+                keycode = self._dpy.keysym_to_keycode(keysym)
+                if keycode:
+                    xtest.fake_input(self._dpy, X.KeyRelease, detail=keycode)
+        self._dpy.sync()
+        logger.debug("All modifier keys released")
 
     def move_abs(self, x_norm: float, y_norm: float):
         """Move mouse to absolute position. x, y are normalized 0.0-1.0."""

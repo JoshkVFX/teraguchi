@@ -84,10 +84,12 @@ class SessionRuntime:
                  ffmpeg_caps: dict, available_encoders: dict,
                  no_audio: bool = False, no_clipboard: bool = False,
                  sw_only: bool = False, monitor_index: int = 1,
-                 jpeg_quality: int = 60):
+                 jpeg_quality: int = 60, uid: int = 0, gid: int = 0):
         self.display = display
         self.username = username
         self.quality = quality
+        self._uid = uid
+        self._gid = gid
         self.clients: Dict[WebSocketServerProtocol, "ClientSession"] = {}
         self._lock = threading.Lock()
         self._event_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -150,8 +152,9 @@ class SessionRuntime:
 
         # Audio
         self.audio: Optional[AudioCapture] = None
-        if not no_audio and check_audio_available():
-            self.audio = AudioCapture(bitrate_kbps=quality.audio_bitrate_kbps)
+        if not no_audio and check_audio_available(uid=self._uid, gid=self._gid):
+            self.audio = AudioCapture(bitrate_kbps=quality.audio_bitrate_kbps,
+                                      uid=self._uid, gid=self._gid)
 
         # Clipboard
         self.clipboard: Optional[ClipboardSync] = None
@@ -185,6 +188,9 @@ class SessionRuntime:
         with self._lock:
             self.clients[ws] = session
             self.health.clients_connected = len(self.clients)
+        # Clear stuck modifier keys on new connection
+        if hasattr(self.injector, 'reset_modifiers'):
+            self.injector.reset_modifiers()
         if not self._streaming:
             self._start_streaming()
 
@@ -610,6 +616,8 @@ async def handle_client(websocket: WebSocketServerProtocol):
                     sw_only=server_args.sw_only,
                     monitor_index=server_args.monitor,
                     jpeg_quality=server_args.quality,
+                    uid=user_info["uid"],
+                    gid=user_info["gid"],
                 )
                 runtime.set_event_loop(asyncio.get_event_loop())
                 runtimes[session.username] = runtime
