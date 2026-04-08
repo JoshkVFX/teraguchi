@@ -43,9 +43,9 @@ def find_free_display() -> int:
 def detect_window_manager() -> List[str]:
     """Detect available window managers, return launch command for best option."""
     candidates = [
+        (["gnome-shell", "--x11", "--sm-disable"], "GNOME Classic (gnome-shell --x11)"),
         (["xfce4-session"], "XFCE"),
         (["mate-session"], "MATE"),
-        (["gnome-session"], "GNOME"),
         (["openbox-session"], "Openbox"),
         (["fluxbox"], "Fluxbox"),
         (["icewm-session"], "IceWM"),
@@ -99,6 +99,8 @@ class UserSession:
             "LOGNAME": self.username,
             "SHELL": pwd.getpwuid(self.uid).pw_shell,
             "XDG_RUNTIME_DIR": f"/run/user/{self.uid}",
+            "DBUS_SESSION_BUS_ADDRESS": f"unix:path=/run/user/{self.uid}/bus",
+            "XDG_SESSION_TYPE": "x11",
         }
         if self.xauthority:
             e["XAUTHORITY"] = self.xauthority
@@ -215,8 +217,11 @@ class SessionManager:
         # Start PulseAudio for the user (audio capture needs it)
         self._start_pulseaudio(session)
 
-        # Start window manager
+        # Start window manager (gnome-shell needs D-Bus ready)
         if self._wm_cmd:
+            if self._wm_cmd[0] == "gnome-shell":
+                # Give D-Bus and Xvfb time to fully initialize
+                time.sleep(1)
             self._start_window_manager(session)
 
         self._sessions[username] = session
@@ -258,13 +263,91 @@ class SessionManager:
         except Exception as e:
             logger.warning("PulseAudio failed for %s: %s", session.username, e)
 
+    def _get_logind_session_id(self, username: str) -> str:
+        """Find an existing logind session ID for the user."""
+        try:
+            result = subprocess.run(
+                ["loginctl", "list-sessions", "--no-legend"],
+                capture_output=True, text=True, timeout=5)
+            for line in result.stdout.strip().split("\n"):
+                parts = line.split()
+                if len(parts) >= 3 and parts[2] == username:
+                    return parts[0]
+        except Exception as e:
+            logger.debug("Could not query logind sessions: %s", e)
+        return ""
+
+    def _create_logind_session(self, uid: int, username: str, display: str) -> str:
+        """Create a logind session for the user via busctl."""
+        try:
+            result = subprocess.run(
+                ["busctl", "call", "org.freedesktop.login1",
+                 "/org/freedesktop/login1",
+                 "org.freedesktop.login1.Manager",
+                 "CreateSession",
+                 "uusssssussbssa(sv)",
+                 str(uid),       # uid
+                 "0",            # pid (0 = let logind pick)
+                 username,       # service
+                 "x11",          # type
+                 "",             # class
+                 "",             # desktop
+                 "",             # seat_id
+                 "0",            # vtnr
+                 "",             # tty
+                 display,        # display
+                 "false",        # remote
+                 "",             # remote_user
+                 "",             # remote_host
+                 "0",            # properties count
+                 ],
+                capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                # Parse session ID from response
+                parts = result.stdout.strip().split()
+                for p in parts:
+                    p = p.strip('"')
+                    if p.isdigit():
+                        return p
+                    if p.startswith('/org/freedesktop/login1/session/'):
+                        sid = p.split('/')[-1].lstrip('_')
+                        return sid
+            logger.debug("CreateSession failed: %s", result.stderr)
+        except Exception as e:
+            logger.debug("Could not create logind session: %s", e)
+        return ""
+
     def _start_window_manager(self, session: UserSession):
         try:
+            env = session.env.copy()
+
+            if self._wm_cmd and self._wm_cmd[0] == "gnome-shell":
+                # gnome-shell needs XDG_SESSION_ID for ScreenShield/loginManager.js
+                session_id = self._create_logind_session(
+                    session.uid, session.username, session.display)
+                if not session_id:
+                    session_id = self._get_logind_session_id(session.username)
+                if session_id:
+                    env["XDG_SESSION_ID"] = session_id
+                    logger.info("Using logind session %s for gnome-shell", session_id)
+                else:
+                    logger.warning("No logind session found for %s, gnome-shell may fail",
+                                   session.username)
+
+                env["GNOME_SHELL_SESSION_MODE"] = "classic"
+                env["XDG_CURRENT_DESKTOP"] = "GNOME-Classic:GNOME"
+                env["GDK_BACKEND"] = "x11"
+
+            wm_cmd = list(self._wm_cmd)
+            if wm_cmd[0] == "gnome-shell":
+                wm_cmd.extend(["--display=" + session.display, "--replace"])
+
             session.wm_proc = subprocess.Popen(
-                self._wm_cmd,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                wm_cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=open(f"/tmp/teragucci-wm-{session.username}.log", "w"),
                 preexec_fn=lambda: self._demote(session.uid, session.gid),
-                env=session.env)
+                env=env)
             logger.info("Window manager started for %s: %s",
                         session.username, self._wm_cmd[0])
         except Exception as e:
