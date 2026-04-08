@@ -239,6 +239,8 @@ class AuthResponse:
     method: str = "password"
     username: str = ""
     credential: str = ""  # Hashed password or token
+    screen_width: int = 0
+    screen_height: int = 0
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))

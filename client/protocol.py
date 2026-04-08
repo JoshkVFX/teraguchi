@@ -245,10 +245,14 @@ class ClientProtocol:
         if auth_mode == "pam":
             # PAM mode: send credentials directly
             # Security is provided by TLS (wss://) — same as PCoIP/SSH
+            screen_w = self._screen_size[0] if self._screen_size else 0
+            screen_h = self._screen_size[1] if self._screen_size else 0
             auth_resp = AuthResponse(
                 method="pam",
                 username=self._username,
                 credential=self._password,
+                screen_width=screen_w,
+                screen_height=screen_h,
             )
             logger.info("Authenticating via PAM as '%s'", self._username)
         else:
@@ -260,10 +264,14 @@ class ClientProtocol:
             else:
                 pwd_hash = ""
 
+            screen_w = self._screen_size[0] if self._screen_size else 0
+            screen_h = self._screen_size[1] if self._screen_size else 0
             auth_resp = AuthResponse(
                 method="password",
                 username=self._username,
                 credential=pwd_hash,
+                screen_width=screen_w,
+                screen_height=screen_h,
             )
 
         await ws.send(auth_resp.to_json())

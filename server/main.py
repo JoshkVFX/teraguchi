@@ -485,6 +485,7 @@ class SessionRuntime:
             session.supports_audio = msg.get("supports_audio", True)
             session.client_screen_width = msg.get("screen_width", 0)
             session.client_screen_height = msg.get("screen_height", 0)
+            logger.info("Client screen: %dx%d", session.client_screen_width, session.client_screen_height)
 
         elapsed_ms = (time.time() - t0) * 1000
         self.health.record_input_latency(elapsed_ms)
@@ -644,6 +645,9 @@ async def handle_client(websocket: WebSocketServerProtocol):
 
                 session.authenticated = True
                 session.username = msg.get("username", "unknown")
+                session.client_screen_width = msg.get("screen_width", 0)
+                session.client_screen_height = msg.get("screen_height", 0)
+                logger.info("Client screen: %dx%d", session.client_screen_width, session.client_screen_height)
         else:
             session.authenticated = True
             session.username = "anonymous"

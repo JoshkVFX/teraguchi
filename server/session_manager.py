@@ -176,12 +176,10 @@ class SessionManager:
             logger.warning("xauth failed: %s (using -ac instead)", e)
             xauthority = ""
 
-        # Start Xvfb
-        # Start Xvfb with large max screen for dynamic resize via xrandr
-        max_w, max_h = 3840, 2160
+        # Start Xvfb at requested size (Xvfb RANDR doesn't support adding modes)
         xvfb_cmd = [
             "Xvfb", display,
-            "-screen", "0", f"{max_w}x{max_h}x{self.depth}",
+            "-screen", "0", f"{w}x{h}x{self.depth}",
             "-dpi", str(self.dpi),
             "-ac",
             "+extension", "RANDR",
@@ -207,32 +205,6 @@ class SessionManager:
 
         logger.info("Xvfb started on %s (pid %d)", display, xvfb_proc.pid)
 
-        # Xvfb starts at max size (3840x2160), resize to requested
-        if w != max_w or h != max_h:
-            try:
-                env_x = {**os.environ, "DISPLAY": display}
-                modeline = subprocess.run(
-                    ["cvt", str(w), str(h)],
-                    capture_output=True, text=True, timeout=5, env=env_x)
-                if modeline.returncode == 0:
-                    for line in modeline.stdout.strip().split("\n"):
-                        if line.startswith("Modeline"):
-                            parts = line.split(None, 2)
-                            mode_label = parts[1].strip('"')
-                            mode_params = parts[2]
-                            subprocess.run(
-                                ["xrandr", "--newmode", mode_label] + mode_params.split(),
-                                capture_output=True, timeout=5, env=env_x)
-                            subprocess.run(
-                                ["xrandr", "--addmode", "screen", mode_label],
-                                capture_output=True, timeout=5, env=env_x)
-                            subprocess.run(
-                                ["xrandr", "--output", "screen", "--mode", mode_label],
-                                capture_output=True, timeout=5, env=env_x)
-                            logger.info("Set initial display resolution to %dx%d", w, h)
-                            break
-            except Exception as e:
-                logger.warning("Initial resize failed: %s", e)
 
         session = UserSession(
             username=username, uid=uid, gid=gid, home=home,
