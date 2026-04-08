@@ -1,0 +1,6 @@
+# Development / testing requirements
+-r requirements-server.txt
+-r requirements-client.txt
+
+pytest>=7.0
+pyinstaller>=6.0

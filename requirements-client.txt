@@ -1,0 +1,5 @@
+# Teragucci Client Requirements (Mac / Windows)
+# Install: pip install -r requirements-client.txt
+
+websockets>=12.0
+PySide6>=6.6

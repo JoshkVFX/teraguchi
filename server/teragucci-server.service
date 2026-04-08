@@ -1,0 +1,18 @@
+[Unit]
+Description=Teragucci Remote Desktop Server
+After=network.target graphical.target
+Wants=graphical.target
+
+[Service]
+Type=simple
+# Change User to your actual username
+User=CHANGEME
+Environment=DISPLAY=:0
+# Adjust the path to your Teragucci installation
+WorkingDirectory=/opt/teragucci
+ExecStart=/usr/bin/python3 -m server.main --port 9876 --fps 30 --quality 60
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
