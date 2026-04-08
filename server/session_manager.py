@@ -177,9 +177,11 @@ class SessionManager:
             xauthority = ""
 
         # Start Xvfb
+        # Start Xvfb with large max screen for dynamic resize via xrandr
+        max_w, max_h = 3840, 2160
         xvfb_cmd = [
             "Xvfb", display,
-            "-screen", "0", f"{w}x{h}x{self.depth}",
+            "-screen", "0", f"{max_w}x{max_h}x{self.depth}",
             "-dpi", str(self.dpi),
             "-ac",
             "+extension", "RANDR",
@@ -352,6 +354,63 @@ class SessionManager:
                         session.username, self._wm_cmd[0])
         except Exception as e:
             logger.warning("WM failed for %s: %s", session.username, e)
+
+    def resize_display(self, username: str, width: int, height: int) -> bool:
+        """Resize an existing session's display via xrandr."""
+        session = self.get_session(username)
+        if not session or not session.alive:
+            return False
+
+        # Clamp to reasonable bounds
+        width = max(640, min(width, 3840))
+        height = max(480, min(height, 2160))
+
+        if width == session.width and height == session.height:
+            return True
+
+        try:
+            display = session.display
+            env = {"DISPLAY": display}
+
+            # Add the new mode if it doesn't exist
+            mode_name = f"{width}x{height}"
+            # Generate modeline
+            modeline = subprocess.run(
+                ["cvt", str(width), str(height)],
+                capture_output=True, text=True, timeout=5, env=env)
+            if modeline.returncode == 0:
+                # Parse modeline output: Modeline "WxH_60.00" ...
+                for line in modeline.stdout.strip().split("\n"):
+                    if line.startswith("Modeline"):
+                        parts = line.split(None, 2)
+                        mode_label = parts[1].strip('"')
+                        mode_params = parts[2]
+
+                        # Create new mode
+                        subprocess.run(
+                            ["xrandr", "--newmode", mode_label] + mode_params.split(),
+                            capture_output=True, timeout=5, env=env)
+                        # Add mode to screen output
+                        subprocess.run(
+                            ["xrandr", "--addmode", "screen", mode_label],
+                            capture_output=True, timeout=5, env=env)
+                        # Set the mode
+                        result = subprocess.run(
+                            ["xrandr", "--output", "screen", "--mode", mode_label],
+                            capture_output=True, text=True, timeout=5, env=env)
+                        if result.returncode == 0:
+                            session.width = width
+                            session.height = height
+                            logger.info("Resized display %s to %dx%d",
+                                        display, width, height)
+                            return True
+                        else:
+                            logger.warning("xrandr set mode failed: %s", result.stderr)
+
+        except Exception as e:
+            logger.warning("Display resize failed: %s", e)
+
+        return False
 
     def destroy_session(self, username: str):
         session = self._sessions.pop(username, None)

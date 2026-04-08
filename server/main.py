@@ -365,7 +365,58 @@ class SessionRuntime:
         self.health.target_fps = self.quality.effective_fps()
 
         if self.audio:
-            self.audio.update_bitrate(self.quality.audio_bitrate_kbps)
+            if self.quality.enable_audio:
+                if not self.audio._running:
+                    self.audio.start(self._on_audio_frame)
+                self.audio.update_bitrate(self.quality.audio_bitrate_kbps)
+            else:
+                if self.audio._running:
+                    self.audio.stop()
+
+    def _handle_resize(self, width: int, height: int):
+        """Handle a resize request from the client."""
+        if width == self.capture.width and height == self.capture.height:
+            return
+
+        # Resize via session manager (xrandr)
+        import server.session_manager as sm_module
+        for mgr_ref in [getattr(self, '_session_mgr', None)]:
+            pass  # placeholder
+
+        # Direct xrandr resize
+        try:
+            env = {"DISPLAY": self.display}
+            mode_name = f"{width}x{height}"
+
+            modeline = subprocess.run(
+                ["cvt", str(width), str(height)],
+                capture_output=True, text=True, timeout=5, env=env)
+            if modeline.returncode == 0:
+                for line in modeline.stdout.strip().split("\n"):
+                    if line.startswith("Modeline"):
+                        parts = line.split(None, 2)
+                        mode_label = parts[1].strip('"')
+                        mode_params = parts[2]
+
+                        subprocess.run(
+                            ["xrandr", "--newmode", mode_label] + mode_params.split(),
+                            capture_output=True, timeout=5, env=env)
+                        subprocess.run(
+                            ["xrandr", "--addmode", "screen", mode_label],
+                            capture_output=True, timeout=5, env=env)
+                        result = subprocess.run(
+                            ["xrandr", "--output", "screen", "--mode", mode_label],
+                            capture_output=True, text=True, timeout=5, env=env)
+                        if result.returncode == 0:
+                            # Reinit capture and encoder at new size
+                            self.capture.reinit(width, height)
+                            self._restart_encoder()
+                            logger.info("Resized to %dx%d", width, height)
+                            return
+                        else:
+                            logger.warning("Resize failed: %s", result.stderr)
+        except Exception as e:
+            logger.warning("Resize error: %s", e)
 
     def _restart_encoder(self):
         if self.encoder:
@@ -408,6 +459,12 @@ class SessionRuntime:
 
         elif msg_type == MsgType.QUALITY_SETTINGS:
             self.apply_quality(session, msg)
+
+        elif msg_type == MsgType.RESIZE_REQUEST:
+            width = msg.get("width", 0)
+            height = msg.get("height", 0)
+            if width and height:
+                self._handle_resize(width, height)
 
         elif msg_type == MsgType.SELECT_MONITOR:
             self.capture.switch_monitor(msg.get("monitor_id", 1))

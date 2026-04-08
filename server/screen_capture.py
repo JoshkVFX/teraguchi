@@ -152,6 +152,16 @@ class ScreenCapture:
         self.height = self._monitor["height"]
         self._last_frame = None
 
+    def reinit(self, width: int = 0, height: int = 0):
+        """Reinitialize capture after a resolution change."""
+        # Re-create mss instance to pick up new screen geometry
+        self._sct.close()
+        self._sct = mss.mss()
+        self._refresh_monitor_info()
+        self._select_monitor(self.monitor_index)
+        self._last_frame = None
+        logger.info("Screen capture reinit: %dx%d", self.width, self.height)
+
     def switch_monitor(self, index: int):
         """Switch to a different monitor (or 0 for all)."""
         # Refresh monitor list in case displays changed

@@ -562,6 +562,14 @@ class MainWindow(QMainWindow):
 
     def _on_quality_changed(self, settings):
         self._protocol.send_quality_settings(settings)
+        # Toggle local audio playback
+        if hasattr(self, '_audio_player') and self._audio_player:
+            if settings.get("enable_audio", True):
+                if not self._audio_player._started:
+                    self._audio_player.start()
+            else:
+                if self._audio_player._started:
+                    self._audio_player.stop()
 
     # --- Actions ---
 
@@ -620,6 +628,32 @@ class MainWindow(QMainWindow):
 
     def _toggle_bookmarks(self):
         self._bookmark_dock.setVisible(not self._bookmark_dock.isVisible())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Send resize request to server when window size changes
+        if hasattr(self, '_protocol') and self._protocol and hasattr(self, '_viewer'):
+            # Use viewer size (the actual display area), not window size
+            from PySide6.QtCore import QTimer
+            if not hasattr(self, '_resize_timer'):
+                self._resize_timer = QTimer()
+                self._resize_timer.setSingleShot(True)
+                self._resize_timer.timeout.connect(self._send_resize)
+            self._resize_timer.start(500)  # Debounce 500ms
+
+    def _send_resize(self):
+        if hasattr(self, '_viewer') and self._viewer:
+            w = self._viewer.width()
+            h = self._viewer.height()
+            # Round to even numbers (required by video encoders)
+            w = w - (w % 2)
+            h = h - (h % 2)
+            if w >= 640 and h >= 480:
+                self._protocol.send_input({
+                    "type": "resize_request",
+                    "width": w,
+                    "height": h,
+                })
 
     def _toggle_fullscreen(self):
         if self.isFullScreen():

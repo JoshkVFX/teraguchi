@@ -136,6 +136,7 @@ class MsgType:
     REQUEST_FULL_FRAME = "request_full_frame"
     QUALITY_SETTINGS = "quality_settings"
     SELECT_MONITOR = "select_monitor"
+    RESIZE_REQUEST = "resize_request"
 
     # --- Health ---
     HEALTH_PING = "health_ping"
