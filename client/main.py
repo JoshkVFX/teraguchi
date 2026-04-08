@@ -26,7 +26,7 @@ import time
 from dataclasses import asdict
 
 from PySide6.QtCore import Qt, QTimer, Signal, QObject, QSize
-from PySide6.QtGui import QAction, QKeySequence, QClipboard
+from PySide6.QtGui import QAction, QKeySequence, QClipboard, QImage
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QStatusBar, QToolBar, QSplitter,
@@ -41,7 +41,8 @@ from client.protocol import ClientProtocol
 from client.bookmarks import BookmarkManager
 from client.health_display import HealthOverlay, HealthStatusWidget, HealthData
 from client.quality_control import QualityControlPanel
-from common.messages import MsgType, FrameType, QualitySettings
+from client.video_decoder import DecoderManager, check_decode_available, HAS_PYAV
+from common.messages import MsgType, FrameType, QualitySettings, VideoCodec
 
 logger = logging.getLogger(__name__)
 
@@ -273,6 +274,7 @@ class MainWindow(QMainWindow):
         self._bridge = ThreadBridge()
         self._bookmarks = BookmarkManager()
         self._health_data = HealthData()
+        self._decoder_mgr = DecoderManager()
 
         self._setup_protocol_bridge()
 
@@ -435,11 +437,13 @@ class MainWindow(QMainWindow):
         w = msg.get("screen_width", 1920)
         h = msg.get("screen_height", 1080)
         self._viewer.set_remote_size(w, h)
-        self.setWindowTitle(f"Teragucci - {self._host}:{self._port} ({w}x{h})")
-        logger.info("Server: %dx%d h264=%s h265=%s 444=%s audio=%s pen=%s",
+        encoder_backend = msg.get("encoder_backend", "")
+        backend_str = f" [{encoder_backend}]" if encoder_backend else ""
+        self.setWindowTitle(f"Teragucci - {self._host}:{self._port} ({w}x{h}){backend_str}")
+        logger.info("Server: %dx%d h264=%s h265=%s av1=%s 444=%s encoder=%s",
                      w, h, msg.get("supports_h264"), msg.get("supports_h265"),
-                     msg.get("supports_yuv444"), msg.get("supports_audio"),
-                     msg.get("supports_pen"))
+                     msg.get("supports_av1"), msg.get("supports_yuv444"),
+                     msg.get("encoder_backend", "unknown"))
 
     def _on_jpeg_frame(self, ft, x, y, w, h, data):
         self._health_data.record_frame_received()
@@ -449,12 +453,33 @@ class MainWindow(QMainWindow):
             self._viewer.update_partial_frame(x, y, w, h, data)
 
     def _on_video_frame(self, ft, codec, chroma, flags, ts, mon, data):
-        # H.264/H.265 frames — for now fall back to requesting JPEG
-        # Full H.264 decode would require PyAV or ffmpeg subprocess
-        # This is a placeholder for the decode pipeline
+        """Decode H.264/H.265/AV1 frames via PyAV and display."""
         self._health_data.record_frame_received()
-        logger.debug("Video frame: type=%d codec=%d chroma=%d flags=%d len=%d",
-                      ft, codec, chroma, flags, len(data))
+
+        # Map codec ID to name
+        codec_map = {
+            VideoCodec.H264: "h264",
+            VideoCodec.H265: "h265",
+            VideoCodec.AV1: "av1",
+        }
+        codec_name = codec_map.get(codec, "h264")
+
+        # Decode via PyAV
+        rgb_data = self._decoder_mgr.decode(codec_name, data)
+        if rgb_data is not None:
+            # Get frame dimensions from decoder
+            decoder = self._decoder_mgr.get_decoder(codec_name)
+            size = decoder.get_frame_size() if decoder else None
+
+            if size:
+                w, h = size
+                img = QImage(rgb_data, w, h, w * 3, QImage.Format_RGB888)
+                if not img.isNull():
+                    self._viewer._screen_image = img
+                    self._viewer._pixmap = None  # Invalidate cache
+                    self._viewer.update()
+        else:
+            logger.debug("Video frame: decode pending (codec=%s, len=%d)", codec_name, len(data))
 
     def _on_connected(self):
         self._status_label.setText(f"Connected to {self._host}:{self._port}")
@@ -569,6 +594,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self._protocol.disconnect()
+        self._decoder_mgr.close_all()
         event.accept()
 
 

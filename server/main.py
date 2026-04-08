@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Teragucci Server - Linux Remote Desktop Server v2
+Teragucci Server - Linux Remote Desktop Server v3
 
 Full-featured remote desktop server with:
-- H.264/H.265 video encoding with YUV 4:4:4 support
+- H.264/H.265/AV1 video encoding with GPU acceleration (NVENC/VAAPI/AMF)
+- YUV 4:4:4 chroma support
 - JPEG fallback for low-resource environments
 - Audio streaming via PulseAudio/PipeWire
 - Pen/tablet pressure input injection via uinput
@@ -11,8 +12,9 @@ Full-featured remote desktop server with:
 - TLS support
 - Authentication
 - Clipboard sync
-- Multi-monitor support
+- Multi-monitor support with hotplug detection
 - Adaptive quality control
+- QUIC transport (in addition to TCP+UDP)
 
 Usage:
     python -m server.main [options]
@@ -46,13 +48,14 @@ from common.messages import (
 from common.keymap import qt_key_to_linux_scancode
 from server.screen_capture import ScreenCapture
 from server.input_injector import InputInjector
-from server.video_encoder import VideoEncoder, JpegFallbackEncoder, check_ffmpeg_available
+from server.video_encoder import VideoEncoder, JpegFallbackEncoder, check_ffmpeg_available, detect_encoders
 from server.audio_capture import AudioCapture, check_audio_available
 from server.health import HealthMonitor
 from server.auth import Authenticator
 from server.clipboard import ClipboardSync
 from common.udp_transport import UDPMediaServer, BandwidthEstimator, CHANNEL_VIDEO, CHANNEL_AUDIO
 from common.hybrid_transport import HybridServerTransport, TransportMsg, TransportMode
+from common.quic_transport import QUICTransportServer, quic_available
 
 logger = logging.getLogger("teragucci.server")
 
@@ -116,10 +119,12 @@ clipboard: Optional[ClipboardSync] = None
 udp_server: Optional[UDPMediaServer] = None
 hybrid_transport: Optional[HybridServerTransport] = None
 bandwidth_estimator: Optional[BandwidthEstimator] = None
+quic_server: Optional[QUICTransportServer] = None
 quality_settings: QualitySettings = QualitySettings()
 running = True
 use_h264 = False
 ffmpeg_caps: dict = {}
+available_encoders: dict = {}
 event_loop: Optional[asyncio.AbstractEventLoop] = None
 
 
@@ -155,16 +160,25 @@ async def handle_client(websocket: WebSocketServerProtocol):
 
         # Send server hello
         monitors = [asdict(m) for m in capture.list_monitors()]
+
+        # Determine active encoder backend
+        encoder_backend = ""
+        if encoder:
+            encoder_backend = encoder.active_backend
+
         hello = ServerHelloMsg(
             screen_width=capture.width,
             screen_height=capture.height,
             monitors=monitors,
             supports_h264=ffmpeg_caps.get("h264", False),
             supports_h265=ffmpeg_caps.get("h265", False),
+            supports_av1=ffmpeg_caps.get("av1", False),
             supports_yuv444=ffmpeg_caps.get("h264_444", False),
             supports_audio=audio is not None and audio.available,
             supports_pen=True,
             requires_auth=auth.enabled,
+            encoder_backend=encoder_backend,
+            available_encoders=ffmpeg_caps.get("encoders", {}),
         )
         await websocket.send(hello.to_json())
 
@@ -281,7 +295,7 @@ def _apply_quality_settings(session: ClientSession, msg: dict):
                                         if k in QualitySettings.__dataclass_fields__})
     quality_settings = session.quality
 
-    if quality_settings.codec in ("h264", "h265") and ffmpeg_caps.get(quality_settings.codec, False):
+    if quality_settings.codec in ("h264", "h265", "av1") and ffmpeg_caps.get(quality_settings.codec, False):
         if not use_h264:
             use_h264 = True
             _restart_encoder()
@@ -317,8 +331,11 @@ def _on_encoded_frame(frame_data: bytes, is_keyframe: bool):
     """Callback from encoder thread when a frame is ready."""
     timestamp = int(time.time() * 1000) & 0xFFFFFFFF
 
+    # Send via QUIC to clients using QUIC transport
+    if quic_server and quic_server.is_running and quic_server.client_count > 0:
+        quic_server.send_video_to_all(frame_data, timestamp, is_keyframe)
+
     # Send via UDP to clients that support it
-    udp_sent = False
     if udp_server and hybrid_transport:
         has_udp_clients = any(
             hybrid_transport.should_use_udp(session.client_id)
@@ -327,22 +344,28 @@ def _on_encoded_frame(frame_data: bytes, is_keyframe: bool):
         )
         if has_udp_clients:
             udp_server.send_video_frame(frame_data, timestamp, is_keyframe)
-            udp_sent = True
 
-    # Send via TCP WebSocket to clients without UDP (fallback)
-    codec = VideoCodec.H264 if quality_settings.codec == "h264" else VideoCodec.H265
+    # Determine frame type and codec for TCP header
+    codec_name = quality_settings.codec.lower()
+    if codec_name == "av1":
+        codec = VideoCodec.AV1
+        frame_type = FrameType.VIDEO_AV1
+    elif codec_name == "h265":
+        codec = VideoCodec.H265
+        frame_type = FrameType.VIDEO_H265
+    else:
+        codec = VideoCodec.H264
+        frame_type = FrameType.VIDEO_H264
+
     chroma = quality_settings.effective_chroma()
     flags = VideoFrameFlags.KEYFRAME if is_keyframe else VideoFrameFlags.NONE
 
-    header = encode_video_header(
-        FrameType.VIDEO_H264 if codec == VideoCodec.H264 else FrameType.VIDEO_H265,
-        codec, chroma, flags, timestamp,
-    )
+    header = encode_video_header(frame_type, codec, chroma, flags, timestamp)
     tcp_data = header + frame_data
 
     for ws, session in list(clients.items()):
         if session.authenticated:
-            # Skip TCP send for clients already getting UDP
+            # Skip TCP send for clients already getting UDP or QUIC
             if hybrid_transport and hybrid_transport.should_use_udp(session.client_id):
                 continue
             if event_loop:
@@ -360,6 +383,10 @@ async def _enqueue_frame(session: ClientSession, data: bytes):
 def _on_audio_frame(audio_data: bytes, timestamp_ms: int):
     """Callback from audio capture thread."""
     ts = timestamp_ms & 0xFFFFFFFF
+
+    # Send via QUIC
+    if quic_server and quic_server.is_running and quic_server.client_count > 0:
+        quic_server.send_audio_to_all(audio_data, ts)
 
     # Send via UDP where available
     if udp_server and hybrid_transport:
@@ -473,8 +500,29 @@ async def health_ping_loop():
                     pass
 
 
+async def monitor_hotplug_loop():
+    """Periodically check for monitor configuration changes."""
+    while running:
+        await asyncio.sleep(5.0)
+        if capture and capture.detect_hotplug():
+            # Notify all clients of new monitor list
+            monitors = [asdict(m) for m in capture.list_monitors()]
+            msg = MonitorListMsg(monitors=monitors)
+            msg_json = msg.to_json()
+            for ws, session in list(clients.items()):
+                if session.authenticated:
+                    try:
+                        await session.enqueue(msg_json)
+                    except Exception:
+                        pass
+            # Restart encoder for potentially new resolution
+            if encoder:
+                _restart_encoder()
+
+
 async def run_server(host: str, port: int, fps: int, tls_context: Optional[ssl.SSLContext],
-                     udp_port: int = 0):
+                     udp_port: int = 0, quic_port: int = 0,
+                     tls_cert: str = None, tls_key: str = None):
     """Start the WebSocket server and all subsystems."""
     global running, event_loop
 
@@ -491,6 +539,15 @@ async def run_server(host: str, port: int, fps: int, tls_context: Optional[ssl.S
         except Exception as e:
             logger.warning("UDP server failed to start: %s (TCP-only mode)", e)
 
+    # Start QUIC transport
+    if quic_server:
+        try:
+            started = await quic_server.start(cert_file=tls_cert, key_file=tls_key)
+            if started:
+                logger.info("QUIC transport on %s:%d", host, quic_port or port)
+        except Exception as e:
+            logger.warning("QUIC server failed to start: %s", e)
+
     # Start subsystems
     if use_h264 and encoder:
         stream_task = asyncio.create_task(stream_frames_h264(fps))
@@ -498,6 +555,7 @@ async def run_server(host: str, port: int, fps: int, tls_context: Optional[ssl.S
         stream_task = asyncio.create_task(stream_frames_jpeg(fps))
 
     health_task = asyncio.create_task(health_ping_loop())
+    hotplug_task = asyncio.create_task(monitor_hotplug_loop())
 
     # Start audio if available
     if audio and audio.available and quality_settings.enable_audio:
@@ -533,7 +591,8 @@ async def run_server(host: str, port: int, fps: int, tls_context: Optional[ssl.S
     running = False
     stream_task.cancel()
     health_task.cancel()
-    for task in (stream_task, health_task):
+    hotplug_task.cancel()
+    for task in (stream_task, health_task, hotplug_task):
         try:
             await task
         except asyncio.CancelledError:
@@ -550,17 +609,20 @@ def create_tls_context(cert_file: str, key_file: str) -> ssl.SSLContext:
 
 def main():
     global capture, injector, encoder, jpeg_encoder, audio, health, auth
-    global clipboard, quality_settings, use_h264, ffmpeg_caps
+    global clipboard, quality_settings, use_h264, ffmpeg_caps, available_encoders
+    global quic_server
 
     parser = argparse.ArgumentParser(description="Teragucci Remote Desktop Server")
     parser.add_argument("--host", default="0.0.0.0", help="Listen address")
     parser.add_argument("--port", type=int, default=443, help="Listen port (TCP WebSocket + UDP media)")
     parser.add_argument("--udp-port", type=int, default=0, help="UDP media port (default: same as --port)")
-    parser.add_argument("--no-udp", action="store_true", help="Disable UDP transport (TCP-only)")
+    parser.add_argument("--quic-port", type=int, default=0, help="QUIC transport port (default: same as --port)")
+    parser.add_argument("--no-udp", action="store_true", help="Disable UDP transport")
+    parser.add_argument("--no-quic", action="store_true", help="Disable QUIC transport")
     parser.add_argument("--fps", type=int, default=30, help="Target FPS")
     parser.add_argument("--quality", type=int, default=60, help="JPEG quality (fallback)")
     parser.add_argument("--monitor", type=int, default=1, help="Monitor index (0=all)")
-    parser.add_argument("--codec", choices=["h264", "h265", "jpeg"], default="h264",
+    parser.add_argument("--codec", choices=["h264", "h265", "av1", "jpeg"], default="h264",
                         help="Video codec")
     parser.add_argument("--chroma", choices=["yuv420", "yuv422", "yuv444"], default="yuv444",
                         help="Chroma subsampling")
@@ -571,6 +633,7 @@ def main():
     parser.add_argument("--no-auth", action="store_true", help="Disable authentication")
     parser.add_argument("--no-audio", action="store_true", help="Disable audio")
     parser.add_argument("--no-clipboard", action="store_true", help="Disable clipboard sync")
+    parser.add_argument("--sw-only", action="store_true", help="Force software encoding (no GPU)")
     parser.add_argument("--add-user", metavar="USERNAME", help="Add/update a user and exit")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
@@ -591,7 +654,20 @@ def main():
 
     # Check capabilities
     ffmpeg_caps = check_ffmpeg_available()
-    logger.info("FFmpeg capabilities: %s", ffmpeg_caps)
+    available_encoders = detect_encoders()
+    logger.info("FFmpeg capabilities: %s", {k: v for k, v in ffmpeg_caps.items() if k != "encoders"})
+
+    # Log detected hardware encoders
+    hw_backends = ffmpeg_caps.get("hw_backends", [])
+    if hw_backends:
+        logger.info("GPU encoding available: %s", ", ".join(hw_backends))
+    else:
+        logger.info("No GPU encoding detected — using software encoders")
+
+    for codec, encs in available_encoders.items():
+        if encs:
+            names = [e.name for e in encs]
+            logger.info("  %s encoders: %s", codec.upper(), ", ".join(names))
 
     audio_available = not args.no_audio and check_audio_available()
     logger.info("Audio available: %s", audio_available)
@@ -616,12 +692,22 @@ def main():
         logger.error("Ensure access to /dev/uinput and a display. Run: sudo bash server/setup_uinput.sh")
         sys.exit(1)
 
-    # Video encoder
-    use_h264 = args.codec in ("h264", "h265") and ffmpeg_caps.get(args.codec, False)
+    # Video encoder (with GPU acceleration auto-detection)
+    use_h264 = args.codec in ("h264", "h265", "av1") and ffmpeg_caps.get(args.codec, False)
     if use_h264:
-        encoder = VideoEncoder(capture.width, capture.height, quality_settings)
+        # If --sw-only, filter out hardware encoders
+        enc_list = available_encoders if not args.sw_only else None
+        if args.sw_only:
+            from server.video_encoder import HWEncoder
+            enc_list = {}
+            for codec, encs in available_encoders.items():
+                enc_list[codec] = [e for e in encs if e.backend == "software"]
+
+        encoder = VideoEncoder(capture.width, capture.height, quality_settings,
+                               available_encoders=enc_list)
         encoder.start(_on_encoded_frame)
-        logger.info("Using %s encoder with %s", args.codec.upper(), args.chroma.upper())
+        logger.info("Using %s encoder (%s backend) with %s",
+                     args.codec.upper(), encoder.active_backend, args.chroma.upper())
     else:
         jpeg_encoder = JpegFallbackEncoder(quality=args.quality)
         logger.info("Using JPEG fallback encoder")
@@ -637,7 +723,17 @@ def main():
         )
         logger.info("UDP media transport configured on port %d", actual_udp_port)
     else:
-        logger.info("UDP disabled, TCP-only mode")
+        logger.info("UDP disabled")
+
+    # QUIC transport
+    actual_quic_port = args.quic_port or (args.port + 1)
+    if not args.no_quic and quic_available():
+        quic_server = QUICTransportServer(host=args.host, port=actual_quic_port)
+        logger.info("QUIC transport configured on port %d", actual_quic_port)
+    elif args.no_quic:
+        logger.info("QUIC disabled")
+    else:
+        logger.info("QUIC unavailable (install aioquic)")
 
     # Health monitor
     health = HealthMonitor(target_fps=args.fps)
@@ -664,10 +760,14 @@ def main():
     # Run
     try:
         asyncio.run(run_server(args.host, args.port, args.fps, tls_context,
-                               udp_port=actual_udp_port))
+                               udp_port=actual_udp_port,
+                               quic_port=actual_quic_port,
+                               tls_cert=args.tls_cert, tls_key=args.tls_key))
     except KeyboardInterrupt:
         logger.info("Interrupted")
     finally:
+        if quic_server:
+            quic_server.stop()
         if udp_server:
             udp_server.stop()
         if encoder:

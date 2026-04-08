@@ -88,9 +88,14 @@ case "$DISTRO" in
             python3 python3-pip python3-venv \
             ffmpeg \
             pulseaudio-utils \
-            xclip \
+            xclip xrandr \
             linux-tools-common \
+            libsvtav1enc-dev \
             2>/dev/null
+        # VAAPI support (Intel/AMD GPU encoding)
+        apt-get install -y -qq \
+            vainfo intel-media-va-driver-non-free mesa-va-drivers \
+            2>/dev/null || true
         ok "APT packages installed"
         ;;
     fedora)
@@ -160,6 +165,24 @@ if command -v ffmpeg &>/dev/null; then
         ok "H.265 (libx265) available"
     else
         info "libx265 not found — H.265 won't be available (H.264 is fine)"
+    fi
+
+    # Check for AV1 support
+    if ffmpeg -hide_banner -encoders 2>&1 | grep -q libsvtav1; then
+        ok "AV1 (SVT-AV1) available"
+    else
+        info "SVT-AV1 not found — AV1 software encoding won't be available"
+    fi
+
+    # Check for GPU encoders
+    if ffmpeg -hide_banner -encoders 2>&1 | grep -q nvenc; then
+        ok "NVIDIA NVENC GPU encoding available"
+    fi
+    if ffmpeg -hide_banner -encoders 2>&1 | grep -q vaapi; then
+        ok "VAAPI GPU encoding available (Intel/AMD)"
+    fi
+    if ffmpeg -hide_banner -encoders 2>&1 | grep -q amf; then
+        ok "AMD AMF GPU encoding available"
     fi
 else
     err "FFmpeg not found! Video encoding will fall back to JPEG only."
@@ -272,7 +295,7 @@ User=$REAL_USER
 Environment=DISPLAY=:0
 Environment=XAUTHORITY=/home/$REAL_USER/.Xauthority
 WorkingDirectory=$INSTALL_DIR
-ExecStart=$VENV_DIR/bin/python -m server.main --port 443 --fps 30 --codec h264 --chroma yuv444
+ExecStart=$VENV_DIR/bin/python -m server.main --port 443 --fps 30 --codec h264 --chroma yuv444 --quic-port 444
 Restart=on-failure
 RestartSec=5
 
@@ -295,25 +318,27 @@ fi
 # ── Firewall ─────────────────────────────────────────────────────
 
 echo ""
-info "Firewall: Teragucci uses port 443 (TCP for control + UDP for media)."
+info "Firewall: Teragucci uses port 443 (TCP+UDP) and 444 (QUIC/UDP)."
 
 if command -v ufw &>/dev/null; then
-    read -rp "  Open port 443 (TCP+UDP) in UFW? [y/N]: " OPEN_FW
+    read -rp "  Open ports 443-444 (TCP+UDP) in UFW? [y/N]: " OPEN_FW
     if [[ "$OPEN_FW" =~ ^[Yy] ]]; then
         ufw allow 443/tcp
         ufw allow 443/udp
-        ok "UFW: port 443 TCP+UDP opened"
+        ufw allow 444/udp
+        ok "UFW: ports 443 TCP+UDP and 444 UDP opened"
     fi
 elif command -v firewall-cmd &>/dev/null; then
-    read -rp "  Open port 443 (TCP+UDP) in firewalld? [y/N]: " OPEN_FW
+    read -rp "  Open ports 443-444 (TCP+UDP) in firewalld? [y/N]: " OPEN_FW
     if [[ "$OPEN_FW" =~ ^[Yy] ]]; then
         firewall-cmd --permanent --add-port=443/tcp
         firewall-cmd --permanent --add-port=443/udp
+        firewall-cmd --permanent --add-port=444/udp
         firewall-cmd --reload
-        ok "firewalld: port 443 TCP+UDP opened"
+        ok "firewalld: ports 443 TCP+UDP and 444 UDP opened"
     fi
 else
-    info "No firewall tool detected. Make sure port 443 TCP+UDP is open."
+    info "No firewall tool detected. Make sure ports 443 TCP+UDP and 444 UDP are open."
 fi
 
 # ── Done ─────────────────────────────────────────────────────────

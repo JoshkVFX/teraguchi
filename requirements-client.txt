@@ -1,5 +1,11 @@
-# Teragucci Client Requirements (Mac / Windows)
+# Teragucci Client Requirements (Mac / Windows / Linux)
 # Install: pip install -r requirements-client.txt
 
 websockets>=12.0
 PySide6>=6.6
+
+# Video decode (H.264/H.265/AV1 with hardware acceleration)
+av>=12.0
+
+# QUIC transport (optional, recommended)
+aioquic>=1.0

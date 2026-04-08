@@ -45,6 +45,7 @@ class FrameType(IntEnum):
     VIDEO_PARTIAL = 0x02    # Dirty-rect update (JPEG fallback mode)
     VIDEO_H264 = 0x03       # H.264 NAL unit
     VIDEO_H265 = 0x04       # H.265 NAL unit
+    VIDEO_AV1 = 0x05        # AV1 OBU frame
     AUDIO = 0x10            # Audio frame
 
 
@@ -53,6 +54,7 @@ class VideoCodec(IntEnum):
     H264 = 0x01
     H265 = 0x02
     VP9 = 0x03
+    AV1 = 0x04
 
 
 class ChromaSubsampling(IntEnum):
@@ -173,7 +175,7 @@ class QualitySettings:
     quality_bias: float = 0.5       # 0.0 = smooth motion, 1.0 = sharp/crisp
     max_fps: int = 60               # Maximum frame rate
     max_bandwidth_mbps: float = 50.0  # Bandwidth cap in Mbps
-    codec: str = "h264"             # "h264", "h265", "jpeg"
+    codec: str = "h264"             # "h264", "h265", "av1", "jpeg"
     chroma: str = "yuv422"          # "yuv420", "yuv422", "yuv444"
     force_lossless: bool = False    # True = use lossless H.264 (YUV444 auto)
     enable_audio: bool = True
@@ -367,14 +369,16 @@ class ClipboardMsg:
 class ClientHelloMsg:
     type: str = MsgType.CLIENT_HELLO
     client_name: str = "Teragucci Client"
-    version: str = "2.0.0"
+    version: str = "3.0.0"
     screen_width: int = 1920
     screen_height: int = 1080
     supports_h264: bool = True
     supports_h265: bool = True
+    supports_av1: bool = True
     supports_yuv444: bool = True
     supports_audio: bool = True
     supports_pen: bool = True
+    decoder_backend: str = ""  # "cuda", "vaapi", "videotoolbox", "software"
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -384,16 +388,20 @@ class ClientHelloMsg:
 class ServerHelloMsg:
     type: str = MsgType.SERVER_HELLO
     server_name: str = "Teragucci Server"
-    version: str = "2.0.0"
+    version: str = "3.0.0"
     screen_width: int = 1920
     screen_height: int = 1080
     monitors: list = field(default_factory=list)
     supports_h264: bool = True
     supports_h265: bool = False
+    supports_av1: bool = False
     supports_yuv444: bool = True
     supports_audio: bool = True
     supports_pen: bool = True
     requires_auth: bool = False
+    # Encoder details for client display
+    encoder_backend: str = ""           # "nvenc", "vaapi", "amf", "software"
+    available_encoders: dict = field(default_factory=dict)  # codec -> [encoder info]
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))

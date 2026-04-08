@@ -409,7 +409,7 @@ class ClientProtocol:
 
         frame_type = data[0]
 
-        if frame_type in (FrameType.VIDEO_H264, FrameType.VIDEO_H265):
+        if frame_type in (FrameType.VIDEO_H264, FrameType.VIDEO_H265, FrameType.VIDEO_AV1):
             if len(data) >= VIDEO_HEADER_SIZE and self.on_video_frame:
                 ft, codec, chroma, flags, ts, mon, payload = decode_video_header(data)
                 self.on_video_frame(ft, codec, chroma, flags, ts, mon, payload)

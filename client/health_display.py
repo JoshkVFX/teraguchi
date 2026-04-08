@@ -38,6 +38,8 @@ class HealthData:
         self.codec: str = ""
         self.chroma: str = ""
         self.resolution: str = ""
+        self.encoder_backend: str = ""  # "nvenc", "vaapi", "amf", "software"
+        self.decoder_backend: str = ""  # "cuda", "vaapi", "software"
 
         # Transport
         self.transport_mode: str = "tcp"  # "tcp" or "udp"
@@ -140,7 +142,7 @@ class HealthOverlay(QWidget):
 
         margin = 10
         box_w = 280
-        box_h = 320
+        box_h = 360
         x = self.width() - box_w - margin
         y = margin
         painter.drawRoundedRect(QRectF(x, y, box_w, box_h), 8, 8)
@@ -157,6 +159,8 @@ class HealthOverlay(QWidget):
         ty = y + 20
 
         transport = "UDP" if d.transport_mode == "udp" else "TCP"
+        enc_info = d.encoder_backend.upper() if d.encoder_backend else "SW"
+        dec_info = d.decoder_backend.upper() if d.decoder_backend else "SW"
         lines = [
             f"Transport:  {transport}",
             f"Latency:    {d.rtt_ms:.0f} ms",
@@ -164,6 +168,8 @@ class HealthOverlay(QWidget):
             f"Local FPS:  {d.local_fps:.0f}",
             f"Bandwidth:  {d.bandwidth_mbps:.1f} Mbps",
             f"Codec:      {d.codec.upper()} {d.chroma.upper()}",
+            f"Encoder:    {enc_info}",
+            f"Decoder:    {dec_info}",
             f"Resolution: {d.resolution}",
             "",
             f"Encode:     {d.encode_time_ms:.1f} ms",

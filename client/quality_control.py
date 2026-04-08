@@ -79,7 +79,7 @@ class QualityControlPanel(QWidget):
         video_layout = QFormLayout(video_group)
 
         self._codec_combo = QComboBox()
-        self._codec_combo.addItems(["H.264", "H.265", "JPEG (Fallback)"])
+        self._codec_combo.addItems(["H.264", "H.265", "AV1", "JPEG (Fallback)"])
         self._codec_combo.currentIndexChanged.connect(self._on_setting_changed)
         video_layout.addRow("Codec:", self._codec_combo)
 
@@ -177,7 +177,7 @@ class QualityControlPanel(QWidget):
         if self._building:
             return
 
-        codec_map = {0: "h264", 1: "h265", 2: "jpeg"}
+        codec_map = {0: "h264", 1: "h265", 2: "av1", 3: "jpeg"}
         chroma_map = {0: "yuv444", 1: "yuv422", 2: "yuv420"}
 
         self._settings = QualitySettings(
@@ -201,7 +201,7 @@ class QualityControlPanel(QWidget):
         self._building = True
         self._quality_slider.setValue(int(profile.quality_bias * 100))
 
-        codec_reverse = {"h264": 0, "h265": 1, "jpeg": 2}
+        codec_reverse = {"h264": 0, "h265": 1, "av1": 2, "jpeg": 3}
         self._codec_combo.setCurrentIndex(codec_reverse.get(profile.preferred_codec, 0))
 
         chroma_reverse = {"yuv444": 0, "yuv422": 1, "yuv420": 2}

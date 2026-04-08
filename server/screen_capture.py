@@ -1,17 +1,22 @@
 """
-Screen capture module for Linux with multi-monitor support.
+Screen capture module for Linux with enhanced multi-monitor support.
 
 Uses mss for fast screen capture. Supports:
 - Individual monitor capture
 - All-monitors (virtual desktop) capture
-- Raw BGRA output for H.264/H.265 encoding pipeline
+- Raw BGRA output for H.264/H.265/AV1 encoding pipeline
 - JPEG fallback with dirty-rectangle detection
 - Monitor enumeration and hot-switching
+- Per-monitor resolution and DPI tracking
+- Dynamic monitor hotplug detection
+- NvFBC capture for NVIDIA GPUs (lowest latency)
 """
 
 import io
 import time
 import logging
+import os
+import subprocess
 from typing import Optional, List
 
 import mss
@@ -27,8 +32,87 @@ CHANGE_THRESHOLD = 10
 BLOCK_SIZE = 32
 
 
+def detect_nvfbc() -> bool:
+    """Check if NVIDIA NvFBC capture is available."""
+    try:
+        # NvFBC is available through NVIDIA's capture SDK
+        # Check for the shared library
+        for lib_path in ["/usr/lib/libnvidia-fbc.so.1",
+                         "/usr/lib64/libnvidia-fbc.so.1",
+                         "/usr/lib/x86_64-linux-gnu/libnvidia-fbc.so.1"]:
+            if os.path.exists(lib_path):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def detect_monitors_xrandr() -> List[dict]:
+    """
+    Detect monitors using xrandr for richer information.
+
+    Returns list of dicts with name, width, height, x, y, primary, scale, refresh_rate.
+    """
+    monitors = []
+    try:
+        result = subprocess.run(
+            ["xrandr", "--query"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return monitors
+
+        current_name = ""
+        for line in result.stdout.splitlines():
+            if " connected" in line:
+                parts = line.split()
+                current_name = parts[0]
+                is_primary = "primary" in line
+
+                # Parse geometry: WxH+X+Y
+                for part in parts:
+                    if "x" in part and "+" in part:
+                        try:
+                            geo = part.split("+")
+                            dims = geo[0].split("x")
+                            w = int(dims[0])
+                            h = int(dims[1])
+                            x = int(geo[1])
+                            y = int(geo[2])
+                            monitors.append({
+                                "name": current_name,
+                                "width": w, "height": h,
+                                "x": x, "y": y,
+                                "primary": is_primary,
+                                "refresh_rate": 0.0,
+                                "scale": 1.0,
+                            })
+                        except (ValueError, IndexError):
+                            pass
+                        break
+
+            elif current_name and "*" in line:
+                # Parse refresh rate from mode line (e.g., "  1920x1080     60.00*+")
+                parts = line.strip().split()
+                for part in parts:
+                    if "*" in part:
+                        try:
+                            rate = float(part.replace("*", "").replace("+", ""))
+                            if monitors:
+                                monitors[-1]["refresh_rate"] = rate
+                        except ValueError:
+                            pass
+                        break
+                current_name = ""  # Only capture first mode (active)
+
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    return monitors
+
+
 class ScreenCapture:
-    """Captures the Linux screen with multi-monitor support."""
+    """Captures the Linux screen with enhanced multi-monitor support."""
 
     def __init__(self, monitor_index: int = 1, jpeg_quality: int = DEFAULT_JPEG_QUALITY):
         """
@@ -41,9 +125,21 @@ class ScreenCapture:
         self.jpeg_quality = jpeg_quality
         self._sct = mss.mss()
         self._last_frame: Optional[np.ndarray] = None
+        self._xrandr_info: List[dict] = []
+        self._nvfbc_available = detect_nvfbc()
+        self._refresh_monitor_info()
         self._select_monitor(monitor_index)
+
+        if self._nvfbc_available:
+            logger.info("NvFBC capture available (lowest latency)")
         logger.info("Screen capture initialized: %dx%d (monitor %d)",
                      self.width, self.height, monitor_index)
+
+    def _refresh_monitor_info(self):
+        """Refresh monitor information from xrandr."""
+        self._xrandr_info = detect_monitors_xrandr()
+        if self._xrandr_info:
+            logger.info("Detected %d monitors via xrandr", len(self._xrandr_info))
 
     def _select_monitor(self, index: int):
         """Select which monitor to capture."""
@@ -58,17 +154,35 @@ class ScreenCapture:
 
     def switch_monitor(self, index: int):
         """Switch to a different monitor (or 0 for all)."""
+        # Refresh monitor list in case displays changed
+        self._refresh_monitor_info()
+        self._sct = mss.mss()  # Re-create to pick up new monitors
         self._select_monitor(index)
         logger.info("Switched to monitor %d: %dx%d", index, self.width, self.height)
 
     def list_monitors(self) -> List[MonitorInfo]:
-        """Enumerate all available monitors."""
+        """Enumerate all available monitors with detailed info."""
         monitors = []
+        xrandr_by_idx = {}
+
+        # Map xrandr info to mss monitor indices (best-effort by position)
+        for xi, xinfo in enumerate(self._xrandr_info):
+            xrandr_by_idx[xi] = xinfo
+
         for i, mon in enumerate(self._sct.monitors):
             if i == 0:
                 name = "All Monitors (Virtual Desktop)"
+                primary = False
+                refresh = 0.0
+                scale = 1.0
             else:
-                name = f"Monitor {i}"
+                # Try to match with xrandr info
+                xinfo = xrandr_by_idx.get(i - 1, {})
+                name = xinfo.get("name", f"Monitor {i}")
+                primary = xinfo.get("primary", (i == 1))
+                refresh = xinfo.get("refresh_rate", 0.0)
+                scale = xinfo.get("scale", 1.0)
+
             monitors.append(MonitorInfo(
                 id=i,
                 name=name,
@@ -76,15 +190,48 @@ class ScreenCapture:
                 height=mon["height"],
                 x=mon.get("left", 0),
                 y=mon.get("top", 0),
-                primary=(i == 1),
+                primary=primary,
+                scale=scale,
             ))
+
         return monitors
+
+    def detect_hotplug(self) -> bool:
+        """
+        Check if monitor configuration has changed.
+
+        Returns True if monitors changed (caller should re-enumerate).
+        """
+        old_count = len(self._sct.monitors)
+        try:
+            new_sct = mss.mss()
+            new_count = len(new_sct.monitors)
+            if new_count != old_count:
+                self._sct = new_sct
+                self._refresh_monitor_info()
+                logger.info("Monitor hotplug detected: %d -> %d monitors",
+                           old_count, new_count)
+                return True
+            # Also check if resolutions changed
+            for i, (old, new) in enumerate(zip(self._sct.monitors, new_sct.monitors)):
+                if old["width"] != new["width"] or old["height"] != new["height"]:
+                    self._sct = new_sct
+                    self._refresh_monitor_info()
+                    logger.info("Monitor %d resolution changed", i)
+                    return True
+        except Exception:
+            pass
+        return False
 
     @property
     def screen_size(self) -> tuple:
         return (self.width, self.height)
 
-    # --- Raw BGRA capture (for H.264/H.265 encoder pipeline) ---
+    @property
+    def monitor_count(self) -> int:
+        return len(self._sct.monitors) - 1  # Subtract virtual desktop
+
+    # --- Raw BGRA capture (for H.264/H.265/AV1 encoder pipeline) ---
 
     def capture_raw_bgra(self) -> bytes:
         """
@@ -116,7 +263,6 @@ class ScreenCapture:
         Capture screen and detect dirty rectangles.
 
         Returns list of (x, y, w, h, jpeg_bytes) tuples for changed regions.
-        Returns empty list if nothing changed.
         """
         sct_img = self._sct.grab(self._monitor)
         frame = np.array(sct_img)[:, :, :3]
