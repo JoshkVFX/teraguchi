@@ -356,7 +356,12 @@ class ClientProtocol:
                          timestamp_ms: int, data: bytes):
         if channel == CHANNEL_VIDEO:
             if self.on_video_frame:
-                self.on_video_frame(0, 0, 0, flags, timestamp_ms, 0, data)
+                # UDP frames don't carry codec/chroma in-band; use FrameType
+                # to signal H.264 (the server encodes the current codec)
+                from common.messages import FrameType, VideoCodec, ChromaSubsampling
+                self.on_video_frame(
+                    FrameType.VIDEO_H264, VideoCodec.H264,
+                    ChromaSubsampling.YUV444, flags, timestamp_ms, 0, data)
         elif channel == CHANNEL_AUDIO:
             if self.on_audio_frame:
                 self.on_audio_frame(0, timestamp_ms, data)

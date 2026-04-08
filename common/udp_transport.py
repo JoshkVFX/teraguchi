@@ -60,17 +60,7 @@ FLAG_LAST_FRAGMENT = 0x04
 def encode_udp_header(channel: int, flags: int, sequence: int,
                       timestamp_ms: int, frag_id: int = 0,
                       frag_total: int = 1) -> bytes:
-    return struct.pack("!HBBIIHHH",
-                       UDP_MAGIC, channel, flags,
-                       sequence, timestamp_ms,
-                       frag_id, frag_total,
-                       0)  # padding to 16 bytes — actually let me recount
-
-# Let me redo the struct properly:
-# H=magic(2) B=channel(1) B=flags(1) I=sequence(4) I=timestamp(4) H=frag_id(2) H=frag_total(2) = 16 bytes
-def encode_udp_header(channel: int, flags: int, sequence: int,
-                      timestamp_ms: int, frag_id: int = 0,
-                      frag_total: int = 1) -> bytes:
+    """Encode a 16-byte UDP header: magic(2)+channel(1)+flags(1)+seq(4)+ts(4)+frag_id(2)+frag_total(2)."""
     return struct.pack("!HBBII HH",
                        UDP_MAGIC, channel, flags,
                        sequence & 0xFFFFFFFF,

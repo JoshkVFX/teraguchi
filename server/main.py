@@ -60,6 +60,7 @@ from server.clipboard import ClipboardSync
 from common.udp_transport import UDPMediaServer, BandwidthEstimator, CHANNEL_VIDEO, CHANNEL_AUDIO
 from common.hybrid_transport import HybridServerTransport, TransportMsg, TransportMode
 from common.quic_transport import QUICTransportServer, quic_available
+from server.usb_passthrough import USBForwardingManager
 
 logger = logging.getLogger("teragucci.server")
 
@@ -794,6 +795,26 @@ async def run_server(host: str, port: int, tls_context: Optional[ssl.SSLContext]
     running = False
 
 
+def check_system_dependencies():
+    """Check required system dependencies and warn about missing ones."""
+    import shutil
+    deps = {
+        "ffmpeg": ("FFmpeg", "Video encoding will not work"),
+        "pactl": ("PulseAudio", "Audio capture will not work"),
+    }
+    for cmd, (name, impact) in deps.items():
+        if not shutil.which(cmd):
+            logger.warning("Missing system dependency: %s (%s) — %s", cmd, name, impact)
+
+    # Check clipboard tool
+    if not shutil.which("xclip") and not shutil.which("xsel"):
+        logger.warning("Missing clipboard tool (xclip or xsel) — clipboard sync disabled")
+
+    # Check uinput
+    if not os.path.exists("/dev/uinput"):
+        logger.warning("/dev/uinput not found — input injection may fail. Run: sudo modprobe uinput")
+
+
 def create_tls_context(cert_file: str, key_file: str) -> ssl.SSLContext:
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(cert_file, key_file)
@@ -870,6 +891,9 @@ def main():
         logger.error("Or use --auth-mode none for testing without auth.")
         sys.exit(1)
 
+    # Check system dependencies
+    check_system_dependencies()
+
     # Check FFmpeg capabilities
     ffmpeg_caps = check_ffmpeg_available()
     available_encoders = detect_encoders()
@@ -921,6 +945,9 @@ def main():
             logger.error("Failed to initialize: %s", e)
             logger.error("Make sure DISPLAY is set and accessible.")
             sys.exit(1)
+
+    # USB Passthrough
+    usb_manager = USBForwardingManager()
 
     # TLS
     tls_context = None

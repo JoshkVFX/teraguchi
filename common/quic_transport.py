@@ -208,11 +208,13 @@ class QUICTransportServer:
 
     def _create_protocol(self, *args, **kwargs):
         """Factory for creating QUIC protocol instances."""
-        protocol = TeraguchiServerProtocol(*args, **kwargs)
-        protocol.on_connected = self._on_client_connected
-        protocol.on_disconnected = self._on_client_disconnected
-        protocol.on_control_message = self._on_control_message
-        return protocol
+        if not HAS_QUIC:
+            raise RuntimeError("aioquic not installed")
+        proto = TeraguchiServerProtocol(*args, **kwargs)
+        proto.on_connected = self._on_client_connected
+        proto.on_disconnected = self._on_client_disconnected
+        proto.on_control_message = self._on_control_message
+        return proto
 
     def _on_client_connected(self, client_id: str, protocol):
         self._clients[client_id] = protocol

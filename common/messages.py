@@ -1,5 +1,5 @@
 """
-Teragucci Protocol Message Definitions - v2
+Teragucci Protocol Message Definitions - v3
 
 Comprehensive protocol supporting:
 - H.264/H.265 video with YUV 4:4:4 chroma
@@ -227,6 +227,7 @@ class AuthRequest:
     type: str = MsgType.AUTH_REQUEST
     auth_methods: list = field(default_factory=lambda: ["password", "token"])
     challenge: str = ""  # Random challenge for password hashing
+    salt: str = ""       # User salt (sent after username is known, or per-user)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))

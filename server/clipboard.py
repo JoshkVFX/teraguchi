@@ -69,7 +69,7 @@ class ClipboardSync:
                 cmd = ["xclip", "-selection", "clipboard", "-i"]
             else:
                 cmd = ["xsel", "--clipboard", "--input"]
-            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, timeout=2)
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
             proc.communicate(input=text.encode("utf-8"), timeout=2)
             self._last_content = text
         except (subprocess.TimeoutExpired, Exception) as e:

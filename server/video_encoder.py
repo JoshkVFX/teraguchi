@@ -525,10 +525,13 @@ class VideoEncoder:
     def _read_output(self):
         """Read encoded data from FFmpeg stdout."""
         enc = self._active_encoder
+        if enc is None:
+            logger.error("No active encoder set — cannot read output")
+            return
 
-        if enc and enc.codec == "av1":
+        if enc.codec == "av1":
             self._read_ivf_output()
-        elif enc and enc.codec == "h265":
+        elif enc.codec == "h265":
             self._read_hevc_output()
         else:
             self._read_h264_output()
@@ -704,8 +707,16 @@ class VideoEncoder:
             self.start(callback)
 
     def request_keyframe(self):
-        """Force the encoder to emit a keyframe."""
-        pass
+        """Force the encoder to emit a keyframe by restarting the FFmpeg process."""
+        if not self._running or not self._on_encoded_frame:
+            return
+        logger.info("Keyframe requested — restarting encoder")
+        callback = self._on_encoded_frame
+        self.stop()
+        self._running = True
+        self._start_time = time.time()
+        self._start_ffmpeg()
+        self._on_encoded_frame = callback
 
     def stop(self):
         """Stop the encoder and clean up."""
