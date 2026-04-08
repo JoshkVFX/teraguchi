@@ -187,7 +187,9 @@ class ClientProtocol:
         ssl_context = None
         if self._use_tls:
             import ssl
-            ssl_context = ssl.create_default_context()
+            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
 
         async with websockets.connect(
             uri, max_size=50 * 1024 * 1024,

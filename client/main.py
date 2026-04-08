@@ -92,7 +92,8 @@ class ConnectionDialog(QDialog):
         self.password_input.setEchoMode(QLineEdit.Password)
         layout.addRow("Password:", self.password_input)
 
-        self.tls_check = QCheckBox("Use TLS (wss://)")
+        self.tls_check = QCheckBox("Encrypt connection")
+        self.tls_check.setChecked(True)
         layout.addRow(self.tls_check)
 
         self.auto_reconnect_check = QCheckBox("Auto-reconnect on disconnect")
