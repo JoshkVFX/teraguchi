@@ -677,7 +677,7 @@ async def run_server(host: str, port: int, tls_context: Optional[ssl.SSLContext]
     stop = asyncio.Future()
 
     def signal_handler():
-        nonlocal running
+        global running
         running = False
         if not stop.done():
             stop.set_result(None)
