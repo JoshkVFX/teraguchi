@@ -130,9 +130,13 @@ class FullscreenToolbar(QWidget):
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        p.setBrush(QColor(theme.BG_SECONDARY + "ee"))  # slight transparency
+        # Semi-transparent dark panel with subtle bottom border
+        p.setBrush(QColor(10, 10, 16, 235))
         p.setPen(Qt.NoPen)
-        p.drawRoundedRect(0, 0, self.width(), self.height(), 0, 0)
+        p.drawRect(0, 0, self.width(), self.height())
+        # Accent line at bottom edge
+        p.setBrush(QColor(0, 200, 120, 80))
+        p.drawRect(0, self.height() - 1, self.width(), 1)
         p.end()
 
     def position_on_screen(self, screen_geo):

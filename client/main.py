@@ -44,12 +44,14 @@ class ConnectionDialog(QDialog):
     def __init__(self, parent=None, default_host="", default_port=443,
                  default_username="", default_password=""):
         super().__init__(parent)
-        self.setWindowTitle("Connect to Server")
-        self.setMinimumWidth(420)
+        self.setWindowTitle("New Connection")
+        self.setMinimumWidth(440)
+        self.setMaximumWidth(520)
 
         layout = QFormLayout(self)
-        layout.setSpacing(10)
-        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(12)
+        layout.setContentsMargins(28, 28, 28, 28)
+        layout.setLabelAlignment(Qt.AlignRight)
 
         self.host_input = QLineEdit(default_host)
         self.host_input.setPlaceholderText("e.g. 192.168.1.100 or hostname")

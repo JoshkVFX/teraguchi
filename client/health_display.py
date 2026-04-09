@@ -135,20 +135,33 @@ class HealthOverlay(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        # Background
-        bg = QColor(0, 0, 0, 180)
-        painter.setBrush(bg)
-        painter.setPen(Qt.NoPen)
-
-        margin = 10
+        # Background — semi-transparent panel with subtle border
+        margin = 12
         box_w = 280
-        box_h = 360
+        box_h = 370
         x = self.width() - box_w - margin
         y = margin
-        painter.drawRoundedRect(QRectF(x, y, box_w, box_h), 8, 8)
 
-        # Text
-        font = QFont("Monospace", 10)
+        # Panel background
+        bg = QColor(10, 10, 16, 210)
+        painter.setBrush(bg)
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(QRectF(x, y, box_w, box_h), 10, 10)
+
+        # Subtle border
+        border = QColor(38, 38, 64, 120)
+        painter.setPen(border)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(QRectF(x, y, box_w, box_h), 10, 10)
+
+        # Accent line at top
+        accent = QColor(0, 200, 120, 160)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(accent)
+        painter.drawRoundedRect(QRectF(x + 1, y + 1, box_w - 2, 2), 1, 1)
+
+        # Text — monospace for that command center feel
+        font = QFont("SF Mono", 10)
         font.setStyleHint(QFont.Monospace)
         painter.setFont(font)
         painter.setPen(QColor(self.data.quality_color))

@@ -206,7 +206,7 @@ def run_client_diag():
                     combo = f"{mod_prefix}+{name}"
                 else:
                     combo = name
-                color = "#00ff88" if mapped else "#ff4444"
+                color = "#00c878" if mapped else "#e5484d"
                 self._current.setText(
                     f'<span style="color:{color}; font-size:18px">{combo}</span><br>'
                     f'<span style="color:#888; font-size:13px">'
@@ -214,7 +214,7 @@ def run_client_diag():
 
             # Log entry
             self._event_count += 1
-            color = "#00ff88" if mapped else "#ff4444"
+            color = "#00c878" if mapped else "#e5484d"
             log_line = (
                 f'<span style="color:#666">{self._event_count:4d}</span> '
                 f'<span style="color:{"#88ccff" if pressed else "#666"}">{action}</span> '

@@ -109,7 +109,8 @@ class KeyDiagnosticDialog(QDialog):
         self._current = QLabel("Press a key...")
         self._current.setFont(mono)
         self._current.setStyleSheet(
-            "background: #1a1a2e; color: #e0e0e0; padding: 16px; border-radius: 8px;")
+            "background: #12121c; color: #ececf1; padding: 16px; "
+            "border-radius: 10px; border: 1px solid #262640;")
         self._current.setMinimumHeight(80)
         layout.addWidget(self._current)
 
@@ -125,7 +126,9 @@ class KeyDiagnosticDialog(QDialog):
         self._log = QTextEdit()
         self._log.setReadOnly(True)
         self._log.setFont(QFont("Menlo" if sys.platform == "darwin" else "Monospace", 11))
-        self._log.setStyleSheet("background: #0d1117; color: #c9d1d9;")
+        self._log.setStyleSheet(
+            "background: #0a0a10; color: #ececf1; "
+            "border: 1px solid #262640; border-radius: 8px; padding: 8px;")
         layout.addWidget(self._log)
 
         # Flame reference
@@ -174,7 +177,7 @@ class KeyDiagnosticDialog(QDialog):
         if pressed:
             combo = f"{mods}+{name}" if mods and qt_key not in (
                 Qt.Key_Shift, Qt.Key_Control, Qt.Key_Alt, Qt.Key_Meta) else name
-            color = "#00ff88" if mapped else "#ff4444"
+            color = "#00c878" if mapped else "#e5484d"
             self._current.setText(
                 f'<span style="color:{color}; font-size:18px">{combo}</span><br>'
                 f'<span style="color:#888; font-size:13px">'
@@ -182,7 +185,7 @@ class KeyDiagnosticDialog(QDialog):
 
         # Log line
         self._count += 1
-        color = "#00ff88" if mapped else "#ff4444"
+        color = "#00c878" if mapped else "#e5484d"
         press_color = "#88ccff" if pressed else "#555"
         mod_display = mods if mods else "—"
         self._log.append(
