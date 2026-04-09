@@ -30,6 +30,8 @@ import asyncio
 from typing import Optional, List, Callable
 from dataclasses import dataclass, asdict
 
+from common.messages import MsgType
+
 logger = logging.getLogger(__name__)
 
 
@@ -244,14 +246,6 @@ class USBForwardingManager:
     list/attach/detach messages over the WebSocket connection.
     """
 
-    # Protocol message types for USB
-    MSG_USB_DEVICE_LIST = "usb_device_list"
-    MSG_USB_ATTACH = "usb_attach"
-    MSG_USB_DETACH = "usb_detach"
-    MSG_USB_ATTACHED = "usb_attached"
-    MSG_USB_DETACHED = "usb_detached"
-    MSG_USB_ERROR = "usb_error"
-
     def __init__(self):
         self._usbip = USBIPServer()
         self._client_devices: dict = {}  # client_addr -> [USBDeviceInfo]
@@ -268,32 +262,32 @@ class USBForwardingManager:
         """
         msg_type = msg.get("type")
 
-        if msg_type == self.MSG_USB_DEVICE_LIST:
+        if msg_type == MsgType.USB_DEVICE_LIST:
             # Client is advertising available USB devices
             devices = [USBDeviceInfo.from_dict(d) for d in msg.get("devices", [])]
             self._client_devices[client_host] = devices
             logger.info("Client %s has %d USB devices available", client_host, len(devices))
             return {
-                "type": self.MSG_USB_DEVICE_LIST,
+                "type": MsgType.USB_DEVICE_LIST,
                 "devices": [d.to_dict() for d in devices],
                 "attached": self._usbip.list_attached(),
             }
 
-        elif msg_type == self.MSG_USB_ATTACH:
+        elif msg_type == MsgType.USB_ATTACH:
             bus_id = msg.get("bus_id", "")
             success = self._usbip.attach_device(client_host, bus_id)
             return {
-                "type": self.MSG_USB_ATTACHED if success else self.MSG_USB_ERROR,
+                "type": MsgType.USB_ATTACHED if success else MsgType.USB_ERROR,
                 "bus_id": bus_id,
                 "success": success,
                 "message": "Attached" if success else "Failed to attach",
             }
 
-        elif msg_type == self.MSG_USB_DETACH:
+        elif msg_type == MsgType.USB_DETACH:
             bus_id = msg.get("bus_id", "")
             success = self._usbip.detach_device(bus_id)
             return {
-                "type": self.MSG_USB_DETACHED if success else self.MSG_USB_ERROR,
+                "type": MsgType.USB_DETACHED if success else MsgType.USB_ERROR,
                 "bus_id": bus_id,
                 "success": success,
             }

@@ -85,6 +85,7 @@ class ClientProtocol:
         self.on_monitor_list: Optional[Callable] = None
         self.on_clipboard: Optional[Callable] = None
         self.on_file_response: Optional[Callable] = None  # file_accept/file_ack/file_cancel
+        self.on_usb_response: Optional[Callable] = None  # usb_device_list/attached/detached/error
 
     @property
     def connected(self) -> bool:
@@ -402,6 +403,10 @@ class ClientProtocol:
                               MsgType.FILE_CANCEL):
                 if self.on_file_response:
                     self.on_file_response(msg)
+            elif msg_type in (MsgType.USB_DEVICE_LIST, MsgType.USB_ATTACHED,
+                              MsgType.USB_DETACHED, MsgType.USB_ERROR):
+                if self.on_usb_response:
+                    self.on_usb_response(msg)
         except json.JSONDecodeError:
             pass
 

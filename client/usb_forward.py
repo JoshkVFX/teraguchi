@@ -20,6 +20,8 @@ import json
 from typing import List, Optional, Callable
 from dataclasses import dataclass, asdict
 
+from common.messages import MsgType
+
 logger = logging.getLogger(__name__)
 
 
@@ -274,7 +276,7 @@ class USBForwardClient:
         """Build a protocol message with the current device list."""
         devices = self.list_devices()
         return {
-            "type": "usb_device_list",
+            "type": MsgType.USB_DEVICE_LIST,
             "devices": [d.to_dict() for d in devices],
         }
 

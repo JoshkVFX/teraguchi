@@ -169,6 +169,9 @@ class SessionRuntime:
         ft_home = home_dir or os.path.expanduser("~")
         self.file_receiver = FileReceiver(ft_home, uid=uid, gid=gid)
 
+        # USB passthrough
+        self.usb_manager = USBForwardingManager()
+
         # Streaming state
         self._streaming = False
         self._stream_task: Optional[asyncio.Task] = None
@@ -505,6 +508,12 @@ class SessionRuntime:
             if response:
                 self._send_to_client(session, response)
 
+        elif msg_type in (MsgType.USB_DEVICE_LIST, MsgType.USB_ATTACH,
+                          MsgType.USB_DETACH):
+            response = self.usb_manager.handle_message(msg, session.client_host)
+            if response:
+                self._send_to_client(session, response)
+
         elif msg_type == MsgType.CLIENT_HELLO:
             session.supports_h264 = msg.get("supports_h264", True)
             session.supports_h265 = msg.get("supports_h265", False)
@@ -530,6 +539,8 @@ class SessionRuntime:
             self.audio.stop()
         if self.clipboard:
             self.clipboard.stop()
+        if self.usb_manager:
+            self.usb_manager.cleanup()
         if self.injector:
             self.injector.close()
         if self.capture:
@@ -547,6 +558,8 @@ class ClientSession:
     def __init__(self, ws: WebSocketServerProtocol):
         self.ws = ws
         self.client_id = str(id(ws))
+        addr = ws.remote_address
+        self.client_host = addr[0] if addr else ""
         self.authenticated = False
         self.username = ""
         self.challenge = ""
@@ -975,9 +988,6 @@ def main():
             logger.error("Failed to initialize: %s", e)
             logger.error("Make sure DISPLAY is set and accessible.")
             sys.exit(1)
-
-    # USB Passthrough
-    usb_manager = USBForwardingManager()
 
     # TLS
     tls_context = None

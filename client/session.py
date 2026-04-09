@@ -21,6 +21,7 @@ from client.audio_player import AudioPlayer
 from client.video_decoder import DecoderManager
 from client.health_display import HealthOverlay, HealthData
 from client.file_transfer import FileSender
+from client.usb_forward import USBForwardClient
 from common.messages import (
     MsgType, FrameType, QualitySettings, VideoCodec,
     HealthPong, parse_message,
@@ -44,6 +45,7 @@ class _Bridge(QObject):
     monitor_list = Signal(list)
     clipboard_recv = Signal(str)
     file_response = Signal(dict)
+    usb_response = Signal(dict)
 
 
 class Session(QObject):
@@ -65,6 +67,7 @@ class Session(QObject):
     auth_failed = Signal(str)           # error message
     monitor_list_received = Signal(list)
     file_transfer_finished = Signal(str, bool, str)  # transfer_id, success, message
+    usb_devices_updated = Signal(dict)  # server response with device list + attached
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -82,6 +85,7 @@ class Session(QObject):
         self.health = HealthData()
         self.audio = AudioPlayer()
         self.file_sender = FileSender()
+        self.usb_client = USBForwardClient()
 
         # Bridge for thread safety
         self._bridge = _Bridge()
@@ -146,6 +150,8 @@ class Session(QObject):
         self.decoder.close_all()
         if self.audio and self.audio._started:
             self.audio.stop()
+        if self.usb_client:
+            self.usb_client.cleanup()
 
     # ── Quality / Controls ───────────────────────
 
@@ -192,6 +198,7 @@ class Session(QObject):
         p.on_monitor_list = b.monitor_list.emit
         p.on_clipboard = b.clipboard_recv.emit
         p.on_file_response = b.file_response.emit
+        p.on_usb_response = b.usb_response.emit
 
         b.server_hello.connect(self._on_server_hello)
         b.jpeg_frame.connect(self._on_jpeg_frame)
@@ -209,6 +216,8 @@ class Session(QObject):
         # File sender: chunks go out via protocol, responses come back via bridge
         self.file_sender.chunk_ready.connect(self.protocol.send_input)
         self.file_sender.finished.connect(self.file_transfer_finished.emit)
+
+        b.usb_response.connect(self._on_usb_response)
 
     def _wire_viewer(self):
         v = self.viewer
@@ -298,6 +307,8 @@ class Session(QObject):
         # Start monitoring local clipboard for client→server sync
         clipboard = QApplication.clipboard()
         clipboard.dataChanged.connect(self._on_clipboard_local_changed)
+        # Advertise USB devices to server
+        self._send_usb_device_list()
 
     def _on_disconnected(self, reason):
         self.status_changed.emit("disconnected")
@@ -346,3 +357,46 @@ class Session(QObject):
             logger.warning("Cannot send files — not connected")
             return []
         return self.file_sender.send_files(file_paths)
+
+    # ── USB Passthrough ───────────────────────────
+
+    def _send_usb_device_list(self):
+        """Send local USB device list to server."""
+        msg = self.usb_client.get_device_list_message()
+        self.protocol.send_input(msg)
+
+    def _on_usb_response(self, msg):
+        """Handle USB responses from server."""
+        msg_type = msg.get("type")
+        if msg_type == "usb_device_list":
+            self.usb_devices_updated.emit(msg)
+        elif msg_type == "usb_attached":
+            bus_id = msg.get("bus_id", "")
+            logger.info("USB device attached: %s", bus_id)
+            self.usb_devices_updated.emit(msg)
+        elif msg_type == "usb_detached":
+            bus_id = msg.get("bus_id", "")
+            logger.info("USB device detached: %s", bus_id)
+            self.usb_devices_updated.emit(msg)
+        elif msg_type == "usb_error":
+            logger.error("USB error: %s", msg.get("message", ""))
+            self.usb_devices_updated.emit(msg)
+
+    def usb_attach(self, bus_id: str):
+        """Request the server to attach a USB device."""
+        if not self.is_connected:
+            return
+        # Start client-side forwarding first
+        self.usb_client.start_forwarding(bus_id)
+        self.protocol.send_input({"type": "usb_attach", "bus_id": bus_id})
+
+    def usb_detach(self, bus_id: str):
+        """Request the server to detach a USB device."""
+        if not self.is_connected:
+            return
+        self.protocol.send_input({"type": "usb_detach", "bus_id": bus_id})
+        self.usb_client.stop_forwarding(bus_id)
+
+    def usb_refresh(self):
+        """Re-enumerate and send device list."""
+        self._send_usb_device_list()

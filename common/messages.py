@@ -155,6 +155,14 @@ class MsgType:
     FILE_ACK = "file_ack"             # Server → Client: transfer result
     FILE_CANCEL = "file_cancel"        # Either direction: abort transfer
 
+    # --- USB Passthrough ---
+    USB_DEVICE_LIST = "usb_device_list"   # Client → Server: available devices
+    USB_ATTACH = "usb_attach"             # Either: request attach
+    USB_DETACH = "usb_detach"             # Either: request detach
+    USB_ATTACHED = "usb_attached"         # Server → Client: attach result
+    USB_DETACHED = "usb_detached"         # Server → Client: detach result
+    USB_ERROR = "usb_error"               # Either: error
+
     # --- Multi-monitor ---
     MONITOR_LIST = "monitor_list"
 

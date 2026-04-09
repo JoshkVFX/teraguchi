@@ -325,6 +325,95 @@ class BookmarkPanel(QWidget):
 
 
 # ════════════════════════════════════════════════════
+# USB Devices Panel
+# ════════════════════════════════════════════════════
+
+class USBDevicePanel(QWidget):
+    """Shows local USB devices with forward/detach controls."""
+    attach_requested = Signal(str)   # bus_id
+    detach_requested = Signal(str)   # bus_id
+    refresh_requested = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        # Device list
+        self._list = QListWidget()
+        self._list.setStyleSheet(f"""
+            QListWidget {{
+                background: {theme.BG_SECONDARY};
+                border: 1px solid {theme.BORDER};
+                border-radius: 6px;
+            }}
+            QListWidget::item {{
+                padding: 6px 8px;
+                border-bottom: 1px solid {theme.BORDER};
+            }}
+            QListWidget::item:selected {{
+                background: {theme.ACCENT}40;
+            }}
+        """)
+        layout.addWidget(self._list)
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        self._btn_forward = QPushButton("Forward")
+        self._btn_forward.setIcon(icons.icon_upload())
+        self._btn_forward.clicked.connect(self._on_forward)
+        self._btn_detach = QPushButton("Detach")
+        self._btn_detach.setIcon(icons.icon_disconnect())
+        self._btn_detach.clicked.connect(self._on_detach)
+        self._btn_refresh = QPushButton("Refresh")
+        self._btn_refresh.setIcon(icons.icon_refresh())
+        self._btn_refresh.clicked.connect(self.refresh_requested.emit)
+        btn_row.addWidget(self._btn_forward)
+        btn_row.addWidget(self._btn_detach)
+        btn_row.addWidget(self._btn_refresh)
+        layout.addWidget(QLabel(
+            f"<span style='color:{theme.TEXT_MUTED}; font-size:11px;'>"
+            "Wacom tablets &amp; keyboards for direct passthrough</span>"))
+        layout.addLayout(btn_row)
+
+        self._devices = []  # list of device dicts
+        self._attached = []  # list of attached bus_ids
+
+    def update_devices(self, devices: list, attached: list = None):
+        """Update the device list display."""
+        self._devices = devices
+        self._attached = attached or []
+        self._list.clear()
+        for dev in devices:
+            bus_id = dev.get("bus_id", "")
+            name = dev.get("product", "") or f"{dev.get('vendor_id', '')}:{dev.get('product_id', '')}"
+            mfr = dev.get("manufacturer", "")
+            if mfr:
+                name = f"{mfr} {name}"
+            status = " [FORWARDED]" if bus_id in self._attached else ""
+            item = QListWidgetItem(f"{name}{status}")
+            item.setData(Qt.UserRole, bus_id)
+            if bus_id in self._attached:
+                item.setForeground(QColor(theme.ACCENT))
+            self._list.addItem(item)
+
+    def _selected_bus_id(self) -> str:
+        item = self._list.currentItem()
+        return item.data(Qt.UserRole) if item else ""
+
+    def _on_forward(self):
+        bus_id = self._selected_bus_id()
+        if bus_id:
+            self.attach_requested.emit(bus_id)
+
+    def _on_detach(self):
+        bus_id = self._selected_bus_id()
+        if bus_id:
+            self.detach_requested.emit(bus_id)
+
+
+# ════════════════════════════════════════════════════
 # Main Window
 # ════════════════════════════════════════════════════
 
@@ -371,7 +460,19 @@ class MainWindow(QMainWindow):
         self._quality_panel.settings_changed.connect(self._on_quality_changed)
         self._quality_dock.setWidget(self._quality_panel)
         self.addDockWidget(Qt.RightDockWidgetArea, self._quality_dock)
-        self._quality_dock.hide()  # Hidden by default, opened via toolbar/menu
+        self._quality_dock.hide()
+
+        self._usb_dock = QDockWidget("  USB Devices", self)
+        self._usb_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self._usb_dock.setFeatures(
+            QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetClosable)
+        self._usb_panel = USBDevicePanel()
+        self._usb_panel.attach_requested.connect(self._usb_attach)
+        self._usb_panel.detach_requested.connect(self._usb_detach)
+        self._usb_panel.refresh_requested.connect(self._usb_refresh)
+        self._usb_dock.setWidget(self._usb_panel)
+        self.addDockWidget(Qt.RightDockWidgetArea, self._usb_dock)
+        self._usb_dock.hide()
 
         # ── Toolbar ──
         self._setup_toolbar()
@@ -459,6 +560,9 @@ class MainWindow(QMainWindow):
         qc_action = self._quality_dock.toggleViewAction()
         qc_action.setIcon(icons.icon_settings())
         view_menu.addAction(qc_action)
+        usb_action = self._usb_dock.toggleViewAction()
+        usb_action.setIcon(icons.icon_usb())
+        view_menu.addAction(usb_action)
         view_menu.addSeparator()
         view_menu.addAction(self._action(
             "Fullscreen", "F11", self._toggle_fullscreen, icons.icon_fullscreen()))
@@ -548,6 +652,7 @@ class MainWindow(QMainWindow):
         session.auth_failed.connect(lambda msg: QMessageBox.warning(self, "Auth Failed", msg))
         session.monitor_list_received.connect(self._on_monitor_list)
         session.file_transfer_finished.connect(self._on_file_transfer_done)
+        session.usb_devices_updated.connect(self._on_usb_devices_updated)
 
         session.connect(host, port, username, password,
                         use_tls=use_tls, auto_reconnect=auto_reconnect,
@@ -662,6 +767,28 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage(f"File transfer failed: {message}", 5000)
 
+    def _usb_attach(self, bus_id: str):
+        s = self._active_session
+        if s and s.is_connected:
+            s.usb_attach(bus_id)
+            self.statusBar().showMessage(f"Forwarding USB device {bus_id}...", 3000)
+
+    def _usb_detach(self, bus_id: str):
+        s = self._active_session
+        if s and s.is_connected:
+            s.usb_detach(bus_id)
+            self.statusBar().showMessage(f"Detaching USB device {bus_id}...", 3000)
+
+    def _usb_refresh(self):
+        s = self._active_session
+        if s and s.is_connected:
+            s.usb_refresh()
+
+    def _on_usb_devices_updated(self, msg: dict):
+        devices = msg.get("devices", [])
+        attached = msg.get("attached", [])
+        self._usb_panel.update_devices(devices, attached)
+
     def _on_quality_changed(self, settings):
         s = self._active_session
         if s:
@@ -718,6 +845,7 @@ class MainWindow(QMainWindow):
             "statusbar": not self.statusBar().isHidden(),
             "bookmarks": self._bookmark_dock.isVisible(),
             "quality": self._quality_dock.isVisible(),
+            "usb": self._usb_dock.isVisible(),
             "tabbar": self._tabs.tabBar().isVisible(),
         }
         # Hide everything
@@ -726,6 +854,7 @@ class MainWindow(QMainWindow):
         self.statusBar().hide()
         self._bookmark_dock.hide()
         self._quality_dock.hide()
+        self._usb_dock.hide()
         self._tabs.tabBar().hide()
 
         self.showFullScreen()
@@ -758,6 +887,8 @@ class MainWindow(QMainWindow):
             self._bookmark_dock.show()
         if st.get("quality", False):
             self._quality_dock.show()
+        if st.get("usb", False):
+            self._usb_dock.show()
         self._tabs.tabBar().setVisible(st.get("tabbar", True))
         self._fullscreen_state = None
 
