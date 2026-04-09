@@ -246,7 +246,10 @@ async def run_broker(host: str, port: int, admin_port: int,
 
     # Start admin UI
     if admin_server:
-        await admin_server.start(host=host, port=admin_port, tls_context=tls_context)
+        try:
+            await admin_server.start(host=host, port=admin_port, tls_context=tls_context)
+        except Exception as e:
+            logger.error("Failed to start admin UI: %s", e, exc_info=True)
 
     async with websockets.serve(
         handle_client, host, port,
