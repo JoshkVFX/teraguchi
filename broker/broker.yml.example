@@ -1,13 +1,11 @@
 # Teragucci Connection Broker - Machine Configuration
 #
 # Copy to /etc/teragucci/broker.yml and edit for your environment.
-# Each machine entry corresponds to a Teragucci server in the pool.
 
 machines:
   - name: dxs-flame-01
     host: 10.10.0.11
     port: 4443
-    pool: floating
     gpu: "NVIDIA RTX A4000"
     priority: 10
     tags: [flame, gpu]
@@ -15,7 +13,6 @@ machines:
   - name: dxs-flame-02
     host: 10.10.0.12
     port: 4443
-    pool: floating
     gpu: "NVIDIA RTX A4000"
     priority: 10
     tags: [flame, gpu]
@@ -23,7 +20,6 @@ machines:
   - name: dxs-flame-03
     host: 10.10.0.31
     port: 4443
-    pool: floating
     gpu: "NVIDIA RTX A4000"
     priority: 10
     tags: [flame, gpu]
@@ -31,7 +27,6 @@ machines:
   - name: dxs-flame-04
     host: 10.10.0.14
     port: 4443
-    pool: floating
     gpu: "NVIDIA RTX A4000"
     priority: 10
     tags: [flame, gpu]
@@ -39,7 +34,6 @@ machines:
   - name: dxs-flame-05
     host: 10.10.0.15
     port: 4443
-    pool: floating
     gpu: "NVIDIA RTX A4000"
     priority: 10
     tags: [flame, gpu]
@@ -47,16 +41,28 @@ machines:
   - name: dxs-flame-06
     host: 10.10.0.16
     port: 4443
-    pool: floating
     gpu: "NVIDIA RTX A4000"
     priority: 10
     tags: [flame, gpu]
 
-  # Example dedicated machine:
-  # - name: dxs-flame-01
-  #   host: 10.10.0.11
-  #   port: 4443
-  #   pool: dedicated
-  #   assigned_user: randy.mcentee
-  #   gpu: "NVIDIA RTX A4000"
-  #   priority: 1
+# ── User Assignments ──────────────────────────────────────
+#
+# Maps users to the machines they can access.
+# - If a user IS listed: they can only use the machines in their list.
+# - If a user is NOT listed: they get any available floating machine.
+# - Machines referenced here are removed from the floating pool.
+# - Multiple users can share the same machines.
+#
+# assignments:
+#
+#   # Dedicated — one user, one machine
+#   randy.mcentee: [dxs-flame-01]
+#
+#   # Restricted pool — user picks from these 3
+#   jane.doe: [dxs-flame-01, dxs-flame-02, dxs-flame-03]
+#
+#   # Shared pool — bob and jane both have access to flame-02 and flame-03
+#   bob.smith: [dxs-flame-02, dxs-flame-03]
+#
+#   # Unassigned users (not listed) get any machine NOT referenced above.
+#   # In this example, flame-04, flame-05, flame-06 would be floating.

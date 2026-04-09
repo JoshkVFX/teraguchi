@@ -134,13 +134,20 @@ async def handle_client(websocket: WebSocketServerProtocol):
             AuthResult(success=True, message="OK").to_json())
 
         # ── Step 3: Send broker hello ────────────────────
-        machines_status = pool.get_status()
+        all_status = pool.get_status()
+        is_admin = admin_group in groups
+        # Show only machines the user can access (admins see all)
+        if is_admin:
+            machines_status = all_status
+        else:
+            machines_status = [m for m in all_status
+                               if pool.user_can_access(username, m["name"])]
         broker_hello = {
             "type": MsgType.BROKER_HELLO,
             "broker_name": "Teragucci Broker",
             "version": "3.0.0",
             "machines": machines_status,
-            "is_admin": admin_group in groups,
+            "is_admin": is_admin,
         }
         await websocket.send(json.dumps(broker_hello))
 
@@ -153,6 +160,14 @@ async def handle_client(websocket: WebSocketServerProtocol):
         requested_machine = msg.get("machine_name", "")
 
         if requested_machine:
+            if not pool.user_can_access(username, requested_machine):
+                await websocket.send(json.dumps({
+                    "type": MsgType.BROKER_ASSIGN,
+                    "success": False,
+                    "message": f"Machine {requested_machine} not available to you",
+                }))
+                logger.warning("Access denied: %s requested %s", username, requested_machine)
+                return
             machine = pool.machines.get(requested_machine)
             if not machine or not machine.healthy:
                 await websocket.send(json.dumps({
@@ -296,7 +311,8 @@ def main():
         logger.error("No machines configured. Create %s with a 'machines' list.", args.config)
         sys.exit(1)
 
-    pool = MachinePool(machines)
+    assignments = config.get("assignments", {})
+    pool = MachinePool(machines, assignments=assignments)
 
     # FreeIPA
     ipa_servers = args.ipa_servers.split(",")

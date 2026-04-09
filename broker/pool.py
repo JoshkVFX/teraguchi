@@ -2,15 +2,14 @@
 Machine pool management — tracks Flame workstations, health, and assignments.
 
 Maintains a registry of available machines, probes their health,
-and assigns users to machines based on pool mode (dedicated/floating).
+and assigns users to machines based on user assignments or floating pool.
 """
 
 import asyncio
 import json
 import logging
 import time
-from dataclasses import dataclass, field, asdict
-from enum import Enum
+from dataclasses import dataclass, field
 from typing import Optional
 
 import aiohttp
@@ -22,22 +21,19 @@ HEALTH_FAIL_THRESHOLD = 3  # consecutive failures to mark unhealthy
 HEALTH_OK_THRESHOLD = 2    # consecutive successes to mark healthy
 
 
-class PoolMode(str, Enum):
-    FLOATING = "floating"
-    DEDICATED = "dedicated"
-
-
 @dataclass
 class Machine:
     """A Teragucci server in the pool."""
     name: str = ""
     host: str = ""
     port: int = 4443
-    pool: str = "floating"
-    assigned_user: str = ""       # For dedicated: permanent user
     gpu: str = ""
     priority: int = 10            # Lower = preferred
     tags: list = field(default_factory=list)
+
+    # Legacy fields (ignored, kept for backward compat with old configs)
+    pool: str = ""
+    assigned_user: str = ""
 
     # Runtime state (not from config)
     healthy: bool = False
@@ -53,7 +49,6 @@ class Machine:
             "name": self.name,
             "host": self.host,
             "port": self.port,
-            "pool": self.pool,
             "gpu": self.gpu,
             "priority": self.priority,
             "tags": self.tags,
@@ -66,18 +61,63 @@ class Machine:
 class MachinePool:
     """Manages the fleet of Teragucci servers."""
 
-    def __init__(self, machines_config: list[dict]):
+    def __init__(self, machines_config: list[dict],
+                 assignments: dict[str, list[str]] | None = None):
         self._machines: dict[str, Machine] = {}
         for cfg in machines_config:
             m = Machine(**{k: v for k, v in cfg.items()
                           if k in Machine.__dataclass_fields__})
             self._machines[m.name] = m
         self._probe_task: Optional[asyncio.Task] = None
-        logger.info("Pool initialized: %d machines", len(self._machines))
+
+        # Build assignment lookups
+        self._user_machines: dict[str, set[str]] = {}   # user → allowed machine names
+        self._machine_users: dict[str, set[str]] = {}   # machine → assigned users
+
+        effective = assignments or {}
+
+        # Legacy support: if no assignments, build from pool/assigned_user fields
+        if not effective:
+            for cfg in machines_config:
+                if cfg.get("pool") == "dedicated" and cfg.get("assigned_user"):
+                    user = cfg["assigned_user"]
+                    effective.setdefault(user, []).append(cfg["name"])
+            if effective:
+                logger.info("Converted legacy dedicated assignments: %s", effective)
+
+        for user, machine_names in effective.items():
+            valid = set()
+            for name in machine_names:
+                if name not in self._machines:
+                    logger.warning("Assignment references unknown machine: %s", name)
+                    continue
+                valid.add(name)
+                self._machine_users.setdefault(name, set()).add(user)
+            if valid:
+                self._user_machines[user] = valid
+
+        # Floating pool = machines NOT referenced in any assignment
+        self._floating: set[str] = {
+            name for name in self._machines
+            if name not in self._machine_users
+        }
+
+        logger.info("Pool: %d machines, %d assigned users, %d floating",
+                     len(self._machines), len(self._user_machines), len(self._floating))
+        for user, names in self._user_machines.items():
+            logger.info("  %s → %s", user, sorted(names))
+        if self._floating:
+            logger.info("  floating → %s", sorted(self._floating))
 
     @property
     def machines(self) -> dict[str, Machine]:
         return self._machines
+
+    def user_can_access(self, username: str, machine_name: str) -> bool:
+        """Check if a user is allowed to access a specific machine."""
+        if username in self._user_machines:
+            return machine_name in self._user_machines[username]
+        return machine_name in self._floating
 
     def start_health_probes(self):
         """Start background health check loop."""
@@ -140,53 +180,62 @@ class MachinePool:
         Assign a machine to a user.
 
         Priority:
-        1. Dedicated machine for this user
-        2. Existing active session (reconnect)
-        3. Available floating machine (sorted by priority)
+        1. Existing active session on an allowed machine (reconnect)
+        2. Available machine from user's assigned set (or floating pool)
+        3. Least-loaded machine from allowed set (if all busy)
         """
-        # 1. Check dedicated assignments
-        for m in self._machines.values():
-            if m.pool == "dedicated" and m.assigned_user == username:
-                if m.healthy:
-                    logger.info("Dedicated assignment: %s → %s", username, m.name)
-                    return m
-                else:
-                    logger.warning("Dedicated machine %s unhealthy for %s", m.name, username)
-                    return None
+        is_admin = "teragucci-admins" in groups
 
-        # 2. Check for existing session (reconnect)
-        for m in self._machines.values():
+        # Determine candidate machines for this user
+        if username in self._user_machines:
+            candidate_names = self._user_machines[username]
+            pool_type = "assigned"
+        else:
+            candidate_names = self._floating
+            pool_type = "floating"
+
+        # 1. Reconnect — existing session on an allowed machine
+        for name in candidate_names:
+            m = self._machines[name]
             if m.healthy and username in m.active_sessions:
                 logger.info("Reconnect: %s → %s", username, m.name)
                 return m
 
-        # 3. Find available floating machine
-        is_admin = "teragucci-admins" in groups
+        # 2. Find available machine (no active sessions)
         available = [
-            m for m in self._machines.values()
-            if m.healthy and m.pool == "floating" and len(m.active_sessions) == 0
+            self._machines[name] for name in candidate_names
+            if self._machines[name].healthy
+            and len(self._machines[name].active_sessions) == 0
         ]
+
         if not available:
-            # Try machines with sessions if admin (can share)
-            if is_admin:
+            # Allow sharing: assigned users can share their pool,
+            # admins can share any pool
+            if is_admin or username in self._user_machines:
                 available = [
-                    m for m in self._machines.values()
-                    if m.healthy and m.pool == "floating"
+                    self._machines[name] for name in candidate_names
+                    if self._machines[name].healthy
                 ]
             if not available:
-                logger.warning("No machines available for %s", username)
+                logger.warning("No machines available for %s (%s pool)", username, pool_type)
                 return None
 
-        # Sort by priority (lower = better), then by session count
+        # Sort: fewest sessions first, then by priority (lower = better)
         available.sort(key=lambda m: (len(m.active_sessions), m.priority))
         chosen = available[0]
-        logger.info("Assigned floating: %s → %s (priority=%d)",
-                    username, chosen.name, chosen.priority)
+        logger.info("Assigned %s: %s → %s (priority=%d)",
+                    pool_type, username, chosen.name, chosen.priority)
         return chosen
 
     def get_status(self) -> list[dict]:
-        """Get status of all machines."""
-        return [m.to_dict() for m in self._machines.values()]
+        """Get status of all machines with pool info."""
+        result = []
+        for m in self._machines.values():
+            d = m.to_dict()
+            d["pool"] = "floating" if m.name in self._floating else "assigned"
+            d["assigned_users"] = sorted(self._machine_users.get(m.name, set()))
+            result.append(d)
+        return result
 
     def release(self, username: str, machine_name: str):
         """Release a machine assignment (for session tracking)."""
