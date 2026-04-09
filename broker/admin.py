@@ -196,16 +196,10 @@ class AdminServer:
 
         config["assignments"] = assignments
 
-        # Atomic write: write to temp file, then rename
-        config_dir = os.path.dirname(self._config_path)
-        fd, tmp_path = tempfile.mkstemp(dir=config_dir, suffix=".yml")
-        try:
-            with os.fdopen(fd, "w") as f:
-                yaml.dump(config, f, default_flow_style=False, sort_keys=False)
-            os.replace(tmp_path, self._config_path)
-        except Exception:
-            os.unlink(tmp_path)
-            raise
+        # Write to config path directly (atomic rename not possible across
+        # filesystems, and /etc may be on a different mount)
+        with open(self._config_path, "w") as f:
+            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
 
     # ── Server Lifecycle ────────────────────────────
 
