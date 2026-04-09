@@ -28,6 +28,11 @@ from common.messages import (
     HealthPing, HealthPong, QualitySettings,
     AuthResponse, parse_message,
 )
+
+
+class _BrokerRedirect(Exception):
+    """Raised when direct-mode auth detects a broker and needs to redirect."""
+    pass
 from common.udp_transport import UDPMediaClient, CHANNEL_VIDEO, CHANNEL_AUDIO, FLAG_KEYFRAME
 from common.hybrid_transport import HybridClientTransport, TransportMsg
 from common.jitter_buffer import JitterBuffer
@@ -231,6 +236,10 @@ class ClientProtocol:
             else:
                 return
 
+        await self._connect_to_server(host, port)
+
+    async def _connect_to_server(self, host: str, port: int):
+        """Connect to a server (Flame or broker) and handle the session."""
         scheme = "wss" if self._use_tls else "ws"
         uri = f"{scheme}://{host}:{port}"
         logger.info("Connecting to %s", uri)
@@ -242,53 +251,61 @@ class ClientProtocol:
             ssl_context.check_hostname = False
             ssl_context.verify_mode = ssl.CERT_NONE
 
-        async with websockets.connect(
-            uri, max_size=50 * 1024 * 1024,
-            ping_interval=20, ping_timeout=30,
-            ssl=ssl_context,
-        ) as ws:
-            self._ws = ws
-            logger.info("Connected to server")
+        try:
+            async with websockets.connect(
+                uri, max_size=50 * 1024 * 1024,
+                ping_interval=20, ping_timeout=30,
+                ssl=ssl_context,
+            ) as ws:
+                self._ws = ws
+                logger.info("Connected to server")
 
-            first_msg = await ws.recv()
-            if isinstance(first_msg, str):
-                msg = parse_message(first_msg)
+                first_msg = await ws.recv()
+                if isinstance(first_msg, str):
+                    msg = parse_message(first_msg)
 
-                if msg.get("type") == MsgType.AUTH_REQUEST:
-                    if self._broker_token:
-                        # Authenticate with broker token
-                        await self._handle_token_auth(ws, msg)
-                    else:
-                        await self._handle_auth(ws, msg)
+                    if msg.get("type") == MsgType.AUTH_REQUEST:
+                        if self._broker_token:
+                            # Authenticate with broker token
+                            await self._handle_token_auth(ws, msg)
+                        else:
+                            await self._handle_auth(ws, msg)
 
-                elif msg.get("type") == MsgType.SERVER_HELLO:
-                    self._handle_server_hello(msg)
+                    elif msg.get("type") == MsgType.SERVER_HELLO:
+                        self._handle_server_hello(msg)
 
-            self._connected = True
-            self._reconnect_delay = 1.0
+                self._connected = True
+                self._reconnect_delay = 1.0
 
-            if self.on_connected:
-                self.on_connected()
+                if self.on_connected:
+                    self.on_connected()
 
-            hello = ClientHelloMsg()
-            if self._screen_size:
-                hello.screen_width = self._screen_size[0]
-                hello.screen_height = self._screen_size[1]
-            await ws.send(hello.to_json())
+                hello = ClientHelloMsg()
+                if self._screen_size:
+                    hello.screen_width = self._screen_size[0]
+                    hello.screen_height = self._screen_size[1]
+                await ws.send(hello.to_json())
 
-            if self._udp_enabled:
-                await self._negotiate_udp(ws, host)
+                if self._udp_enabled:
+                    await self._negotiate_udp(ws, host)
 
-            if self._hybrid and self._hybrid.state.udp_confirmed:
-                asyncio.ensure_future(self._udp_stats_loop(ws))
+                if self._hybrid and self._hybrid.state.udp_confirmed:
+                    asyncio.ensure_future(self._udp_stats_loop(ws))
 
-            async for message in ws:
-                if self._closing:
-                    break
-                if isinstance(message, str):
-                    self._handle_json(message)
-                elif isinstance(message, bytes):
-                    self._handle_binary(message)
+                async for message in ws:
+                    if self._closing:
+                        break
+                    if isinstance(message, str):
+                        self._handle_json(message)
+                    elif isinstance(message, bytes):
+                        self._handle_binary(message)
+        except _BrokerRedirect:
+            # Auto-detected broker in direct mode — redirect to assigned Flame
+            if self._redirect_host and self._broker_token:
+                logger.info("Broker redirect → %s:%d", self._redirect_host, self._redirect_port)
+                await self._connect_to_server(self._redirect_host, self._redirect_port)
+            else:
+                logger.error("Broker redirect failed — no assignment received")
 
     async def _broker_handshake(self, host: str, port: int):
         """Phase 1: Authenticate with broker and get machine assignment."""
@@ -451,10 +468,43 @@ class ClientProtocol:
             if not result.get("success", False):
                 return
 
-        # Receive server hello
+        # Receive server hello (or broker hello if connected to a broker)
         hello_raw = await ws.recv()
         hello = parse_message(hello_raw)
-        self._handle_server_hello(hello)
+
+        if hello.get("type") == MsgType.BROKER_HELLO:
+            # Auto-detect broker: connected in direct mode but server is a broker.
+            # Handle the full broker redirect inline.
+            logger.info("Detected broker (auto-switching from direct mode)")
+            if self.on_broker_hello:
+                self.on_broker_hello(hello)
+
+            # Request auto-assignment
+            await ws.send(json.dumps({
+                "type": MsgType.BROKER_MACHINE_REQUEST,
+                "machine_name": "",
+            }))
+
+            raw = await asyncio.wait_for(ws.recv(), timeout=30)
+            assign = parse_message(raw)
+
+            if assign.get("type") == MsgType.BROKER_ASSIGN and assign.get("success"):
+                if self.on_broker_assign:
+                    self.on_broker_assign(assign)
+                self._redirect_host = assign["host"]
+                self._redirect_port = assign["port"]
+                self._broker_token = assign["token"]
+                self._use_tls = assign.get("use_tls", True)
+                self._broker_mode = True
+                logger.info("Broker assigned: %s:%d",
+                            self._redirect_host, self._redirect_port)
+            else:
+                logger.error("Broker assignment failed: %s",
+                             assign.get("message", ""))
+            # Signal caller to handle redirect (raise to exit the ws context)
+            raise _BrokerRedirect()
+        else:
+            self._handle_server_hello(hello)
 
     async def _negotiate_udp(self, ws, server_host: str):
         try:
