@@ -161,15 +161,7 @@ class SessionRuntime:
         # Clipboard
         self.clipboard: Optional[ClipboardSync] = None
         if not no_clipboard:
-            old_display2 = os.environ.get("DISPLAY", "")
-            os.environ["DISPLAY"] = display
-            try:
-                self.clipboard = ClipboardSync()
-            finally:
-                if old_display2:
-                    os.environ["DISPLAY"] = old_display2
-                else:
-                    os.environ.pop("DISPLAY", None)
+            self.clipboard = ClipboardSync(display=display)
 
         # Streaming state
         self._streaming = False

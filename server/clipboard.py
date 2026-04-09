@@ -22,13 +22,22 @@ class ClipboardSync:
     Polls for changes and notifies via callback.
     """
 
-    def __init__(self, poll_interval: float = 0.5):
+    def __init__(self, display: str = "", poll_interval: float = 0.5):
         self.poll_interval = poll_interval
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._last_content = ""
         self._on_clipboard_change: Optional[Callable] = None
+        self._display = display
         self._tool = self._find_clipboard_tool()
+
+    def _get_env(self) -> dict:
+        """Build environment with correct DISPLAY for xclip/xsel."""
+        import os
+        env = os.environ.copy()
+        if self._display:
+            env["DISPLAY"] = self._display
+        return env
 
     def _find_clipboard_tool(self) -> str:
         """Find available clipboard tool."""
@@ -55,7 +64,8 @@ class ClipboardSync:
                 cmd = ["xclip", "-selection", "clipboard", "-o"]
             else:
                 cmd = ["xsel", "--clipboard", "--output"]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
+            result = subprocess.run(cmd, capture_output=True, text=True,
+                                    timeout=2, env=self._get_env())
             return result.stdout if result.returncode == 0 else ""
         except (subprocess.TimeoutExpired, Exception):
             return ""
@@ -69,9 +79,10 @@ class ClipboardSync:
                 cmd = ["xclip", "-selection", "clipboard", "-i"]
             else:
                 cmd = ["xsel", "--clipboard", "--input"]
-            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, env=self._get_env())
             proc.communicate(input=text.encode("utf-8"), timeout=2)
             self._last_content = text
+            logger.debug("Clipboard set: %d chars", len(text))
         except (subprocess.TimeoutExpired, Exception) as e:
             logger.error("Failed to set clipboard: %s", e)
 
