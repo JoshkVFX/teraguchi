@@ -685,13 +685,11 @@ class MainWindow(QMainWindow):
         session.file_transfer_finished.connect(self._on_file_transfer_done)
         session.usb_devices_updated.connect(self._on_usb_devices_updated)
 
-        logger.info(">>> _new_session_and_connect mode=%r host=%s port=%d", mode, host, port)
         if mode == "broker":
-            logger.info(">>> Calling session.connect_broker()")
+            logger.info("Connecting via broker to %s:%d", host, port)
             session.connect_broker(host, port, username, password,
                                    use_tls=use_tls, auto_reconnect=auto_reconnect)
         else:
-            logger.info(">>> Calling session.connect() (direct)")
             session.connect(host, port, username, password,
                             use_tls=use_tls, auto_reconnect=auto_reconnect,
                             bookmark_id=bookmark_id)
@@ -769,8 +767,6 @@ class MainWindow(QMainWindow):
                 self._bookmark_panel._refresh()
 
             mode = dialog.connection_mode
-            logger.info("Connection mode: %s, host: %s, port: %d",
-                        mode, dialog.host, dialog.port)
             self._new_session_and_connect(
                 dialog.host, dialog.port, dialog.username, dialog.password,
                 use_tls=dialog.use_tls, auto_reconnect=dialog.auto_reconnect,
@@ -1003,7 +999,6 @@ def main():
                         help="Connect via broker instead of direct")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
-    print(f"PARSED ARGS: broker={args.broker}, verbose={args.verbose}, host={args.host!r}, mode={'broker' if args.broker else 'direct'}")
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
