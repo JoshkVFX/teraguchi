@@ -269,6 +269,7 @@ class UserSession:
             "USER": self.username,
             "LOGNAME": self.username,
             "SHELL": pwd.getpwuid(self.uid).pw_shell,
+            "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin",
             "XDG_RUNTIME_DIR": f"/run/user/{self.uid}",
             "DBUS_SESSION_BUS_ADDRESS": self.dbus_address,
             "XDG_SESSION_TYPE": "x11",

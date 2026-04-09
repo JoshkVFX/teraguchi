@@ -635,6 +635,9 @@ async def handle_client(websocket: WebSocketServerProtocol):
 
                 session.authenticated = True
                 session.username = username
+                session.client_screen_width = msg.get("screen_width", 0)
+                session.client_screen_height = msg.get("screen_height", 0)
+                logger.info("Client screen: %dx%d", session.client_screen_width, session.client_screen_height)
 
             else:
                 # Local mode: challenge-response

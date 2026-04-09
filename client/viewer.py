@@ -275,14 +275,19 @@ class RemoteViewer(QWidget):
     def keyPressEvent(self, event: QKeyEvent):
         if event.isAutoRepeat():
             return
+        key = event.key()
         modifiers = self._qt_modifiers_to_int(event.modifiers())
-        self.key_changed.emit(event.key(), event.key(), True, modifiers)
+        logger.debug("Key press: key=0x%x mod=0x%x", key, modifiers)
+        self.key_changed.emit(key, key, True, modifiers)
+        event.accept()
 
     def keyReleaseEvent(self, event: QKeyEvent):
         if event.isAutoRepeat():
             return
+        key = event.key()
         modifiers = self._qt_modifiers_to_int(event.modifiers())
-        self.key_changed.emit(event.key(), event.key(), False, modifiers)
+        self.key_changed.emit(key, key, False, modifiers)
+        event.accept()
 
     # --- Helpers ---
 

@@ -632,6 +632,10 @@ def main():
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
+    # macOS: don't swap Control/Meta so physical Control = Control_L on Linux
+    if sys.platform == "darwin":
+        QApplication.setAttribute(Qt.AA_MacDontSwapCtrlAndMeta, True)
+
     app = QApplication(sys.argv)
     app.setApplicationName("Teragucci")
     app.setApplicationDisplayName("Teragucci")
