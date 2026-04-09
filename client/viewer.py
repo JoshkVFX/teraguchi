@@ -32,6 +32,7 @@ class RemoteViewer(QWidget):
     pen_event = Signal(dict)  # Full pen event data
     request_full_frame = Signal()
     paste_requested = Signal()  # Ctrl+V or Cmd+V detected — push clipboard
+    files_dropped = Signal(list)  # list of file paths dropped onto viewer
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -71,6 +72,9 @@ class RemoteViewer(QWidget):
         # Accept all input
         self.setAttribute(Qt.WA_AcceptTouchEvents, True)
         self.setAttribute(Qt.WA_TabletTracking, True)
+
+        # Accept file drag-and-drop
+        self.setAcceptDrops(True)
 
         logger.info("RemoteViewer initialized")
 
@@ -420,6 +424,28 @@ class RemoteViewer(QWidget):
             if mods & Qt.MetaModifier:
                 result |= 8
         return result
+
+    # --- Drag and Drop ---
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        if event.mimeData().hasUrls():
+            paths = []
+            for url in event.mimeData().urls():
+                path = url.toLocalFile()
+                if path:
+                    paths.append(path)
+            if paths:
+                logger.info("Files dropped: %s", paths)
+                self.files_dropped.emit(paths)
+            event.acceptProposedAction()
 
     def sizeHint(self) -> QSize:
         return QSize(self._remote_width, self._remote_height)

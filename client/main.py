@@ -430,6 +430,8 @@ class MainWindow(QMainWindow):
         file_menu = mb.addMenu("&File")
         file_menu.addAction(self._action(
             "New Connection", "Ctrl+N", self._show_connect_dialog, icons.icon_connect()))
+        file_menu.addAction(self._action(
+            "Send File...", "Ctrl+Shift+S", self._send_file_dialog, icons.icon_upload()))
         file_menu.addSeparator()
         file_menu.addAction(self._action(
             "Import Bookmarks...", "", lambda: self._bookmark_panel._import_bookmarks(),
@@ -545,6 +547,7 @@ class MainWindow(QMainWindow):
         session.title_changed.connect(lambda t, i=idx: self._tabs.setTabText(i, t))
         session.auth_failed.connect(lambda msg: QMessageBox.warning(self, "Auth Failed", msg))
         session.monitor_list_received.connect(self._on_monitor_list)
+        session.file_transfer_finished.connect(self._on_file_transfer_done)
 
         session.connect(host, port, username, password,
                         use_tls=use_tls, auto_reconnect=auto_reconnect,
@@ -641,6 +644,23 @@ class MainWindow(QMainWindow):
         s = self._active_session
         if s:
             s.disconnect()
+
+    def _send_file_dialog(self):
+        s = self._active_session
+        if not s or not s.is_connected:
+            self.statusBar().showMessage("Not connected", 3000)
+            return
+        paths, _ = QFileDialog.getOpenFileNames(self, "Send Files to Remote")
+        if paths:
+            ids = s.send_files(paths)
+            count = len([i for i in ids if i])
+            self.statusBar().showMessage(f"Sending {count} file(s)...", 5000)
+
+    def _on_file_transfer_done(self, transfer_id: str, success: bool, message: str):
+        if success:
+            self.statusBar().showMessage(f"File sent: {message}", 5000)
+        else:
+            self.statusBar().showMessage(f"File transfer failed: {message}", 5000)
 
     def _on_quality_changed(self, settings):
         s = self._active_session

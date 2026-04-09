@@ -20,6 +20,7 @@ from client.protocol import ClientProtocol
 from client.audio_player import AudioPlayer
 from client.video_decoder import DecoderManager
 from client.health_display import HealthOverlay, HealthData
+from client.file_transfer import FileSender
 from common.messages import (
     MsgType, FrameType, QualitySettings, VideoCodec,
     HealthPong, parse_message,
@@ -42,6 +43,7 @@ class _Bridge(QObject):
     health_stats = Signal(dict)
     monitor_list = Signal(list)
     clipboard_recv = Signal(str)
+    file_response = Signal(dict)
 
 
 class Session(QObject):
@@ -62,6 +64,7 @@ class Session(QObject):
     title_changed = Signal(str)         # e.g. "randy@10.10.0.150 (1920x1080)"
     auth_failed = Signal(str)           # error message
     monitor_list_received = Signal(list)
+    file_transfer_finished = Signal(str, bool, str)  # transfer_id, success, message
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -78,6 +81,7 @@ class Session(QObject):
         self.decoder = DecoderManager()
         self.health = HealthData()
         self.audio = AudioPlayer()
+        self.file_sender = FileSender()
 
         # Bridge for thread safety
         self._bridge = _Bridge()
@@ -187,6 +191,7 @@ class Session(QObject):
         p.on_health_stats = b.health_stats.emit
         p.on_monitor_list = b.monitor_list.emit
         p.on_clipboard = b.clipboard_recv.emit
+        p.on_file_response = b.file_response.emit
 
         b.server_hello.connect(self._on_server_hello)
         b.jpeg_frame.connect(self._on_jpeg_frame)
@@ -199,6 +204,11 @@ class Session(QObject):
         b.health_stats.connect(self._on_health_stats)
         b.monitor_list.connect(self._on_monitor_list)
         b.clipboard_recv.connect(self._on_clipboard_recv)
+        b.file_response.connect(self._on_file_response)
+
+        # File sender: chunks go out via protocol, responses come back via bridge
+        self.file_sender.chunk_ready.connect(self.protocol.send_input)
+        self.file_sender.finished.connect(self.file_transfer_finished.emit)
 
     def _wire_viewer(self):
         v = self.viewer
@@ -208,6 +218,7 @@ class Session(QObject):
         v.key_changed.connect(self._send_key_event)
         v.pen_event.connect(self._send_pen_event)
         v.paste_requested.connect(self._push_clipboard_for_paste)
+        v.files_dropped.connect(self.send_files)
 
     # ── Input Sending ────────────────────────────
 
@@ -322,3 +333,16 @@ class Session(QObject):
         text = QApplication.clipboard().text()
         if text:
             self.protocol.send_clipboard(text)
+
+    def _on_file_response(self, msg):
+        """Route file transfer responses to FileSender."""
+        self.file_sender.handle_response(msg)
+
+    # ── File Transfer ─────────────────────────────
+
+    def send_files(self, file_paths: list) -> list:
+        """Send files to the remote server. Returns list of transfer IDs."""
+        if not self.is_connected:
+            logger.warning("Cannot send files — not connected")
+            return []
+        return self.file_sender.send_files(file_paths)

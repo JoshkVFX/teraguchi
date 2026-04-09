@@ -58,6 +58,7 @@ from server.audio_capture import AudioCapture, check_audio_available
 from server.health import HealthMonitor
 from server.auth import Authenticator
 from server.clipboard import ClipboardSync
+from server.file_transfer import FileReceiver
 from common.udp_transport import UDPMediaServer, BandwidthEstimator, CHANNEL_VIDEO, CHANNEL_AUDIO
 from common.hybrid_transport import HybridServerTransport, TransportMsg, TransportMode
 from common.quic_transport import QUICTransportServer, quic_available
@@ -86,7 +87,8 @@ class SessionRuntime:
                  ffmpeg_caps: dict, available_encoders: dict,
                  no_audio: bool = False, no_clipboard: bool = False,
                  sw_only: bool = False, monitor_index: int = 1,
-                 jpeg_quality: int = 60, uid: int = 0, gid: int = 0):
+                 jpeg_quality: int = 60, uid: int = 0, gid: int = 0,
+                 home_dir: str = ""):
         self.display = display
         self.username = username
         self.quality = quality
@@ -162,6 +164,10 @@ class SessionRuntime:
         self.clipboard: Optional[ClipboardSync] = None
         if not no_clipboard:
             self.clipboard = ClipboardSync(display=display)
+
+        # File transfer
+        ft_home = home_dir or os.path.expanduser("~")
+        self.file_receiver = FileReceiver(ft_home, uid=uid, gid=gid)
 
         # Streaming state
         self._streaming = False
@@ -331,6 +337,12 @@ class SessionRuntime:
             if cs.authenticated and cs.supports_audio and self._event_loop:
                 asyncio.run_coroutine_threadsafe(cs.enqueue(data), self._event_loop)
 
+    def _send_to_client(self, session: "ClientSession", msg_dict: dict):
+        """Send a JSON response to a specific client (thread-safe)."""
+        if self._event_loop and msg_dict:
+            msg_json = json.dumps(msg_dict)
+            asyncio.run_coroutine_threadsafe(session.enqueue(msg_json), self._event_loop)
+
     def _on_clipboard_change(self, text: str):
         msg_json = ClipboardMsg(type=MsgType.CLIPBOARD_RECV, data=text).to_json()
         for ws, cs in list(self.clients.items()):
@@ -486,6 +498,12 @@ class SessionRuntime:
         elif msg_type == MsgType.CLIPBOARD_SEND:
             if self.clipboard:
                 self.clipboard.set_clipboard(msg.get("data", ""))
+
+        elif msg_type in (MsgType.FILE_OFFER, MsgType.FILE_CHUNK,
+                          MsgType.FILE_DONE, MsgType.FILE_CANCEL):
+            response = self.file_receiver.handle_message(msg)
+            if response:
+                self._send_to_client(session, response)
 
         elif msg_type == MsgType.CLIENT_HELLO:
             session.supports_h264 = msg.get("supports_h264", True)
@@ -697,6 +715,7 @@ async def handle_client(websocket: WebSocketServerProtocol):
                     jpeg_quality=server_args.quality,
                     uid=user_info["uid"],
                     gid=user_info["gid"],
+                    home_dir=user_info["home"],
                 )
                 runtime.set_event_loop(asyncio.get_event_loop())
                 runtimes[session.username] = runtime

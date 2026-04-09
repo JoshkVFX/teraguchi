@@ -84,6 +84,7 @@ class ClientProtocol:
         self.on_health_stats: Optional[Callable] = None
         self.on_monitor_list: Optional[Callable] = None
         self.on_clipboard: Optional[Callable] = None
+        self.on_file_response: Optional[Callable] = None  # file_accept/file_ack/file_cancel
 
     @property
     def connected(self) -> bool:
@@ -397,6 +398,10 @@ class ClientProtocol:
             elif msg_type == MsgType.CLIPBOARD_RECV:
                 if self.on_clipboard:
                     self.on_clipboard(msg.get("data", ""))
+            elif msg_type in (MsgType.FILE_ACCEPT, MsgType.FILE_ACK,
+                              MsgType.FILE_CANCEL):
+                if self.on_file_response:
+                    self.on_file_response(msg)
         except json.JSONDecodeError:
             pass
 

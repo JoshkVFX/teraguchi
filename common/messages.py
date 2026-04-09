@@ -147,6 +147,14 @@ class MsgType:
     CLIPBOARD_SEND = "clipboard_send"
     CLIPBOARD_RECV = "clipboard_recv"
 
+    # --- File Transfer ---
+    FILE_OFFER = "file_offer"          # Client → Server: offer a file
+    FILE_ACCEPT = "file_accept"        # Server → Client: ready to receive
+    FILE_CHUNK = "file_chunk"          # Client → Server: file data chunk
+    FILE_DONE = "file_done"            # Client → Server: transfer complete
+    FILE_ACK = "file_ack"             # Server → Client: transfer result
+    FILE_CANCEL = "file_cancel"        # Either direction: abort transfer
+
     # --- Multi-monitor ---
     MONITOR_LIST = "monitor_list"
 
