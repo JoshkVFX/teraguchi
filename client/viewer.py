@@ -49,8 +49,8 @@ class RemoteViewer(QWidget):
         self._offset_x = 0
         self._offset_y = 0
 
-        # Fullscreen stretch mode — fill entire screen like local display
-        self._stretch_fill = True
+        # Stretch mode: False = preserve aspect ratio (correct geometry)
+        self._stretch_fill = False
 
         # Track whether we're using pen or mouse to avoid duplicate events
         self._pen_active = False
@@ -144,10 +144,15 @@ class RemoteViewer(QWidget):
     # --- Paint ---
 
     def paintEvent(self, event):
+        painter = QPainter(self)
+
+        # Black background (fills letterbox/pillarbox areas)
+        painter.fillRect(self.rect(), Qt.black)
+
         if self._screen_image is None:
+            painter.end()
             return
 
-        painter = QPainter(self)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
 
         if self._pixmap is None:
