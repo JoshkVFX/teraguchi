@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "teragucci"
-version = "2.0.0"
-description = "Open-source remote desktop with Wacom pen pressure, H.264 4:4:4, health monitoring — Teradici/Parsec/RGS replacement"
+version = "3.0.0"
+description = "Open-source remote desktop for creative professionals — GPU-accelerated H.264/H.265/AV1 with YUV 4:4:4, full Wacom pen pressure, USB passthrough, file transfer, and per-user session isolation. Replaces Teradici PCoIP, HP Anywhere, Parsec, and HP RGS."
 requires-python = ">=3.10"
 license = {text = "MIT"}
 

@@ -1,137 +1,168 @@
 # Teragucci
 
-Open-source remote desktop application with full Wacom pen pressure sensitivity, H.264/H.265 video with YUV 4:4:4 chroma, and professional-grade features. Designed as a replacement for HP Anywhere (Teradici/PCoIP), Parsec, and HP RGS.
+Open-source remote desktop built for creative professionals. GPU-accelerated H.264/H.265/AV1 video with YUV 4:4:4 chroma, full Wacom pen pressure, USB device passthrough, file transfer, clipboard sync, and per-user session isolation. Designed to replace Teradici PCoIP, HP Anywhere, Parsec, and HP RGS on Linux workstations.
+
+## Why Teragucci
+
+Commercial remote desktop tools cost thousands per seat, lock you into proprietary protocols, and treat creative workflows as an afterthought. Teragucci was built for VFX and post-production environments where color accuracy, pen pressure, and low-latency input are non-negotiable.
+
+- **YUV 4:4:4** chroma means no color subsampling — text stays sharp, color pickers stay accurate
+- **Full Wacom support** — 8192 pressure levels, tilt, rotation, express keys via USB passthrough
+- **GPU encoding** — NVENC, VAAPI, AMF hardware acceleration with software fallback
+- **Per-user sessions** — PAM authentication spawns isolated X sessions (like PCoIP)
+- **Runs on commodity hardware** — no Teradici cards, no dongles, no license servers
 
 ## Features
 
-### Video Streaming
-- **H.264 encoding** with YUV 4:4:4 (High 4:4:4 Predictive profile) for razor-sharp text and full color fidelity
-- **H.265/HEVC** support for better compression at same quality
-- **Lossless mode** for pixel-perfect accuracy
-- **JPEG fallback** for environments without FFmpeg
-- **Dirty-rectangle detection** in JPEG mode for bandwidth efficiency
-- **Adaptive quality** with sharpness ↔ temporal stability slider
+### Video
+- H.264, H.265, AV1 encoding with YUV 4:2:0, 4:2:2, or 4:4:4 chroma
+- GPU-accelerated encoding via NVENC (NVIDIA), VAAPI (Intel/AMD), AMF (AMD)
+- NvFBC capture on NVIDIA GPUs for lowest-latency screen grab
+- Lossless mode for pixel-perfect accuracy
+- JPEG dirty-rectangle fallback for environments without FFmpeg
+- Adaptive quality slider: sharpness vs temporal stability
 
 ### Input
-- **Full mouse control** with absolute positioning
-- **Full keyboard** with Qt-to-Linux keycode mapping
-- **Wacom pen/stylus** with:
-  - 8192 levels of pressure sensitivity
-  - Tilt X/Y
-  - Rotation
-  - Pen tip, eraser, and barrel button
-  - Hover/proximity detection
-  - Virtual uinput tablet device recognized by GIMP, Krita, Blender, etc.
+- Full mouse and keyboard with Qt-to-Linux keycode mapping
+- macOS key remapping — Command and Control both map to Ctrl on Linux
+- Wacom pen/stylus: 8192 pressure levels, tilt X/Y, rotation, barrel button, eraser, hover
+- Virtual uinput tablet device (recognized by Flame, GIMP, Krita, Nuke, etc.)
+- XTest injection for virtual displays, uinput for physical
 
-### Quality Control
-- **Sharpness ↔ Temporal Stability slider** — smoothly trade off between crisp individual frames and fluid motion
-- **Presets**: Low Bandwidth, Balanced, Best Quality, Lossless
-- **Per-setting overrides**: codec, chroma subsampling, FPS cap, bandwidth cap
+### USB Passthrough
+- Forward local USB devices to the remote server via Linux USB/IP
+- Wacom tablets, keyboards, and other HID devices appear as native hardware
+- Device enumeration on macOS (system_profiler), Windows (usbipd), Linux (lsusb)
+- Attach/detach from the USB Devices panel in the client toolbar
+- Server-side kernel modules: `vhci-hcd`, `usbip-core`
 
-### Connection Management
-- **Bookmark system** with saved host, port, username, password, and quality preferences
-- **Encrypted credential storage** using machine-derived keys
-- **Import/Export** bookmarks as JSON
-- **Search and organize** bookmarks with color labels
-- **Auto-reconnect** with exponential backoff
+### File Transfer
+- Drag-and-drop files onto the viewer to send to the remote desktop
+- File > Send File picker (Ctrl+Shift+S)
+- Chunked transfer over WebSocket with SHA-256 checksum verification
+- Files land in `~/Desktop` on the remote machine
+- 2 GB max file size, 256 KB chunks
 
-### Health Monitoring
-- **Real-time overlay** (F9 toggle) showing:
-  - Round-trip latency (RTT)
-  - Actual vs target FPS
-  - Bandwidth usage (Mbps)
-  - Dropped frames count
-  - Encode/capture/input timing
-  - Codec and chroma info
-- **Status bar indicator** with color-coded quality dot
-- **Ping/pong** latency measurement
-
-### Security
-- **TLS support** (wss://) for encrypted connections
-- **Challenge-response authentication** — passwords never sent in cleartext
-- **User management** via `--add-user` CLI command
+### Clipboard
+- Bidirectional text clipboard sync via xclip
+- Explicit clipboard push on Ctrl+V / Cmd+V for reliable paste
+- Server polls X11 clipboard for server-to-client changes
 
 ### Audio
-- **System audio capture** via PulseAudio/PipeWire monitor source
-- **Opus encoding** for efficient low-latency audio
-- **Configurable bitrate** (32-320 kbps)
+- System audio capture via PulseAudio/PipeWire monitor source
+- PCM streaming with configurable bitrate (32-320 kbps)
+- Toggle on/off from quality settings
 
-### Other
-- **Clipboard sync** (bidirectional text) via xclip/xsel
-- **Multi-monitor support** — select individual monitors or full virtual desktop
-- **Systemd service** for always-on server deployment
-- **PyInstaller packaging** for standalone client builds
+### Sessions
+- **PAM mode** — per-user Xvfb/Xorg sessions with GNOME, isolated displays
+- **Legacy mode** — single shared display (existing X session)
+- NVIDIA GPU sessions use real Xorg with NVIDIA driver for full OpenGL/CUDA
+- Sessions persist across disconnects for seamless reconnection
+
+### Connection Management
+- Multiple concurrent sessions via tabs
+- Bookmark system with encrypted credential storage
+- Import/Export bookmarks as JSON
+- Auto-reconnect with exponential backoff
+
+### Health Monitoring
+- Real-time overlay (F9) — RTT, FPS, bandwidth, dropped frames, encode/capture timing
+- Status bar with color-coded connection quality indicator
+- Server-side health stats pushed to client
+
+### Security
+- TLS (wss://) encrypted WebSocket connections
+- PAM authentication against system users (FreeIPA, LDAP, local)
+- Challenge-response password hashing
+- Local auth mode with `--add-user` for standalone deployments
 
 ## Architecture
 
 ```
-┌──────────────────────┐       WebSocket (ws/wss)       ┌──────────────────────┐
-│   Client (Mac/Win)   │  ── JSON (input/control) ──►   │   Server (Linux)     │
-│                      │  ◄── Binary (video/audio) ──   │                      │
-│  PySide6 GUI         │  ◄── JSON (health/clipboard)   │  Screen Capture      │
-│  ├─ RemoteViewer     │                                 │  ├─ mss (X11/XShm)  │
-│  ├─ QTabletEvent     │                                 │  └─ Multi-monitor    │
-│  ├─ BookmarkPanel    │                                 │                      │
-│  ├─ QualitySlider    │                                 │  Video Encoder       │
-│  ├─ HealthOverlay    │                                 │  ├─ FFmpeg H.264     │
-│  └─ Auto-reconnect   │                                 │  ├─ FFmpeg H.265     │
-│                      │                                 │  ├─ YUV 4:4:4       │
-│  Bookmarks           │                                 │  └─ JPEG fallback    │
-│  ├─ Encrypted creds  │                                 │                      │
-│  ├─ Import/Export    │                                 │  Input Injection     │
-│  └─ Color labels     │                                 │  ├─ uinput Mouse    │
-│                      │                                 │  ├─ uinput Keyboard │
-│                      │                                 │  └─ uinput Pen Tab  │
-│                      │                                 │                      │
-│                      │                                 │  Audio (PulseAudio)  │
-│                      │                                 │  Clipboard (xclip)   │
-│                      │                                 │  Auth + TLS          │
-└──────────────────────┘                                 └──────────────────────┘
+┌─────────────────────────┐     WebSocket (wss://)     ┌─────────────────────────┐
+│   Client (macOS/Win)    │  ─ JSON control/input ──►   │   Server (Linux)        │
+│                         │  ◄─ Binary video/audio ──   │                         │
+│  PySide6 GUI            │  ◄─ JSON health/clipboard   │  Screen Capture         │
+│  ├─ RemoteViewer        │                             │  ├─ NvFBC (NVIDIA)      │
+│  ├─ QTabletEvent (pen)  │  ─ USB/IP (sideband) ──►   │  ├─ mss / XShm          │
+│  ├─ Tabbed sessions     │                             │  └─ Multi-monitor       │
+│  ├─ Bookmark panel      │                             │                         │
+│  ├─ Quality controls    │                             │  Video Encoder (FFmpeg)  │
+│  ├─ USB device panel    │                             │  ├─ h264_nvenc          │
+│  ├─ Health overlay      │                             │  ├─ hevc_nvenc          │
+│  ├─ File drag-and-drop  │                             │  ├─ libx264 / libx265   │
+│  └─ Audio playback      │                             │  └─ YUV 4:4:4 profiles  │
+│                         │                             │                         │
+│  Decoders (PyAV)        │                             │  Input Injection         │
+│  ├─ H.264 / H.265      │                             │  ├─ XTest (Xvfb)        │
+│  ├─ AV1                 │                             │  ├─ uinput (physical)   │
+│  └─ HW accel (CUDA,     │                             │  └─ Wacom tablet device │
+│     VideoToolbox, VAAPI) │                             │                         │
+│                         │                             │  Session Manager (PAM)   │
+│                         │                             │  ├─ Per-user Xvfb/Xorg  │
+│                         │                             │  ├─ GNOME shell          │
+│                         │                             │  └─ PulseAudio per-user  │
+│                         │                             │                         │
+│                         │                             │  USB/IP (vhci-hcd)      │
+│                         │                             │  Clipboard (xclip)      │
+│                         │                             │  File Receiver          │
+│                         │                             │  Auth (PAM / local)     │
+└─────────────────────────┘                             └─────────────────────────┘
 ```
 
-## Quick Start
+## Installation
 
 ### Server (Linux)
 
+The install script handles everything — system packages, Python venv, uinput permissions, kernel modules, and systemd service:
+
 ```bash
-# Install Python dependencies
-pip install -r requirements-server.txt
-
-# Install system dependencies (Ubuntu/Debian)
-sudo apt install ffmpeg pulseaudio-utils xclip
-
-# One-time setup: configure uinput permissions
-sudo bash server/setup_uinput.sh
-# Log out and back in for group changes
-
-# Optional: add a user for authentication
-python -m server.main --add-user myuser
-
-# Start the server
-python -m server.main
-
-# Full options:
-python -m server.main \
-  --port 9876 \
-  --fps 60 \
-  --codec h264 \
-  --chroma yuv444 \
-  --max-bandwidth 100 \
-  --tls-cert cert.pem --tls-key key.pem \
-  --verbose
+sudo bash install-server.sh
 ```
 
-### Client (Mac / Windows)
+Options:
+```bash
+sudo bash install-server.sh --no-service    # skip systemd setup
+sudo bash install-server.sh --no-auth       # skip user creation prompt
+```
+
+Installs to `/opt/teragucci` with a `.venv` and creates the `teragucci-server` systemd service.
+
+#### Manual Setup
 
 ```bash
-# Install dependencies
+pip install -r requirements-server.txt
+
+# System dependencies (RHEL/Rocky)
+sudo dnf install ffmpeg pulseaudio-utils xclip
+
+# System dependencies (Ubuntu/Debian)
+sudo apt install ffmpeg pulseaudio-utils xclip
+
+# uinput and USB/IP kernel modules
+sudo modprobe uinput vhci-hcd usbip-core
+
+# Start
+python -m server.main --port 4443 --codec h264 --chroma yuv444 \
+  --tls-cert certs/cert.pem --tls-key certs/key.pem
+```
+
+### Client (macOS / Windows / Linux)
+
+```bash
+bash install-client.sh           # install dependencies
+bash install-client.sh --build   # also build standalone app with PyInstaller
+```
+
+Or manually:
+```bash
 pip install -r requirements-client.txt
-
-# Run
 python -m client.main
+```
 
-# Or connect directly:
-python -m client.main --host 192.168.1.100 --port 9876 -u myuser -p mypassword
+Connect directly from CLI:
+```bash
+python -m client.main --host 10.10.0.12 --port 4443 -u randy -p mypassword
 ```
 
 ### Build Standalone Client
@@ -142,91 +173,227 @@ python build_client.py
 # Output: dist/Teragucci/
 ```
 
-### Systemd Service
+## Server Configuration
 
-```bash
-sudo cp server/teragucci-server.service /etc/systemd/system/
-# Edit to set your username and install path
-sudo systemctl daemon-reload
-sudo systemctl enable --now teragucci-server
-```
-
-## Keyboard Shortcuts
-
-| Key | Action |
-|-----|--------|
-| F5 | Refresh (request full frame) |
-| F9 | Toggle health overlay |
-| F11 | Toggle fullscreen |
-| Ctrl+N | New connection dialog |
-| Ctrl+D | Disconnect |
-
-## Configuration
-
-### Server Flags
+### CLI Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--host` | 0.0.0.0 | Listen address |
-| `--port` | 9876 | Listen port |
-| `--fps` | 30 | Target frame rate |
-| `--codec` | h264 | Video codec (h264/h265/jpeg) |
-| `--chroma` | yuv444 | Chroma subsampling |
-| `--lossless` | off | Lossless encoding |
-| `--max-bandwidth` | 50 | Bandwidth cap (Mbps) |
-| `--monitor` | 1 | Monitor index (0=all) |
-| `--tls-cert/key` | none | TLS certificate and key |
-| `--no-auth` | false | Disable authentication |
-| `--no-audio` | false | Disable audio streaming |
-| `--no-clipboard` | false | Disable clipboard sync |
+| `--host` | `0.0.0.0` | Listen address |
+| `--port` | `443` | Listen port |
+| `--fps` | `30` | Target frame rate |
+| `--codec` | `h264` | Video codec: `h264`, `h265`, `av1`, `jpeg` |
+| `--chroma` | `yuv444` | Chroma subsampling: `yuv420`, `yuv422`, `yuv444` |
+| `--lossless` | off | Lossless H.264 encoding |
+| `--max-bandwidth` | `50` | Bandwidth cap in Mbps |
+| `--monitor` | `1` | Monitor index (`0` = all monitors) |
+| `--sw-only` | off | Force software encoding (no GPU) |
+| `--tls-cert` | — | TLS certificate PEM file |
+| `--tls-key` | — | TLS private key PEM file |
+| `--no-audio` | off | Disable audio streaming |
+| `--no-clipboard` | off | Disable clipboard sync |
+| `--verbose` | off | Debug logging |
+
+### Authentication
+
+| Flag | Description |
+|------|-------------|
+| `--auth-mode pam` | PAM authentication — per-user X sessions (recommended) |
+| `--auth-mode local` | Local user database with challenge-response |
+| `--auth-mode none` | No authentication — shared display |
+| `--no-auth` | Alias for `--auth-mode none` |
+| `--add-user USERNAME` | Create a local auth user (interactive password prompt) |
+
+### Session Options (PAM mode)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--width` | `1920` | Session display width |
+| `--height` | `1080` | Session display height |
+| `--dpi` | `96` | Session display DPI |
+
+### Systemd Service
+
+```bash
+sudo systemctl enable --now teragucci-server
+sudo systemctl status teragucci-server
+sudo journalctl -u teragucci-server -f
+```
+
+Logs: `/var/log/teragucci/server.log`
+
+## Client Usage
+
+### Keyboard Shortcuts
+
+| Key | Action |
+|-----|--------|
+| **Ctrl+N** | New connection |
+| **Ctrl+D** | Disconnect |
+| **Ctrl+Shift+S** | Send file to remote |
+| **F5** | Refresh frame |
+| **F9** | Toggle health overlay |
+| **F10** | Key diagnostic |
+| **F11** | Toggle fullscreen |
+
+### Toolbar Icons
+
+Connect, Disconnect, Refresh, Fullscreen, Health, Key Diagnostic, Monitor Selector, Settings (quality panel), USB Devices
 
 ### Quality Slider
 
-The quality slider smoothly adjusts these encoder parameters:
+The quality bias slider maps to encoder parameters:
 
-| Slider Position | CRF | Preset | Behavior |
-|----------------|-----|--------|----------|
-| 0% (Smooth) | 28 | ultrafast | Max FPS, lower quality per frame |
-| 25% | 25 | ultrafast | Prefer motion over detail |
-| 50% (Balanced) | 22 | veryfast | Good trade-off |
-| 75% | 18 | fast | Prefer detail, may reduce FPS |
-| 100% (Sharp) | 15 | medium | Best quality per frame |
+| Position | CRF | Preset | FPS | Chroma | Behavior |
+|----------|-----|--------|-----|--------|----------|
+| 0% Smooth | 28 | ultrafast | Max | YUV 4:2:0 | Prioritize frame rate |
+| 50% Balanced | 22 | veryfast | Max | YUV 4:2:2 | Good trade-off |
+| 100% Sharp | 15 | medium | Capped 30 | YUV 4:4:4 | Prioritize image quality |
+
+### File Transfer
+
+- Drag files from Finder/Explorer onto the viewer window
+- Or use **File > Send File...** (Ctrl+Shift+S)
+- Files are checksummed (SHA-256) and transferred in 256 KB chunks
+- Destination: `~/Desktop` on the remote machine
+
+### USB Device Forwarding
+
+1. Open the **USB Devices** panel (toolbar icon or View menu)
+2. Select a device (Wacom tablet, keyboard, etc.)
+3. Click **Forward** to pass it through to the server
+4. The device appears as native USB hardware on the remote machine
+5. Click **Detach** to reclaim it
+
+> **macOS note:** Device enumeration works, but USB/IP forwarding requires [VirtualHere](https://www.virtualhere.com/) or a manual usbip setup. Linux and Windows clients can forward natively.
 
 ## Requirements
 
 ### Server
-- Linux with X11 display
+- Linux with X11 (RHEL/Rocky, Ubuntu, Debian)
 - Python 3.10+
-- FFmpeg with libx264 (for H.264) and/or libx265 (for H.265)
-- PulseAudio or PipeWire (for audio)
-- xclip or xsel (for clipboard)
-- Access to `/dev/uinput`
+- FFmpeg with libx264 (H.264), libx265 (H.265), libsvtav1 (AV1), libopus
+- PulseAudio or PipeWire
+- xclip or xsel
+- `/dev/uinput` access
+- **GPU encoding (optional):** NVIDIA with NVENC, Intel with VAAPI, AMD with VAAPI/AMF
 
 ### Client
-- macOS or Windows
-- Python 3.10+ (or standalone build)
-- Wacom tablet for pen pressure features (mouse works without one)
+- macOS, Windows, or Linux
+- Python 3.10+ (or standalone PyInstaller build)
+- PySide6, PyAV, websockets
+- Wacom tablet for pen pressure (mouse works without one)
+
+## Project Structure
+
+```
+teragucci/
+├── client/
+│   ├── main.py              # Main window, UI, tabs, menus
+│   ├── session.py           # Per-connection session (protocol + viewer + decoder)
+│   ├── protocol.py          # WebSocket client, message routing
+│   ├── viewer.py            # Remote desktop widget, input capture, drag-and-drop
+│   ├── video_decoder.py     # H.264/H.265/AV1 decode via PyAV
+│   ├── audio_player.py      # Audio playback via QAudioSink
+│   ├── file_transfer.py     # Chunked file sender
+│   ├── usb_forward.py       # USB device enumeration and forwarding
+│   ├── bookmarks.py         # Bookmark storage with encrypted credentials
+│   ├── quality_control.py   # Quality settings panel
+│   ├── health_display.py    # Health overlay and status bar widget
+│   ├── icons.py             # Inline SVG icons (Lucide-style)
+│   ├── theme.py             # Dark theme colors and stylesheet
+│   ├── monitor_selector.py  # Multi-monitor checkbox selector
+│   ├── fullscreen_toolbar.py # Auto-hiding toolbar for fullscreen mode
+│   └── key_diagnostic.py    # Key event debug dialog
+├── server/
+│   ├── main.py              # Server entry point, SessionRuntime, WebSocket handler
+│   ├── screen_capture.py    # Screen capture (NvFBC, mss/XShm, multi-monitor)
+│   ├── video_encoder.py     # FFmpeg H.264/H.265/AV1 encoder with HW accel
+│   ├── input_injector.py    # uinput mouse/keyboard/pen injection
+│   ├── xtest_injector.py    # XTest injection for Xvfb virtual displays
+│   ├── audio_capture.py     # PulseAudio/PipeWire audio capture
+│   ├── clipboard.py         # Clipboard sync via xclip
+│   ├── file_transfer.py     # Chunked file receiver with checksum verification
+│   ├── usb_passthrough.py   # USB/IP device attach/detach
+│   ├── session_manager.py   # Per-user Xvfb/Xorg session management
+│   ├── auth.py              # Local authentication (challenge-response)
+│   ├── pam_auth.py          # PAM authentication
+│   └── health.py            # Health monitoring and stats
+├── common/
+│   ├── messages.py          # Protocol definitions (binary frames + JSON messages)
+│   ├── keymap.py            # Qt key to Linux scancode mapping
+│   ├── hybrid_transport.py  # WebSocket + UDP hybrid transport
+│   ├── udp_transport.py     # UDP transport for low-latency frames
+│   ├── jitter_buffer.py     # Jitter buffer for UDP frame reordering
+│   └── quic_transport.py    # QUIC transport (experimental)
+├── install-server.sh        # Server installer (system deps + venv + systemd)
+├── install-client.sh        # Client installer (venv + optional PyInstaller build)
+├── install-client.ps1       # Client installer (Windows PowerShell)
+├── build_client.py          # PyInstaller build script
+├── pyproject.toml           # Package metadata
+├── requirements-server.txt  # Server Python dependencies
+├── requirements-client.txt  # Client Python dependencies
+└── requirements-dev.txt     # Development dependencies
+```
+
+## Protocol
+
+Teragucci uses a hybrid WebSocket protocol:
+
+- **Binary frames** for video and audio (low overhead, type-length headers)
+- **JSON messages** for control, input, health, clipboard, file transfer, USB
+
+### Binary Frame Format
+
+**Video:**
+```
+[1B frame_type] [1B codec] [1B chroma] [1B flags] [4B timestamp_ms] [2B monitor_id] [payload]
+```
+
+**Audio:**
+```
+[1B frame_type=0x10] [1B codec] [2B reserved] [4B timestamp_ms] [payload]
+```
+
+### Message Types
+
+| Category | Messages |
+|----------|----------|
+| Handshake | `client_hello`, `server_hello` |
+| Auth | `auth_request`, `auth_response`, `auth_result` |
+| Input | `mouse_move`, `mouse_button`, `mouse_scroll`, `key_event`, `pen_event` |
+| Video | `request_full_frame`, `quality_settings`, `select_monitor`, `resize_request` |
+| Health | `health_ping`, `health_pong`, `health_stats` |
+| Clipboard | `clipboard_send`, `clipboard_recv` |
+| File Transfer | `file_offer`, `file_accept`, `file_chunk`, `file_done`, `file_ack`, `file_cancel` |
+| USB | `usb_device_list`, `usb_attach`, `usb_detach`, `usb_attached`, `usb_detached`, `usb_error` |
+| Monitor | `monitor_list` |
+| Cursor | `cursor_update` |
 
 ## Comparison
 
-| Feature | Teragucci | Teradici | Parsec | HP RGS |
-|---------|-----------|----------|--------|--------|
-| Open Source | Yes | No | No | No |
-| H.264 4:4:4 | Yes | Yes | Yes | No |
-| H.265 | Yes | Yes | Yes | No |
-| Pen Pressure | Yes (8192) | Limited | No | No |
-| Pen Tilt | Yes | No | No | No |
-| Lossless Mode | Yes | Yes | No | Yes |
-| Quality Slider | Yes | Yes | Yes | No |
-| Auth | Yes | Yes | Yes | Yes |
-| TLS | Yes | Yes | Yes | No |
-| Audio | Yes | Yes | Yes | Yes |
-| Clipboard | Yes | Yes | Yes | Yes |
-| Multi-Monitor | Yes | Yes | Yes | Yes |
-| Bookmarks | Yes | No | Yes | No |
-| Health Monitor | Yes | Limited | Yes | No |
-| Auto-Reconnect | Yes | Yes | Yes | No |
-| Linux Server | Yes | Yes | Yes | Yes |
-| Mac Client | Yes | Yes | Yes | No |
-| Windows Client | Yes | Yes | Yes | Yes |
-| Free | Yes | No | Freemium | No |
+| Feature | Teragucci | Teradici PCoIP | Parsec | HP RGS |
+|---------|-----------|----------------|--------|--------|
+| Open Source | **Yes** | No | No | No |
+| License Cost | **Free** | ~$300/seat/yr | Freemium | ~$200/seat |
+| H.264 YUV 4:4:4 | **Yes** | Yes | Yes | No |
+| H.265 / AV1 | **Yes** | H.265 only | H.265 only | No |
+| GPU Encoding | **NVENC/VAAPI/AMF** | PCoIP card | NVENC | Software |
+| Wacom Pen (8192 levels) | **Yes** | Limited | No | No |
+| Pen Tilt + Rotation | **Yes** | No | No | No |
+| USB Passthrough | **Yes** | Yes | No | No |
+| File Transfer | **Yes** | Yes | No | No |
+| Lossless Mode | **Yes** | Yes | No | Yes |
+| Per-User Sessions | **Yes (PAM)** | Yes | No | Yes |
+| Multi-Monitor | **Yes** | Yes | Yes | Yes |
+| Clipboard Sync | **Yes** | Yes | Yes | Yes |
+| Audio | **Yes** | Yes | Yes | Yes |
+| TLS | **Yes** | Yes | Built-in | No |
+| Auto-Reconnect | **Yes** | Yes | Yes | No |
+| Linux Server | **Yes** | Yes | Yes | Yes |
+| macOS Client | **Yes** | Yes | Yes | No |
+| Windows Client | **Yes** | Yes | Yes | Yes |
+
+## License
+
+MIT
