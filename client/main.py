@@ -634,8 +634,23 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("Teragucci")
+    app.setApplicationDisplayName("Teragucci")
     app.setOrganizationName("Teragucci")
+    app.setDesktopFileName("teragucci")
     app.setStyle("Fusion")
+
+    # macOS: override process name so dock/menu bar shows "Teragucci"
+    import platform
+    if platform.system() == "Darwin":
+        try:
+            from Foundation import NSBundle  # type: ignore
+            bundle = NSBundle.mainBundle()
+            info = bundle.localizedInfoDictionary() or bundle.infoDictionary()
+            if info:
+                info["CFBundleName"] = "Teragucci"
+                info["CFBundleDisplayName"] = "Teragucci"
+        except ImportError:
+            pass
     app.setStyleSheet(theme.generate_stylesheet())
 
     window = MainWindow(

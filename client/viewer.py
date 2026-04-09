@@ -49,6 +49,9 @@ class RemoteViewer(QWidget):
         self._offset_x = 0
         self._offset_y = 0
 
+        # Fullscreen stretch mode — fill entire screen like local display
+        self._stretch_fill = True
+
         # Track whether we're using pen or mouse to avoid duplicate events
         self._pen_active = False
 
@@ -108,23 +111,28 @@ class RemoteViewer(QWidget):
         widget_w = self.width()
         widget_h = self.height()
 
-        # Maintain aspect ratio
-        remote_aspect = self._remote_width / self._remote_height
-        widget_aspect = widget_w / widget_h
-
-        if widget_aspect > remote_aspect:
-            # Widget is wider than remote - pillarbox
-            display_h = widget_h
-            display_w = int(display_h * remote_aspect)
+        if self._stretch_fill:
+            # Stretch to fill — no black bars, feels like a local display
+            self._scale_x = widget_w / self._remote_width
+            self._scale_y = widget_h / self._remote_height
+            self._offset_x = 0
+            self._offset_y = 0
         else:
-            # Widget is taller than remote - letterbox
-            display_w = widget_w
-            display_h = int(display_w / remote_aspect)
+            # Maintain aspect ratio (pillarbox/letterbox)
+            remote_aspect = self._remote_width / self._remote_height
+            widget_aspect = widget_w / widget_h
 
-        self._scale_x = display_w / self._remote_width
-        self._scale_y = display_h / self._remote_height
-        self._offset_x = (widget_w - display_w) // 2
-        self._offset_y = (widget_h - display_h) // 2
+            if widget_aspect > remote_aspect:
+                display_h = widget_h
+                display_w = int(display_h * remote_aspect)
+            else:
+                display_w = widget_w
+                display_h = int(display_w / remote_aspect)
+
+            self._scale_x = display_w / self._remote_width
+            self._scale_y = display_h / self._remote_height
+            self._offset_x = (widget_w - display_w) // 2
+            self._offset_y = (widget_h - display_h) // 2
 
     def _widget_to_remote(self, x: float, y: float) -> tuple:
         """Convert widget coordinates to normalized remote coordinates (0.0-1.0)."""

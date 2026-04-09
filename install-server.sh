@@ -86,7 +86,7 @@ case "$DISTRO" in
         apt-get update -qq
         apt-get install -y -qq \
             python3 python3-pip python3-venv \
-            xvfb x11-xserver-utils \
+            xserver-xorg-core xvfb x11-xserver-utils xauth \
             ffmpeg \
             pulseaudio-utils \
             xclip \
@@ -117,7 +117,9 @@ case "$DISTRO" in
             dnf config-manager --set-enabled powertools 2>/dev/null || true
         dnf install -y -q \
             python3 python3-pip \
-            xorg-x11-server-Xvfb xorg-x11-utils \
+            xorg-x11-server-Xorg xorg-x11-server-Xvfb \
+            xorg-x11-utils xorg-x11-xauth \
+            xorg-x11-drv-nvidia \
             ffmpeg \
             pulseaudio-utils \
             xclip \
@@ -291,22 +293,23 @@ if [ "$SETUP_SERVICE" = true ]; then
     cat > "/etc/systemd/system/${SERVICE_NAME}.service" << SVCEOF
 [Unit]
 Description=Teragucci Remote Desktop Server
-After=network.target graphical.target
-Wants=graphical.target
+After=network.target
 
 [Service]
 Type=simple
-User=$REAL_USER
-Environment=DISPLAY=:0
-Environment=XAUTHORITY=/home/$REAL_USER/.Xauthority
+User=root
 WorkingDirectory=$INSTALL_DIR
-ExecStart=$VENV_DIR/bin/python -m server.main --port 443 --fps 30 --codec h264 --chroma yuv444 --quic-port 444
+ExecStart=$VENV_DIR/bin/python -m server.main --port 4443 --fps 30 --codec h264 --chroma yuv444
 Restart=on-failure
 RestartSec=5
+StandardOutput=append:/var/log/teragucci/server.log
+StandardError=append:/var/log/teragucci/server.log
 
 [Install]
 WantedBy=multi-user.target
 SVCEOF
+
+    mkdir -p /var/log/teragucci
 
     systemctl daemon-reload
     ok "Systemd service created: $SERVICE_NAME"

@@ -31,6 +31,7 @@ import os
 import pathlib
 import signal
 import ssl
+import subprocess
 import sys
 import threading
 import time
@@ -379,16 +380,32 @@ class SessionRuntime:
         if width == self.capture.width and height == self.capture.height:
             return
 
-        # Resize via session manager (xrandr)
-        import server.session_manager as sm_module
-        for mgr_ref in [getattr(self, '_session_mgr', None)]:
-            pass  # placeholder
-
-        # Direct xrandr resize
         try:
-            env = {**os.environ, "DISPLAY": self.display}
+            env = {"DISPLAY": self.display, "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+
+            # Find the connected output name (DP-0 for GPU, screen for Xvfb)
+            query = subprocess.run(
+                ["xrandr", "--query"],
+                capture_output=True, text=True, timeout=5, env=env)
+            output_name = "screen"  # default for Xvfb
+            for line in query.stdout.splitlines():
+                if " connected" in line:
+                    output_name = line.split()[0]
+                    break
+
             mode_name = f"{width}x{height}"
 
+            # Try setting mode directly first
+            result = subprocess.run(
+                ["xrandr", "--output", output_name, "--mode", mode_name],
+                capture_output=True, text=True, timeout=5, env=env)
+            if result.returncode == 0:
+                self.capture.reinit(width, height)
+                self._restart_encoder()
+                logger.info("Resized to %dx%d", width, height)
+                return
+
+            # Mode doesn't exist — create it
             modeline = subprocess.run(
                 ["cvt", str(width), str(height)],
                 capture_output=True, text=True, timeout=5, env=env)
@@ -403,13 +420,12 @@ class SessionRuntime:
                             ["xrandr", "--newmode", mode_label] + mode_params.split(),
                             capture_output=True, timeout=5, env=env)
                         subprocess.run(
-                            ["xrandr", "--addmode", "screen", mode_label],
+                            ["xrandr", "--addmode", output_name, mode_label],
                             capture_output=True, timeout=5, env=env)
                         result = subprocess.run(
-                            ["xrandr", "--output", "screen", "--mode", mode_label],
+                            ["xrandr", "--output", output_name, "--mode", mode_label],
                             capture_output=True, text=True, timeout=5, env=env)
                         if result.returncode == 0:
-                            # Reinit capture and encoder at new size
                             self.capture.reinit(width, height)
                             self._restart_encoder()
                             logger.info("Resized to %dx%d", width, height)
@@ -462,10 +478,10 @@ class SessionRuntime:
             self.apply_quality(session, msg)
 
         elif msg_type == MsgType.RESIZE_REQUEST:
-            width = msg.get("width", 0)
-            height = msg.get("height", 0)
-            if width and height:
-                self._handle_resize(width, height)
+            # Resize temporarily disabled — xrandr triggers SIGSEGV in
+            # NVIDIA X11 libraries, crashing the entire server process.
+            # TODO: investigate safe resize path for GPU displays
+            logger.debug("Resize request ignored (disabled to prevent SEGV)")
 
         elif msg_type == MsgType.SELECT_MONITOR:
             self.capture.switch_monitor(msg.get("monitor_id", 1))

@@ -233,6 +233,8 @@ class Session(QObject):
         h = msg.get("screen_height", 1080)
         self.viewer.set_remote_size(w, h)
         backend = msg.get("encoder_backend", "")
+        if backend:
+            self.health.encoder_backend = backend
         suffix = f" [{backend}]" if backend else ""
         self.title_changed.emit(f"{self.display_name} ({w}x{h}){suffix}")
 
@@ -248,6 +250,9 @@ class Session(QObject):
         codec_map = {VideoCodec.H264: "h264", VideoCodec.H265: "h265", VideoCodec.AV1: "av1"}
         codec_name = codec_map.get(codec, "h264")
         rgb_data = self.decoder.decode(codec_name, data)
+        # Update health with decoder backend (once)
+        if not self.health.decoder_backend:
+            self.health.decoder_backend = self.decoder.active_backend
         if rgb_data is not None:
             decoder = self.decoder.get_decoder(codec_name)
             size = decoder.get_frame_size() if decoder else None
