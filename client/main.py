@@ -14,18 +14,20 @@ import logging
 import argparse
 from dataclasses import asdict
 
-from PySide6.QtCore import Qt, QTimer, Signal, QEvent, QPoint
-from PySide6.QtGui import QAction, QKeySequence, QColor, QIcon
+from PySide6.QtCore import Qt, QTimer, Signal, QEvent, QPoint, QSize
+from PySide6.QtGui import QAction, QKeySequence, QColor, QIcon, QFont, QPainter
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QStatusBar, QToolBar,
     QDialog, QFormLayout, QSpinBox, QMessageBox, QSizePolicy,
     QDockWidget, QListWidget, QListWidgetItem, QCheckBox,
     QComboBox, QMenu, QFileDialog, QTabWidget, QTabBar,
+    QStyledItemDelegate, QStyle, QToolButton,
 )
 
 sys.path.insert(0, ".")
 from client import theme
+from client import icons
 from client.session import Session
 from client.bookmarks import BookmarkManager
 from client.health_display import HealthStatusWidget, HealthData
@@ -123,6 +125,54 @@ class ConnectionDialog(QDialog):
 # Bookmark Panel
 # ════════════════════════════════════════════════════
 
+class BookmarkDelegate(QStyledItemDelegate):
+    """Custom delegate for bookmark items — card-style with server icon."""
+
+    def sizeHint(self, option, index):
+        return QSize(option.rect.width(), 56)
+
+    def paint(self, painter, option, index):
+        painter.save()
+        rect = option.rect.adjusted(4, 2, -4, -2)
+
+        # Selection / hover background
+        if option.state & QStyle.State_Selected:
+            painter.setBrush(QColor(0, 200, 120, 30))
+            painter.setPen(QColor(0, 200, 120, 80))
+            painter.drawRoundedRect(rect, 6, 6)
+        elif option.state & QStyle.State_MouseOver:
+            painter.setBrush(QColor(255, 255, 255, 8))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(rect, 6, 6)
+        else:
+            painter.setBrush(Qt.NoBrush)
+            painter.setPen(Qt.NoPen)
+
+        # Server icon
+        icon = icons.icon_server(theme.TEXT_SECONDARY)
+        icon_rect = rect.adjusted(8, 10, 0, 0)
+        icon.paint(painter, icon_rect.x(), icon_rect.y(), 20, 20)
+
+        # Name (bold)
+        name = index.data(Qt.UserRole + 1) or "Unnamed"
+        painter.setPen(QColor(theme.TEXT_PRIMARY))
+        name_font = QFont()
+        name_font.setWeight(QFont.DemiBold)
+        name_font.setPointSize(12)
+        painter.setFont(name_font)
+        painter.drawText(rect.adjusted(36, 6, -8, -22), Qt.AlignLeft | Qt.AlignVCenter, name)
+
+        # Host:port (secondary)
+        host_text = index.data(Qt.UserRole + 2) or ""
+        painter.setPen(QColor(theme.TEXT_SECONDARY))
+        sub_font = QFont()
+        sub_font.setPointSize(10)
+        painter.setFont(sub_font)
+        painter.drawText(rect.adjusted(36, 24, -8, -2), Qt.AlignLeft | Qt.AlignVCenter, host_text)
+
+        painter.restore()
+
+
 class BookmarkPanel(QWidget):
     connect_requested = Signal(str)
 
@@ -133,24 +183,55 @@ class BookmarkPanel(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
 
+        # Search bar with icon
+        search_row = QHBoxLayout()
+        search_row.setSpacing(0)
         self._search = QLineEdit()
-        self._search.setPlaceholderText("Search bookmarks...")
+        self._search.setPlaceholderText("  Search bookmarks...")
         self._search.textChanged.connect(self._refresh)
-        layout.addWidget(self._search)
+        search_row.addWidget(self._search)
+        layout.addLayout(search_row)
 
         self._list = QListWidget()
+        self._list.setItemDelegate(BookmarkDelegate(self._list))
         self._list.setContextMenuPolicy(Qt.CustomContextMenu)
         self._list.customContextMenuRequested.connect(self._show_context_menu)
         self._list.doubleClicked.connect(self._on_double_click)
+        self._list.setMouseTracking(True)
+        self._list.setSpacing(1)
+        self._list.setStyleSheet(
+            f"QListWidget {{ background: {theme.BG_SECONDARY}; border: none; }}"
+            f"QListWidget::item {{ border: none; }}"
+            f"QListWidget::item:hover {{ background: transparent; }}"
+            f"QListWidget::item:selected {{ background: transparent; }}")
         layout.addWidget(self._list)
 
+        # Icon buttons row
         btn_row = QHBoxLayout()
-        for label, slot in [("Add", self._add_bookmark),
-                            ("Import", self._import_bookmarks),
-                            ("Export", self._export_bookmarks)]:
-            btn = QPushButton(label)
-            btn.clicked.connect(slot)
-            btn_row.addWidget(btn)
+        btn_row.setSpacing(4)
+
+        add_btn = QToolButton()
+        add_btn.setIcon(icons.icon_connect(theme.ACCENT))
+        add_btn.setToolTip("Add Bookmark")
+        add_btn.setIconSize(QSize(18, 18))
+        add_btn.clicked.connect(self._add_bookmark)
+        btn_row.addWidget(add_btn)
+
+        import_btn = QToolButton()
+        import_btn.setIcon(icons.icon_import(theme.TEXT_SECONDARY))
+        import_btn.setToolTip("Import Bookmarks")
+        import_btn.setIconSize(QSize(18, 18))
+        import_btn.clicked.connect(self._import_bookmarks)
+        btn_row.addWidget(import_btn)
+
+        export_btn = QToolButton()
+        export_btn.setIcon(icons.icon_export(theme.TEXT_SECONDARY))
+        export_btn.setToolTip("Export Bookmarks")
+        export_btn.setIconSize(QSize(18, 18))
+        export_btn.clicked.connect(self._export_bookmarks)
+        btn_row.addWidget(export_btn)
+
+        btn_row.addStretch()
         layout.addLayout(btn_row)
 
         self._refresh()
@@ -160,13 +241,14 @@ class BookmarkPanel(QWidget):
         query = self._search.text().strip()
         items = self._mgr.search(query) if query else self._mgr.list_all()
         for bid, profile in items:
-            text = f"{profile.name}\n{profile.host}:{profile.port}"
-            if profile.last_connected:
-                text += f"\nLast: {profile.last_connected}"
-            item = QListWidgetItem(text)
+            item = QListWidgetItem()
             item.setData(Qt.UserRole, bid)
-            if profile.color_label:
-                item.setBackground(QColor(profile.color_label))
+            item.setData(Qt.UserRole + 1, profile.name)
+            host_text = f"{profile.host}:{profile.port}"
+            if profile.last_connected:
+                host_text += f"  ·  {profile.last_connected}"
+            item.setData(Qt.UserRole + 2, host_text)
+            item.setSizeHint(QSize(0, 56))
             self._list.addItem(item)
 
     def _on_double_click(self, _index):
@@ -180,9 +262,13 @@ class BookmarkPanel(QWidget):
             return
         bid = item.data(Qt.UserRole)
         menu = QMenu(self)
-        menu.addAction("Connect", lambda: self.connect_requested.emit(bid))
-        menu.addAction("Edit", lambda: self._edit_bookmark(bid))
-        menu.addAction("Delete", lambda: self._delete_bookmark(bid))
+        menu.addAction(icons.icon_connect(), "Connect",
+                       lambda: self.connect_requested.emit(bid))
+        menu.addAction(icons.icon_edit(), "Edit",
+                       lambda: self._edit_bookmark(bid))
+        menu.addSeparator()
+        menu.addAction(icons.icon_trash(), "Delete",
+                       lambda: self._delete_bookmark(bid))
         menu.exec(self._list.mapToGlobal(pos))
 
     def _add_bookmark(self):
@@ -268,26 +354,36 @@ class MainWindow(QMainWindow):
         self._tabs.setCornerWidget(self._make_new_tab_btn(), Qt.TopRightCorner)
 
         # ── Docks ──
-        self._bookmark_dock = QDockWidget("Bookmarks", self)
+        self._bookmark_dock = QDockWidget("  Bookmarks", self)
         self._bookmark_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self._bookmark_dock.setFeatures(
+            QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetClosable)
         self._bookmark_panel = BookmarkPanel(self._bookmarks)
         self._bookmark_panel.connect_requested.connect(self._connect_bookmark)
         self._bookmark_dock.setWidget(self._bookmark_panel)
         self.addDockWidget(Qt.LeftDockWidgetArea, self._bookmark_dock)
 
-        self._quality_dock = QDockWidget("Quality", self)
+        self._quality_dock = QDockWidget("  Quality", self)
         self._quality_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self._quality_dock.setFeatures(
+            QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetClosable)
         self._quality_panel = QualityControlPanel()
         self._quality_panel.settings_changed.connect(self._on_quality_changed)
         self._quality_dock.setWidget(self._quality_panel)
         self.addDockWidget(Qt.RightDockWidgetArea, self._quality_dock)
+        self._quality_dock.hide()  # Hidden by default, opened via toolbar/menu
 
         # ── Toolbar ──
         self._setup_toolbar()
 
         # ── Status Bar ──
         self._health_status = HealthStatusWidget()
+        self._status_dot = QLabel()
+        self._status_dot.setFixedSize(8, 8)
+        self._status_dot.setStyleSheet(
+            f"border-radius: 4px; background: {theme.TEXT_MUTED};")
         self._status_label = QLabel("No connections")
+        self.statusBar().addWidget(self._status_dot)
         self.statusBar().addWidget(self._status_label)
         self.statusBar().addPermanentWidget(self._health_status)
 
@@ -316,26 +412,87 @@ class MainWindow(QMainWindow):
                 initial_host, initial_port, initial_user, initial_pass)
 
     def _make_new_tab_btn(self):
-        btn = QPushButton("+")
+        btn = QToolButton()
+        btn.setIcon(icons.icon_connect(theme.ACCENT))
+        btn.setIconSize(QSize(16, 16))
         btn.setFixedSize(28, 28)
-        btn.setToolTip("New Connection")
+        btn.setToolTip("New Connection (Ctrl+N)")
         btn.clicked.connect(self._show_connect_dialog)
         return btn
 
-    # ── Toolbar ──────────────────────────────────
+    # ── Toolbar & Menus ─────────────────────────
 
     def _setup_toolbar(self):
+        # ── Menu Bar ──
+        mb = self.menuBar()
+
+        # File menu
+        file_menu = mb.addMenu("&File")
+        file_menu.addAction(self._action(
+            "New Connection", "Ctrl+N", self._show_connect_dialog, icons.icon_connect()))
+        file_menu.addSeparator()
+        file_menu.addAction(self._action(
+            "Import Bookmarks...", "", lambda: self._bookmark_panel._import_bookmarks(),
+            icons.icon_import()))
+        file_menu.addAction(self._action(
+            "Export Bookmarks...", "", lambda: self._bookmark_panel._export_bookmarks(),
+            icons.icon_export()))
+        file_menu.addSeparator()
+        file_menu.addAction(self._action("Quit", "Ctrl+Q", self.close))
+
+        # Connection menu
+        conn_menu = mb.addMenu("&Connection")
+        conn_menu.addAction(self._action(
+            "Disconnect", "Ctrl+D", self._disconnect_active, icons.icon_disconnect()))
+        conn_menu.addAction(self._action(
+            "Refresh Frame", "F5",
+            lambda: self._active_session and self._active_session.request_full_frame(),
+            icons.icon_refresh()))
+
+        # View menu
+        view_menu = mb.addMenu("&View")
+        bm_action = self._bookmark_dock.toggleViewAction()
+        bm_action.setIcon(icons.icon_bookmark())
+        view_menu.addAction(bm_action)
+        qc_action = self._quality_dock.toggleViewAction()
+        qc_action.setIcon(icons.icon_settings())
+        view_menu.addAction(qc_action)
+        view_menu.addSeparator()
+        view_menu.addAction(self._action(
+            "Fullscreen", "F11", self._toggle_fullscreen, icons.icon_fullscreen()))
+        view_menu.addAction(self._action(
+            "Health Overlay", "F9", self._toggle_health, icons.icon_health()))
+        view_menu.addSeparator()
+        view_menu.addAction(self._action(
+            "Key Diagnostic", "F10", self._show_key_diagnostic, icons.icon_keyboard()))
+
+        # Help menu
+        help_menu = mb.addMenu("&Help")
+        help_menu.addAction(self._action(
+            "About Teragucci", "", self._show_about))
+
+        # ── Toolbar ──
         tb = QToolBar("Main")
         tb.setMovable(False)
+        tb.setIconSize(QSize(18, 18))
+        tb.setToolButtonStyle(Qt.ToolButtonIconOnly)
         self.addToolBar(tb)
 
-        tb.addAction(self._action("New Connection", "Ctrl+N", self._show_connect_dialog))
-        tb.addAction(self._action("Disconnect", "Ctrl+D", self._disconnect_active))
+        tb.addAction(self._action(
+            "New Connection", "Ctrl+N", self._show_connect_dialog, icons.icon_connect(theme.ACCENT)))
+        tb.addAction(self._action(
+            "Disconnect", "Ctrl+D", self._disconnect_active, icons.icon_disconnect()))
         tb.addSeparator()
-        tb.addAction(self._action("Refresh", "F5",
-                     lambda: self._active_session and self._active_session.request_full_frame()))
-        tb.addAction(self._action("Fullscreen", "F11", self._toggle_fullscreen))
-        tb.addAction(self._action("Health", "F9", self._toggle_health))
+        tb.addAction(self._action(
+            "Refresh", "F5",
+            lambda: self._active_session and self._active_session.request_full_frame(),
+            icons.icon_refresh()))
+        tb.addAction(self._action(
+            "Fullscreen", "F11", self._toggle_fullscreen, icons.icon_fullscreen()))
+        tb.addAction(self._action(
+            "Health", "F9", self._toggle_health, icons.icon_health()))
+        tb.addAction(self._action(
+            "Key Diagnostic", "F10", self._show_key_diagnostic, icons.icon_keyboard()))
         tb.addSeparator()
 
         from client.monitor_selector import MonitorSelector
@@ -343,23 +500,28 @@ class MainWindow(QMainWindow):
         self._monitor_selector.selection_changed.connect(self._on_monitors_changed)
         tb.addWidget(self._monitor_selector)
 
-        # Menus
-        mb = self.menuBar()
-        view = mb.addMenu("View")
-        view.addAction(self._bookmark_dock.toggleViewAction())
-        view.addAction(self._quality_dock.toggleViewAction())
-        view.addSeparator()
-        view.addAction(self._action("Fullscreen", "F11", self._toggle_fullscreen))
-        view.addAction(self._action("Health Overlay", "F9", self._toggle_health))
-        view.addSeparator()
-        view.addAction(self._action("Key Diagnostic", "F10", self._show_key_diagnostic))
+        tb.addSeparator()
+        tb.addAction(self._action(
+            "Settings", "", lambda: self._quality_dock.setVisible(
+                not self._quality_dock.isVisible()), icons.icon_settings()))
 
-    def _action(self, text, shortcut, slot):
+    def _action(self, text, shortcut, slot, icon=None):
         a = QAction(text, self)
+        if icon:
+            a.setIcon(icon)
         if shortcut:
             a.setShortcut(QKeySequence(shortcut))
         a.triggered.connect(slot)
         return a
+
+    def _show_about(self):
+        QMessageBox.about(
+            self, "About Teragucci",
+            "<h3>Teragucci</h3>"
+            "<p>Remote desktop for Flame workstations.</p>"
+            "<p>GPU-accelerated H.264/H.265 streaming with "
+            "full keyboard, mouse, and Wacom pen support.</p>"
+            f"<p style='color:{theme.TEXT_MUTED}'>© 2025 DXS / 1986 Studios</p>")
 
     # ── Properties ───────────────────────────────
 
@@ -434,6 +596,8 @@ class MainWindow(QMainWindow):
         color = colors.get(status, theme.TEXT_MUTED)
 
         if idx == self._tabs.currentIndex():
+            self._status_dot.setStyleSheet(
+                f"border-radius: 4px; background: {color};")
             if status == "connected":
                 self._status_label.setText(f"Connected: {session.display_name}")
                 if session._bookmark_id:

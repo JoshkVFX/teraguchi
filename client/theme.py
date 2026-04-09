@@ -488,4 +488,20 @@ QSplitter::handle {{
 QFrame[frameShape="4"], QFrame[frameShape="5"] {{
     color: {BORDER};
 }}
+
+/* ── Standalone Tool Buttons (outside toolbar) ─── */
+QToolButton {{
+    background-color: transparent;
+    color: {TEXT_SECONDARY};
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 4px;
+}}
+QToolButton:hover {{
+    background-color: {BG_HOVER};
+    border-color: {BORDER};
+}}
+QToolButton:pressed {{
+    background-color: {BG_PRESSED};
+}}
 """
