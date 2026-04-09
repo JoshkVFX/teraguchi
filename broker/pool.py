@@ -62,7 +62,7 @@ class MachinePool:
     """Manages the fleet of Teragucci servers."""
 
     def __init__(self, machines_config: list[dict],
-                 assignments: dict[str, list[str]] | None = None):
+                 assignments: Optional[dict] = None):
         self._machines: dict[str, Machine] = {}
         for cfg in machines_config:
             m = Machine(**{k: v for k, v in cfg.items()
