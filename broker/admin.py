@@ -26,10 +26,12 @@ AUTH_CACHE_TTL = 300  # 5 minutes — cache PAM auth to avoid pam_sss rate limit
 class AdminServer:
     """HTTP admin API for the Teragucci broker."""
 
-    def __init__(self, pool, ipa, config_path: str, admin_group: str = "teragucci-admins"):
+    def __init__(self, pool, ipa, config_path: str, admin_group: str = "teragucci-admins",
+                 assignments_path: Optional[str] = None):
         self._pool = pool
         self._ipa = ipa
         self._config_path = config_path
+        self._assignments_path = assignments_path or config_path
         self._admin_group = admin_group
         self._lock = asyncio.Lock()
         self._runner: Optional[web.AppRunner] = None
@@ -188,17 +190,21 @@ class AdminServer:
     # ── Persistence ─────────────────────────────────
 
     def _save_assignments(self, assignments: dict):
-        """Atomic write: update only the assignments key in broker.yml."""
-        config = {}
-        if os.path.exists(self._config_path):
-            with open(self._config_path) as f:
-                config = yaml.safe_load(f) or {}
+        """Save assignments to the writable assignments file."""
+        path = self._assignments_path
+        if path == self._config_path:
+            # Writing back to broker.yml — preserve other keys
+            config = {}
+            if os.path.exists(path):
+                with open(path) as f:
+                    config = yaml.safe_load(f) or {}
+            config["assignments"] = assignments
+        else:
+            # Separate assignments file — just the assignments
+            config = {"assignments": assignments}
 
-        config["assignments"] = assignments
-
-        # Write to config path directly (atomic rename not possible across
-        # filesystems, and /etc may be on a different mount)
-        with open(self._config_path, "w") as f:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
             yaml.dump(config, f, default_flow_style=False, sort_keys=False)
 
     # ── Server Lifecycle ────────────────────────────

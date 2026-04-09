@@ -42,6 +42,7 @@ logger = logging.getLogger("teragucci.broker")
 
 DEFAULT_CONFIG = "/etc/teragucci/broker.yml"
 DEFAULT_SECRET = "/etc/teragucci/broker.secret"
+DEFAULT_ASSIGNMENTS = "/var/log/teragucci/assignments.yml"
 
 
 def load_config(path: str) -> dict:
@@ -283,6 +284,8 @@ def main():
                         help="FreeIPA admin group")
     parser.add_argument("--admin-port", type=int, default=8080,
                         help="Admin UI HTTP port")
+    parser.add_argument("--assignments-file", default=DEFAULT_ASSIGNMENTS,
+                        help="Writable path for assignment state")
     parser.add_argument("--verbose", "-v", action="store_true")
 
     # FreeIPA
@@ -327,7 +330,19 @@ def main():
         logger.error("No machines configured. Create %s with a 'machines' list.", args.config)
         sys.exit(1)
 
-    assignments = config.get("assignments", {})
+    # Load assignments: prefer separate file, fall back to config
+    assignments_path = args.assignments_file
+    assignments = {}
+    if os.path.exists(assignments_path):
+        import yaml as _yaml
+        with open(assignments_path) as f:
+            adata = _yaml.safe_load(f) or {}
+        assignments = adata.get("assignments", {})
+        logger.info("Loaded assignments from %s (%d users)", assignments_path, len(assignments))
+    elif config.get("assignments"):
+        assignments = config["assignments"]
+        logger.info("Loaded assignments from config (%d users)", len(assignments))
+
     pool = MachinePool(machines, assignments=assignments)
 
     # FreeIPA
@@ -338,7 +353,8 @@ def main():
     admin_group = args.admin_group
 
     # Admin UI
-    admin_server = AdminServer(pool, ipa, config_path, admin_group)
+    admin_server = AdminServer(pool, ipa, config_path, admin_group,
+                               assignments_path=assignments_path)
 
     # TLS
     tls_context = None
