@@ -81,10 +81,11 @@ class FullscreenToolbar(QWidget):
         layout.addSpacing(8)
 
         # Monitor selector
-        self._monitor_combo = QComboBox()
-        self._monitor_combo.setMinimumWidth(120)
-        self._monitor_combo.setMaximumWidth(200)
-        layout.addWidget(self._monitor_combo)
+        from client.monitor_selector import MonitorSelector
+        self._monitor_selector = MonitorSelector()
+        self._monitor_selector.setMinimumWidth(120)
+        self._monitor_selector.setMaximumWidth(200)
+        layout.addWidget(self._monitor_selector)
 
         layout.addStretch()
 
@@ -181,9 +182,8 @@ class FullscreenToolbar(QWidget):
         self._conn_label.setText(text)
 
     def update_monitors(self, monitors: list):
-        self._monitor_combo.blockSignals(True)
-        self._monitor_combo.clear()
-        for mon in monitors:
-            label = f"{mon.get('name', 'Monitor')} ({mon['width']}x{mon['height']})"
-            self._monitor_combo.addItem(label, mon.get("id", 0))
-        self._monitor_combo.blockSignals(False)
+        self._monitor_selector.update_monitors(monitors)
+
+    @property
+    def monitor_selector(self):
+        return self._monitor_selector

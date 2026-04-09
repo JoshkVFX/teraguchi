@@ -296,6 +296,7 @@ class MainWindow(QMainWindow):
             lambda: self._active_session and self._active_session.disconnect())
         self._fs_toolbar.settings_requested.connect(
             lambda: self._quality_dock.setVisible(not self._quality_dock.isVisible()))
+        self._fs_toolbar.monitor_selector.selection_changed.connect(self._on_monitors_changed)
         self._fs_toolbar.hide()
 
         # ── Timers ──
@@ -335,11 +336,10 @@ class MainWindow(QMainWindow):
         tb.addAction(self._action("Health", "F9", self._toggle_health))
         tb.addSeparator()
 
-        tb.addWidget(QLabel(" Monitor: "))
-        self._monitor_combo = QComboBox()
-        self._monitor_combo.setMinimumWidth(150)
-        self._monitor_combo.currentIndexChanged.connect(self._on_monitor_selected)
-        tb.addWidget(self._monitor_combo)
+        from client.monitor_selector import MonitorSelector
+        self._monitor_selector = MonitorSelector()
+        self._monitor_selector.selection_changed.connect(self._on_monitors_changed)
+        tb.addWidget(self._monitor_selector)
 
         # Menus
         mb = self.menuBar()
@@ -481,20 +481,28 @@ class MainWindow(QMainWindow):
         if s:
             s.apply_quality(settings)
 
-    def _on_monitor_selected(self, index):
-        if index >= 0:
-            mon_id = self._monitor_combo.itemData(index)
-            s = self._active_session
-            if s and mon_id is not None:
-                s.select_monitor(mon_id)
+    def _on_monitors_changed(self, selected_regions: list):
+        """Handle monitor checkbox changes from the selector.
+
+        selected_regions: list of monitor dicts to show (empty = all).
+        When a subset is selected, switch server to all-monitors capture
+        and crop client-side.
+        """
+        s = self._active_session
+        if not s:
+            return
+
+        if selected_regions:
+            # Subset selected — server must capture everything, client crops
+            s.select_monitor(0)  # 0 = all monitors / virtual desktop
+            s.viewer.set_monitor_regions(selected_regions)
+        else:
+            # All monitors — show full virtual desktop, no crop
+            s.select_monitor(0)
+            s.viewer.set_monitor_regions([])
 
     def _on_monitor_list(self, monitors):
-        self._monitor_combo.blockSignals(True)
-        self._monitor_combo.clear()
-        for mon in monitors:
-            label = f"{mon.get('name', 'Monitor')} ({mon['width']}x{mon['height']})"
-            self._monitor_combo.addItem(label, mon.get("id", 0))
-        self._monitor_combo.blockSignals(False)
+        self._monitor_selector.update_monitors(monitors)
         if self.isFullScreen():
             self._fs_toolbar.update_monitors(monitors)
 

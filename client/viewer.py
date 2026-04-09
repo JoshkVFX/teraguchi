@@ -8,7 +8,7 @@ on both macOS and Windows. Falls back to mouse events for standard mice.
 import logging
 from typing import Optional, Callable
 
-from PySide6.QtCore import Qt, QPointF, Signal, QSize
+from PySide6.QtCore import Qt, QPointF, QRectF, Signal, QSize
 from PySide6.QtGui import (
     QImage, QPixmap, QPainter, QMouseEvent, QKeyEvent,
     QTabletEvent, QWheelEvent, QResizeEvent,
@@ -52,6 +52,13 @@ class RemoteViewer(QWidget):
         # Stretch mode: False = preserve aspect ratio (correct geometry)
         self._stretch_fill = False
 
+        # Monitor crop: list of monitor dicts with x, y, width, height
+        # When set, only these regions of the full frame are shown (stitched side by side)
+        self._monitor_regions: list = []  # empty = show everything
+        # Computed composite dimensions (sum of selected monitors)
+        self._composite_w = 0
+        self._composite_h = 0
+
         # Track whether we're using pen or mouse to avoid duplicate events
         self._pen_active = False
 
@@ -74,6 +81,25 @@ class RemoteViewer(QWidget):
         self._screen_image.fill(Qt.black)
         self._update_scaling()
         logger.info("Remote screen size: %dx%d", width, height)
+
+    def set_monitor_regions(self, regions: list):
+        """Set which monitor regions to display from the full frame.
+
+        Args:
+            regions: list of dicts with x, y, width, height (pixel coords in
+                     the full virtual desktop). Empty list = show everything.
+        """
+        self._monitor_regions = regions
+        if regions:
+            # Composite: monitors laid out side by side
+            self._composite_w = sum(r["width"] for r in regions)
+            self._composite_h = max(r["height"] for r in regions)
+        else:
+            self._composite_w = 0
+            self._composite_h = 0
+        self._pixmap = None
+        self._update_scaling()
+        self.update()
 
     def update_full_frame(self, jpeg_data: bytes):
         """Update the entire screen from JPEG data."""
@@ -105,48 +131,81 @@ class RemoteViewer(QWidget):
 
     def _update_scaling(self):
         """Recalculate display scaling to fit remote screen in widget."""
-        if self._remote_width == 0 or self._remote_height == 0:
+        # Use composite dimensions if monitor regions are selected
+        if self._monitor_regions:
+            src_w = self._composite_w
+            src_h = self._composite_h
+        else:
+            src_w = self._remote_width
+            src_h = self._remote_height
+
+        if src_w == 0 or src_h == 0:
             return
 
         widget_w = self.width()
         widget_h = self.height()
 
-        if self._stretch_fill:
-            # Stretch to fill — no black bars, feels like a local display
-            self._scale_x = widget_w / self._remote_width
-            self._scale_y = widget_h / self._remote_height
-            self._offset_x = 0
-            self._offset_y = 0
+        # Always maintain aspect ratio
+        src_aspect = src_w / src_h
+        widget_aspect = widget_w / widget_h
+
+        if widget_aspect > src_aspect:
+            display_h = widget_h
+            display_w = int(display_h * src_aspect)
         else:
-            # Maintain aspect ratio (pillarbox/letterbox)
-            remote_aspect = self._remote_width / self._remote_height
-            widget_aspect = widget_w / widget_h
+            display_w = widget_w
+            display_h = int(display_w / src_aspect)
 
-            if widget_aspect > remote_aspect:
-                display_h = widget_h
-                display_w = int(display_h * remote_aspect)
-            else:
-                display_w = widget_w
-                display_h = int(display_w / remote_aspect)
-
-            self._scale_x = display_w / self._remote_width
-            self._scale_y = display_h / self._remote_height
-            self._offset_x = (widget_w - display_w) // 2
-            self._offset_y = (widget_h - display_h) // 2
+        self._scale_x = display_w / src_w
+        self._scale_y = display_h / src_h
+        self._offset_x = (widget_w - display_w) // 2
+        self._offset_y = (widget_h - display_h) // 2
 
     def _widget_to_remote(self, x: float, y: float) -> tuple:
-        """Convert widget coordinates to normalized remote coordinates (0.0-1.0)."""
-        # Remove offset
-        rx = (x - self._offset_x) / (self._scale_x * self._remote_width)
-        ry = (y - self._offset_y) / (self._scale_y * self._remote_height)
+        """Convert widget coordinates to normalized remote coordinates (0.0-1.0).
+
+        When monitor regions are active, maps through the composite layout
+        back to full virtual desktop coordinates so XTest moves the cursor
+        to the correct position.
+        """
+        if not self._monitor_regions:
+            # Simple: widget → full remote desktop
+            rx = (x - self._offset_x) / (self._scale_x * self._remote_width)
+            ry = (y - self._offset_y) / (self._scale_y * self._remote_height)
+            return max(0.0, min(1.0, rx)), max(0.0, min(1.0, ry))
+
+        # Composite mode: find which monitor the click is in
+        # Convert widget coords to composite pixel coords
+        cx = (x - self._offset_x) / self._scale_x
+        cy = (y - self._offset_y) / self._scale_y
+
+        # Walk through monitors (laid out side by side)
+        composite_x = 0
+        for region in self._monitor_regions:
+            rw = region["width"]
+            rh = region["height"]
+            if cx < composite_x + rw:
+                # Click is in this monitor
+                local_x = cx - composite_x
+                local_y = cy
+                # Map back to full virtual desktop
+                desktop_x = region["x"] + local_x
+                desktop_y = region["y"] + local_y
+                rx = desktop_x / self._remote_width
+                ry = desktop_y / self._remote_height
+                return max(0.0, min(1.0, rx)), max(0.0, min(1.0, ry))
+            composite_x += rw
+
+        # Past the last monitor — clamp to last monitor's right edge
+        last = self._monitor_regions[-1]
+        rx = (last["x"] + last["width"] - 1) / self._remote_width
+        ry = cy / self._remote_height if self._remote_height else 0
         return max(0.0, min(1.0, rx)), max(0.0, min(1.0, ry))
 
     # --- Paint ---
 
     def paintEvent(self, event):
         painter = QPainter(self)
-
-        # Black background (fills letterbox/pillarbox areas)
         painter.fillRect(self.rect(), Qt.black)
 
         if self._screen_image is None:
@@ -158,14 +217,39 @@ class RemoteViewer(QWidget):
         if self._pixmap is None:
             self._pixmap = QPixmap.fromImage(self._screen_image)
 
-        # Draw scaled, centered
-        display_w = int(self._scale_x * self._remote_width)
-        display_h = int(self._scale_y * self._remote_height)
-        painter.drawPixmap(
-            self._offset_x, self._offset_y,
-            display_w, display_h,
-            self._pixmap,
-        )
+        if not self._monitor_regions:
+            # No crop — draw the full image scaled
+            src_w = self._remote_width
+            src_h = self._remote_height
+            display_w = int(self._scale_x * src_w)
+            display_h = int(self._scale_y * src_h)
+            painter.drawPixmap(
+                self._offset_x, self._offset_y,
+                display_w, display_h,
+                self._pixmap,
+            )
+        else:
+            # Crop and stitch selected monitors side by side
+            dest_x = self._offset_x
+            for region in self._monitor_regions:
+                # Source rect in the full pixmap
+                src_x = region["x"]
+                src_y = region["y"]
+                src_w = region["width"]
+                src_h = region["height"]
+
+                # Destination rect in the widget
+                dest_w = int(self._scale_x * src_w)
+                dest_h = int(self._scale_y * src_h)
+                dest_y = self._offset_y
+
+                painter.drawPixmap(
+                    QRectF(dest_x, dest_y, dest_w, dest_h),
+                    self._pixmap,
+                    QRectF(src_x, src_y, src_w, src_h),
+                )
+                dest_x += dest_w
+
         painter.end()
 
     def resizeEvent(self, event: QResizeEvent):
