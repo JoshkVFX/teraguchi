@@ -359,7 +359,7 @@ class RemoteViewer(QWidget):
     def keyPressEvent(self, event: QKeyEvent):
         if event.isAutoRepeat():
             return
-        key = event.key()
+        key = self._remap_key(event.key())
         modifiers = self._qt_modifiers_to_int(event.modifiers())
         logger.debug("Key press: key=0x%x mod=0x%x", key, modifiers)
         self.key_changed.emit(key, key, True, modifiers)
@@ -368,10 +368,22 @@ class RemoteViewer(QWidget):
     def keyReleaseEvent(self, event: QKeyEvent):
         if event.isAutoRepeat():
             return
-        key = event.key()
+        key = self._remap_key(event.key())
         modifiers = self._qt_modifiers_to_int(event.modifiers())
         self.key_changed.emit(key, key, False, modifiers)
         event.accept()
+
+    @staticmethod
+    def _remap_key(key: int) -> int:
+        """On macOS, swap Command↔Control key codes for the wire message."""
+        import sys
+        if sys.platform == "darwin":
+            # Qt.Key_Control = 0x01000021, Qt.Key_Meta = 0x01000022
+            if key == Qt.Key_Meta:
+                return Qt.Key_Control   # Command press → Control_L on Linux
+            if key == Qt.Key_Control:
+                return Qt.Key_Meta      # Control press → Meta_L/Super on Linux
+        return key
 
     # --- Helpers ---
 
@@ -390,12 +402,22 @@ class RemoteViewer(QWidget):
         result = 0
         if mods & Qt.ShiftModifier:
             result |= 1
-        if mods & Qt.ControlModifier:
-            result |= 2
         if mods & Qt.AltModifier:
             result |= 4
-        if mods & Qt.MetaModifier:
-            result |= 8
+        import sys
+        if sys.platform == "darwin":
+            # macOS with AA_MacDontSwapCtrlAndMeta:
+            #   Physical Command → Qt Meta, Physical Control → Qt Control
+            # Swap for wire: Command should be Ctrl on Linux (Cmd+V → Ctrl+V)
+            if mods & Qt.MetaModifier:
+                result |= 2   # Command → Ctrl on Linux
+            if mods & Qt.ControlModifier:
+                result |= 8   # Control → Meta/Super on Linux
+        else:
+            if mods & Qt.ControlModifier:
+                result |= 2
+            if mods & Qt.MetaModifier:
+                result |= 8
         return result
 
     def sizeHint(self) -> QSize:
