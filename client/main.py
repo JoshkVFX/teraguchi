@@ -349,6 +349,8 @@ class MainWindow(QMainWindow):
         view.addSeparator()
         view.addAction(self._action("Fullscreen", "F11", self._toggle_fullscreen))
         view.addAction(self._action("Health Overlay", "F9", self._toggle_health))
+        view.addSeparator()
+        view.addAction(self._action("Key Diagnostic", "F10", self._show_key_diagnostic))
 
     def _action(self, text, shortcut, slot):
         a = QAction(text, self)
@@ -500,6 +502,11 @@ class MainWindow(QMainWindow):
         s = self._active_session
         if s:
             s.overlay.toggle()
+
+    def _show_key_diagnostic(self):
+        from client.key_diagnostic import KeyDiagnosticDialog
+        diag = KeyDiagnosticDialog(self)
+        diag.show()
 
     # ── Fullscreen ───────────────────────────────
 
