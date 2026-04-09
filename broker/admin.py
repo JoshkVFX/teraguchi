@@ -20,6 +20,9 @@ from aiohttp import web
 logger = logging.getLogger(__name__)
 
 
+AUTH_CACHE_TTL = 300  # 5 minutes — cache PAM auth to avoid pam_sss rate limits
+
+
 class AdminServer:
     """HTTP admin API for the Teragucci broker."""
 
@@ -31,9 +34,13 @@ class AdminServer:
         self._lock = asyncio.Lock()
         self._runner: Optional[web.AppRunner] = None
         self._group_cache: dict = {}
+        self._auth_cache: dict = {}  # "user:hash" → expiry timestamp
 
     def _authenticate(self, request: web.Request) -> Optional[str]:
-        """Validate Basic Auth via PAM, return username or None."""
+        """Validate Basic Auth via PAM (with cache), return username or None."""
+        import hashlib
+        import time
+
         auth_header = request.headers.get("Authorization", "")
         if not auth_header.startswith("Basic "):
             return None
@@ -43,6 +50,12 @@ class AdminServer:
             username, password = decoded.split(":", 1)
         except Exception:
             return None
+
+        # Check auth cache to avoid PAM rate limiting
+        cache_key = hashlib.sha256(f"{username}:{password}".encode()).hexdigest()
+        cached = self._auth_cache.get(cache_key)
+        if cached and cached > time.time():
+            return username
 
         try:
             from server.pam_auth import PAMAuthenticator
@@ -59,6 +72,8 @@ class AdminServer:
             logger.warning("Admin UI: %s not in %s", username, self._admin_group)
             return None
 
+        # Cache successful auth
+        self._auth_cache[cache_key] = time.time() + AUTH_CACHE_TTL
         return username
 
     @web.middleware
