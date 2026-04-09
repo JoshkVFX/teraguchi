@@ -134,6 +134,10 @@ class Session(QObject):
 
     def cleanup(self):
         """Full teardown."""
+        try:
+            QApplication.clipboard().dataChanged.disconnect(self._on_clipboard_local_changed)
+        except RuntimeError:
+            pass
         self.protocol.disconnect()
         self.decoder.close_all()
         if self.audio and self.audio._started:
@@ -270,9 +274,16 @@ class Session(QObject):
 
     def _on_connected(self):
         self.status_changed.emit("connected")
+        # Start monitoring local clipboard for client→server sync
+        clipboard = QApplication.clipboard()
+        clipboard.dataChanged.connect(self._on_clipboard_local_changed)
 
     def _on_disconnected(self, reason):
         self.status_changed.emit("disconnected")
+        try:
+            QApplication.clipboard().dataChanged.disconnect(self._on_clipboard_local_changed)
+        except RuntimeError:
+            pass  # already disconnected
 
     def _on_error(self, error):
         self.status_changed.emit("error")
@@ -288,4 +299,16 @@ class Session(QObject):
         self.monitor_list_received.emit(monitors)
 
     def _on_clipboard_recv(self, text):
+        self._clipboard_from_server = True
         QApplication.clipboard().setText(text)
+
+    def _on_clipboard_local_changed(self):
+        """Local clipboard changed — send to server if it wasn't from the server."""
+        if getattr(self, '_clipboard_from_server', False):
+            self._clipboard_from_server = False
+            return
+        if not self.is_connected:
+            return
+        text = QApplication.clipboard().text()
+        if text:
+            self.protocol.send_clipboard(text)
