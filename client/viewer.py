@@ -31,6 +31,7 @@ class RemoteViewer(QWidget):
     key_changed = Signal(int, int, bool, int)  # qt_key, scan_code, pressed, modifiers
     pen_event = Signal(dict)  # Full pen event data
     request_full_frame = Signal()
+    paste_requested = Signal()  # Ctrl+V or Cmd+V detected — push clipboard
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -362,6 +363,11 @@ class RemoteViewer(QWidget):
         key = self._remap_key(event.key())
         modifiers = self._qt_modifiers_to_int(event.modifiers())
         logger.debug("Key press: key=0x%x mod=0x%x", key, modifiers)
+
+        # Detect paste: Ctrl+V or Cmd+V → ensure clipboard is synced to server
+        if key == Qt.Key_V and (modifiers & 2):  # bit 2 = Ctrl on wire
+            self.paste_requested.emit()
+
         self.key_changed.emit(key, key, True, modifiers)
         event.accept()
 

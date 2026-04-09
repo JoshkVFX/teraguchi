@@ -207,6 +207,7 @@ class Session(QObject):
         v.mouse_scrolled.connect(self._send_mouse_scroll)
         v.key_changed.connect(self._send_key_event)
         v.pen_event.connect(self._send_pen_event)
+        v.paste_requested.connect(self._push_clipboard_for_paste)
 
     # ── Input Sending ────────────────────────────
 
@@ -229,6 +230,15 @@ class Session(QObject):
     def _send_pen_event(self, data):
         data["type"] = MsgType.PEN_EVENT
         self.protocol.send_input(data)
+
+    def _push_clipboard_for_paste(self):
+        """Explicitly push local clipboard to server right before Ctrl+V."""
+        if not self.is_connected:
+            return
+        text = QApplication.clipboard().text()
+        if text:
+            logger.debug("Paste detected — pushing %d chars to server clipboard", len(text))
+            self.protocol.send_clipboard(text)
 
     # ── Protocol Event Handlers ──────────────────
 
