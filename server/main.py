@@ -630,11 +630,11 @@ async def handle_client(websocket: WebSocketServerProtocol):
         if auth.enabled:
             if auth.mode == "pam":
                 # PAM mode: request username + password directly
+                # Also accept broker tokens (method="token")
                 auth_req = AuthRequest(
                     challenge="",
-                    auth_methods=["pam"],
+                    auth_methods=["pam", "token"],
                 )
-                # Add auth_mode to the JSON so client knows to send password
                 req_dict = json.loads(auth_req.to_json())
                 req_dict["auth_mode"] = "pam"
                 await websocket.send(json.dumps(req_dict))
@@ -646,9 +646,20 @@ async def handle_client(websocket: WebSocketServerProtocol):
                         AuthResult(success=False, message="Expected auth response").to_json())
                     return
 
+                method = msg.get("method", "pam")
                 username = msg.get("username", "")
-                password = msg.get("credential", "")
-                success = auth.verify_pam(username, password)
+
+                if method == "token" and broker_secret:
+                    # Broker token authentication
+                    token = msg.get("credential", "")
+                    verified_user = auth.verify_token(token, broker_secret)
+                    success = verified_user is not None
+                    if success:
+                        username = verified_user
+                else:
+                    # Standard PAM authentication
+                    password = msg.get("credential", "")
+                    success = auth.verify_pam(username, password)
 
                 await websocket.send(
                     AuthResult(success=success,
@@ -798,6 +809,68 @@ async def handle_client(websocket: WebSocketServerProtocol):
         logger.info("Client removed: %s (%s)", addr, session.username)
 
 
+broker_secret: str = ""  # Shared secret for broker token verification
+
+
+# ═══════════════════════════════════════════════════════════════
+# HTTP Status Endpoint (for broker health probes)
+# ═══════════════════════════════════════════════════════════════
+
+def handle_http(connection, request):
+    """
+    Handle HTTP requests (non-WebSocket) via process_request hook.
+
+    The broker's MachinePool probes GET /status to check server health.
+    Returns JSON with active sessions, GPU info, load, and uptime.
+
+    Works with websockets 13+ (process_request receives connection, request).
+    """
+    if request.path == "/status":
+        import platform
+        from websockets.http11 import Response
+        active_sessions = []
+        for username, rt in runtimes.items():
+            if rt.client_count > 0:
+                active_sessions.append(username)
+
+        try:
+            load_avg = list(os.getloadavg())
+        except (OSError, AttributeError):
+            load_avg = [0.0, 0.0, 0.0]
+
+        try:
+            with open("/proc/uptime") as f:
+                uptime_s = int(float(f.read().split()[0]))
+        except Exception:
+            uptime_s = 0
+
+        gpu = ""
+        for rt in runtimes.values():
+            if rt.encoder and rt.encoder.active_backend:
+                gpu = rt.encoder.active_backend
+                break
+        if not gpu and default_runtime and default_runtime.encoder:
+            gpu = default_runtime.encoder.active_backend or ""
+
+        status = {
+            "active_sessions": active_sessions,
+            "load_avg": load_avg,
+            "uptime_s": uptime_s,
+            "gpu": gpu,
+            "hostname": platform.node(),
+            "version": "3.0.0",
+        }
+
+        body = json.dumps(status).encode()
+        return Response(200, "OK", websockets.Headers({
+            "Content-Type": "application/json",
+            "Content-Length": str(len(body)),
+        }), body)
+
+    # Not a status request — proceed with WebSocket handshake
+    return None
+
+
 async def run_server(host: str, port: int, tls_context: Optional[ssl.SSLContext]):
     """Start the WebSocket server."""
     global running
@@ -831,6 +904,7 @@ async def run_server(host: str, port: int, tls_context: Optional[ssl.SSLContext]
         max_size=50 * 1024 * 1024,
         ping_interval=20,
         ping_timeout=30,
+        process_request=handle_http,
     ):
         logger.info("Server ready. Waiting for connections...")
         await stop
@@ -867,7 +941,7 @@ def create_tls_context(cert_file: str, key_file: str) -> ssl.SSLContext:
 
 def main():
     global auth, session_mgr, default_runtime, quality_settings
-    global ffmpeg_caps, available_encoders, server_args
+    global ffmpeg_caps, available_encoders, server_args, broker_secret
 
     parser = argparse.ArgumentParser(description="Teragucci Remote Desktop Server")
     parser.add_argument("--host", default="0.0.0.0", help="Listen address")
@@ -902,6 +976,10 @@ def main():
                             help="Virtual display height (PAM mode)")
     sess_group.add_argument("--dpi", type=int, default=96,
                             help="Virtual display DPI (PAM mode)")
+
+    # Broker integration
+    parser.add_argument("--broker-secret", default="",
+                        help="Path to shared broker signing secret file")
 
     # Features
     parser.add_argument("--no-audio", action="store_true")
@@ -956,6 +1034,12 @@ def main():
         force_lossless=args.lossless,
         enable_audio=not args.no_audio,
     )
+
+    # Load broker secret (if configured)
+    if args.broker_secret and os.path.exists(args.broker_secret):
+        with open(args.broker_secret) as f:
+            broker_secret = f.read().strip()
+        logger.info("Loaded broker signing secret from %s", args.broker_secret)
 
     # Initialize auth
     auth = Authenticator(mode=args.auth_mode)

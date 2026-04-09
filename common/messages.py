@@ -169,6 +169,13 @@ class MsgType:
     # --- Cursor ---
     CURSOR_UPDATE = "cursor_update"
 
+    # --- Broker ---
+    BROKER_HELLO = "broker_hello"              # Broker → Client: machine list + admin status
+    BROKER_ASSIGN = "broker_assign"            # Broker → Client: assigned machine + token
+    BROKER_MACHINE_REQUEST = "broker_machine_request"  # Client → Broker: request specific machine
+    BROKER_STATUS = "broker_status"            # Client → Broker: request status refresh
+    BROKER_RELEASE = "broker_release"          # Client → Broker: release machine assignment
+
 
 # ============================================================
 # Quality Control

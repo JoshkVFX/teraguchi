@@ -1,0 +1,62 @@
+# Teragucci Connection Broker - Machine Configuration
+#
+# Copy to /etc/teragucci/broker.yml and edit for your environment.
+# Each machine entry corresponds to a Teragucci server in the pool.
+
+machines:
+  - name: dxs-flame-01
+    host: 10.10.0.11
+    port: 4443
+    pool: floating
+    gpu: "NVIDIA RTX A4000"
+    priority: 10
+    tags: [flame, gpu]
+
+  - name: dxs-flame-02
+    host: 10.10.0.12
+    port: 4443
+    pool: floating
+    gpu: "NVIDIA RTX A4000"
+    priority: 10
+    tags: [flame, gpu]
+
+  - name: dxs-flame-03
+    host: 10.10.0.31
+    port: 4443
+    pool: floating
+    gpu: "NVIDIA RTX A4000"
+    priority: 10
+    tags: [flame, gpu]
+
+  - name: dxs-flame-04
+    host: 10.10.0.14
+    port: 4443
+    pool: floating
+    gpu: "NVIDIA RTX A4000"
+    priority: 10
+    tags: [flame, gpu]
+
+  - name: dxs-flame-05
+    host: 10.10.0.15
+    port: 4443
+    pool: floating
+    gpu: "NVIDIA RTX A4000"
+    priority: 10
+    tags: [flame, gpu]
+
+  - name: dxs-flame-06
+    host: 10.10.0.16
+    port: 4443
+    pool: floating
+    gpu: "NVIDIA RTX A4000"
+    priority: 10
+    tags: [flame, gpu]
+
+  # Example dedicated machine:
+  # - name: dxs-flame-01
+  #   host: 10.10.0.11
+  #   port: 4443
+  #   pool: dedicated
+  #   assigned_user: randy.mcentee
+  #   gpu: "NVIDIA RTX A4000"
+  #   priority: 1

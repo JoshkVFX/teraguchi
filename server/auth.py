@@ -173,3 +173,40 @@ class Authenticator:
 
     def list_users(self) -> list:
         return list(self._users.keys())
+
+    # ── Broker token verification ─────────────────────────────
+
+    def verify_token(self, token: str, secret: str) -> Optional[str]:
+        """
+        Verify a broker-issued HMAC token.
+
+        Returns username if valid, None if invalid/expired.
+        """
+        import hmac
+        import time as _time
+        parts = token.split(":")
+        if len(parts) != 5:
+            logger.warning("Token: wrong number of parts (%d)", len(parts))
+            return None
+
+        username, machine, issued_str, expires_str, sig = parts
+
+        try:
+            expires = int(expires_str)
+        except ValueError:
+            return None
+
+        if _time.time() > expires:
+            logger.warning("Token expired for %s", username)
+            return None
+
+        payload = f"{username}:{machine}:{issued_str}:{expires_str}"
+        expected_sig = hmac.new(
+            secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+
+        if not hmac.compare_digest(sig, expected_sig):
+            logger.warning("Token signature mismatch for %s", username)
+            return None
+
+        logger.info("Token auth success: %s (machine=%s)", username, machine)
+        return username

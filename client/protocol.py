@@ -62,6 +62,12 @@ class ClientProtocol:
         # TLS
         self._use_tls = False
 
+        # Broker redirect
+        self._broker_mode = False
+        self._broker_token = ""
+        self._redirect_host = ""
+        self._redirect_port = 0
+
         # UDP transport
         self._udp_client: Optional[UDPMediaClient] = None
         self._hybrid: Optional[HybridClientTransport] = None
@@ -86,6 +92,8 @@ class ClientProtocol:
         self.on_clipboard: Optional[Callable] = None
         self.on_file_response: Optional[Callable] = None  # file_accept/file_ack/file_cancel
         self.on_usb_response: Optional[Callable] = None  # usb_device_list/attached/detached/error
+        self.on_broker_hello: Optional[Callable] = None  # broker_hello with machine list
+        self.on_broker_assign: Optional[Callable] = None  # broker_assign with redirect info
 
     @property
     def connected(self) -> bool:
@@ -97,6 +105,10 @@ class ClientProtocol:
             self.disconnect()
 
         self._closing = False
+        self._broker_mode = False
+        self._broker_token = ""
+        self._redirect_host = ""
+        self._redirect_port = 0
         self._username = username
         self._password = password
         self._use_tls = use_tls
@@ -108,6 +120,32 @@ class ClientProtocol:
         self._thread = threading.Thread(
             target=self._run_loop, args=(host, port),
             daemon=True, name="teragucci-client-io")
+        self._thread.start()
+
+    def connect_broker(self, host: str, port: int, username: str = "",
+                       password: str = "", use_tls: bool = True,
+                       auto_reconnect: bool = True):
+        """Connect via broker. Authenticates with broker, gets assigned a machine,
+        then redirects to that machine with a signed token."""
+        if self._thread and self._thread.is_alive():
+            self.disconnect()
+
+        self._closing = False
+        self._broker_mode = True
+        self._broker_token = ""
+        self._redirect_host = ""
+        self._redirect_port = 0
+        self._username = username
+        self._password = password
+        self._use_tls = use_tls
+        self._auto_reconnect = auto_reconnect
+        self._reconnect_delay = 1.0
+        self._host = host
+        self._port = port
+
+        self._thread = threading.Thread(
+            target=self._run_loop, args=(host, port),
+            daemon=True, name="teragucci-broker-io")
         self._thread.start()
 
     def disconnect(self):
@@ -182,6 +220,17 @@ class ClientProtocol:
             self._loop = None
 
     async def _connect_and_receive(self, host: str, port: int):
+        if self._broker_mode and not self._broker_token:
+            # Phase 1: Connect to broker, authenticate, get machine assignment
+            await self._broker_handshake(host, port)
+            if self._redirect_host and self._broker_token:
+                # Phase 2: Connect to assigned machine with token
+                host = self._redirect_host
+                port = self._redirect_port
+                logger.info("Broker redirect → %s:%d", host, port)
+            else:
+                return
+
         scheme = "wss" if self._use_tls else "ws"
         uri = f"{scheme}://{host}:{port}"
         logger.info("Connecting to %s", uri)
@@ -206,7 +255,11 @@ class ClientProtocol:
                 msg = parse_message(first_msg)
 
                 if msg.get("type") == MsgType.AUTH_REQUEST:
-                    await self._handle_auth(ws, msg)
+                    if self._broker_token:
+                        # Authenticate with broker token
+                        await self._handle_token_auth(ws, msg)
+                    else:
+                        await self._handle_auth(ws, msg)
 
                 elif msg.get("type") == MsgType.SERVER_HELLO:
                     self._handle_server_hello(msg)
@@ -218,7 +271,6 @@ class ClientProtocol:
                 self.on_connected()
 
             hello = ClientHelloMsg()
-            # Send actual client screen size
             if self._screen_size:
                 hello.screen_width = self._screen_size[0]
                 hello.screen_height = self._screen_size[1]
@@ -237,6 +289,115 @@ class ClientProtocol:
                     self._handle_json(message)
                 elif isinstance(message, bytes):
                     self._handle_binary(message)
+
+    async def _broker_handshake(self, host: str, port: int):
+        """Phase 1: Authenticate with broker and get machine assignment."""
+        scheme = "wss" if self._use_tls else "ws"
+        uri = f"{scheme}://{host}:{port}"
+        logger.info("Connecting to broker at %s", uri)
+
+        ssl_context = None
+        if self._use_tls:
+            import ssl
+            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+
+        async with websockets.connect(
+            uri, max_size=1024 * 1024,
+            ping_interval=20, ping_timeout=30,
+            ssl=ssl_context,
+        ) as ws:
+            # Broker sends auth_request
+            raw = await asyncio.wait_for(ws.recv(), timeout=30)
+            msg = parse_message(raw)
+
+            if msg.get("type") != MsgType.AUTH_REQUEST:
+                logger.error("Broker: expected auth_request, got %s", msg.get("type"))
+                return
+
+            # Send PAM credentials
+            screen_w = self._screen_size[0] if self._screen_size else 0
+            screen_h = self._screen_size[1] if self._screen_size else 0
+            auth_resp = AuthResponse(
+                method="pam",
+                username=self._username,
+                credential=self._password,
+                screen_width=screen_w,
+                screen_height=screen_h,
+            )
+            await ws.send(auth_resp.to_json())
+
+            # Get auth result
+            raw = await asyncio.wait_for(ws.recv(), timeout=30)
+            msg = parse_message(raw)
+
+            if msg.get("type") == MsgType.AUTH_RESULT:
+                if self.on_auth_result:
+                    self.on_auth_result(msg.get("success", False),
+                                        msg.get("message", ""))
+                if not msg.get("success", False):
+                    return
+
+            # Get broker hello (machine list)
+            raw = await asyncio.wait_for(ws.recv(), timeout=30)
+            msg = parse_message(raw)
+
+            if msg.get("type") == MsgType.BROKER_HELLO:
+                if self.on_broker_hello:
+                    self.on_broker_hello(msg)
+
+            # Request auto-assignment (empty machine_name = auto)
+            await ws.send(json.dumps({
+                "type": MsgType.BROKER_MACHINE_REQUEST,
+                "machine_name": "",
+            }))
+
+            # Get assignment
+            raw = await asyncio.wait_for(ws.recv(), timeout=30)
+            msg = parse_message(raw)
+
+            if msg.get("type") == MsgType.BROKER_ASSIGN:
+                if self.on_broker_assign:
+                    self.on_broker_assign(msg)
+
+                if msg.get("success", False):
+                    self._redirect_host = msg["host"]
+                    self._redirect_port = msg["port"]
+                    self._broker_token = msg["token"]
+                    self._use_tls = msg.get("use_tls", True)
+                    logger.info("Broker assigned: %s → %s:%d",
+                                msg.get("machine_name", ""),
+                                self._redirect_host, self._redirect_port)
+                else:
+                    logger.error("Broker assignment failed: %s",
+                                 msg.get("message", ""))
+
+    async def _handle_token_auth(self, ws, msg: dict):
+        """Authenticate with a broker-issued token."""
+        screen_w = self._screen_size[0] if self._screen_size else 0
+        screen_h = self._screen_size[1] if self._screen_size else 0
+        auth_resp = AuthResponse(
+            method="token",
+            username=self._username,
+            credential=self._broker_token,
+            screen_width=screen_w,
+            screen_height=screen_h,
+        )
+        await ws.send(auth_resp.to_json())
+
+        result_raw = await ws.recv()
+        result = parse_message(result_raw)
+        if result.get("type") == MsgType.AUTH_RESULT:
+            if self.on_auth_result:
+                self.on_auth_result(result.get("success", False),
+                                    result.get("message", ""))
+            if not result.get("success", False):
+                return
+
+        hello_raw = await ws.recv()
+        hello = parse_message(hello_raw)
+        self._handle_server_hello(hello)
 
     async def _handle_auth(self, ws, msg: dict):
         """Handle authentication handshake."""
@@ -407,6 +568,12 @@ class ClientProtocol:
                               MsgType.USB_DETACHED, MsgType.USB_ERROR):
                 if self.on_usb_response:
                     self.on_usb_response(msg)
+            elif msg_type == MsgType.BROKER_HELLO:
+                if self.on_broker_hello:
+                    self.on_broker_hello(msg)
+            elif msg_type == MsgType.BROKER_ASSIGN:
+                if self.on_broker_assign:
+                    self.on_broker_assign(msg)
         except json.JSONDecodeError:
             pass
 

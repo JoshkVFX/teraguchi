@@ -136,6 +136,24 @@ class Session(QObject):
             host, port, username=username, password=password,
             use_tls=use_tls, auto_reconnect=auto_reconnect)
 
+    def connect_broker(self, host: str, port: int, username: str = "",
+                       password: str = "", use_tls: bool = True,
+                       auto_reconnect: bool = True):
+        """Connect via broker — authenticate, get assigned a machine, redirect."""
+        self._host = host
+        self._port = port
+        self._username = username
+        self._password = password
+        self._bookmark_id = ""
+
+        self.status_changed.emit("connecting")
+        self.title_changed.emit(f"Broker: {host}")
+
+        self.protocol.disconnect()
+        self.protocol.connect_broker(
+            host, port, username=username, password=password,
+            use_tls=use_tls, auto_reconnect=auto_reconnect)
+
     def disconnect(self):
         self.protocol.disconnect()
         self.status_changed.emit("disconnected")

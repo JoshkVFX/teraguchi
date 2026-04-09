@@ -1,0 +1,12 @@
+# Teragucci Broker Requirements
+# Install: pip install -r requirements-broker.txt
+
+websockets>=12.0
+aiohttp>=3.9
+PyYAML>=6.0
+
+# FreeIPA LDAP (optional — falls back to 'id' command on FreeIPA-joined hosts)
+# python-ldap>=3.4
+
+# PAM authentication
+python-pam>=2.0

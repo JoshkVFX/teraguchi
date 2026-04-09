@@ -55,14 +55,23 @@ class ConnectionDialog(QDialog):
         layout.setContentsMargins(28, 28, 28, 28)
         layout.setLabelAlignment(Qt.AlignRight)
 
+        # Connection type selector
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItem("Direct — connect to a specific machine", "direct")
+        self.mode_combo.addItem("Broker — auto-assign via connection broker", "broker")
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        layout.addRow("Mode:", self.mode_combo)
+
         self.host_input = QLineEdit(default_host)
         self.host_input.setPlaceholderText("e.g. 192.168.1.100 or hostname")
-        layout.addRow("Host:", self.host_input)
+        self._host_label = QLabel("Host:")
+        layout.addRow(self._host_label, self.host_input)
 
         self.port_input = QSpinBox()
         self.port_input.setRange(1, 65535)
         self.port_input.setValue(default_port)
-        layout.addRow("Port:", self.port_input)
+        self._port_label = QLabel("Port:")
+        layout.addRow(self._port_label, self.port_input)
 
         self.username_input = QLineEdit(default_username)
         self.username_input.setPlaceholderText("(leave empty if no auth)")
@@ -103,6 +112,21 @@ class ConnectionDialog(QDialog):
         self.connect_btn.clicked.connect(self.accept)
         self.cancel_btn.clicked.connect(self.reject)
 
+    def _on_mode_changed(self, index):
+        is_broker = self.mode_combo.currentData() == "broker"
+        if is_broker:
+            self._host_label.setText("Broker:")
+            self.host_input.setPlaceholderText("e.g. dxs-broker or 10.10.0.173")
+            self.port_input.setValue(8443)
+            self.username_input.setPlaceholderText("FreeIPA username")
+        else:
+            self._host_label.setText("Host:")
+            self.host_input.setPlaceholderText("e.g. 192.168.1.100 or hostname")
+            self.port_input.setValue(443)
+            self.username_input.setPlaceholderText("(leave empty if no auth)")
+
+    @property
+    def connection_mode(self): return self.mode_combo.currentData()
     @property
     def host(self): return self.host_input.text().strip()
     @property
@@ -643,7 +667,7 @@ class MainWindow(QMainWindow):
 
     def _new_session_and_connect(self, host, port, username, password,
                                   use_tls=True, auto_reconnect=True,
-                                  bookmark_id=""):
+                                  bookmark_id="", mode="direct"):
         session = Session(self)
         idx = self._tabs.addTab(session.viewer, session.display_name)
         self._sessions[idx] = session
@@ -657,14 +681,19 @@ class MainWindow(QMainWindow):
         session.file_transfer_finished.connect(self._on_file_transfer_done)
         session.usb_devices_updated.connect(self._on_usb_devices_updated)
 
-        session.connect(host, port, username, password,
-                        use_tls=use_tls, auto_reconnect=auto_reconnect,
-                        bookmark_id=bookmark_id)
+        if mode == "broker":
+            session.connect_broker(host, port, username, password,
+                                   use_tls=use_tls, auto_reconnect=auto_reconnect)
+        else:
+            session.connect(host, port, username, password,
+                            use_tls=use_tls, auto_reconnect=auto_reconnect,
+                            bookmark_id=bookmark_id)
 
         # Send initial quality
         session.apply_quality(self._quality_panel.settings)
 
-        self._status_label.setText(f"Connecting to {host}:{port}...")
+        label = "broker" if mode == "broker" else host
+        self._status_label.setText(f"Connecting to {label}:{port}...")
 
     def _close_tab(self, idx):
         session = self._sessions.pop(idx, None)
@@ -735,7 +764,7 @@ class MainWindow(QMainWindow):
             self._new_session_and_connect(
                 dialog.host, dialog.port, dialog.username, dialog.password,
                 use_tls=dialog.use_tls, auto_reconnect=dialog.auto_reconnect,
-                bookmark_id=bid)
+                bookmark_id=bid, mode=dialog.connection_mode)
 
     def _connect_bookmark(self, bookmark_id):
         profile = self._bookmarks.get(bookmark_id)
