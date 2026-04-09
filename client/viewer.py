@@ -375,14 +375,12 @@ class RemoteViewer(QWidget):
 
     @staticmethod
     def _remap_key(key: int) -> int:
-        """On macOS, swap Command↔Control key codes for the wire message."""
+        """On macOS, both Command and Control → Control_L on Linux."""
         import sys
         if sys.platform == "darwin":
-            # Qt.Key_Control = 0x01000021, Qt.Key_Meta = 0x01000022
             if key == Qt.Key_Meta:
-                return Qt.Key_Control   # Command press → Control_L on Linux
-            if key == Qt.Key_Control:
-                return Qt.Key_Meta      # Control press → Meta_L/Super on Linux
+                return Qt.Key_Control   # Command → Control_L
+            # Physical Control already maps to Qt.Key_Control — no change needed
         return key
 
     # --- Helpers ---
@@ -406,13 +404,10 @@ class RemoteViewer(QWidget):
             result |= 4
         import sys
         if sys.platform == "darwin":
-            # macOS with AA_MacDontSwapCtrlAndMeta:
-            #   Physical Command → Qt Meta, Physical Control → Qt Control
-            # Swap for wire: Command should be Ctrl on Linux (Cmd+V → Ctrl+V)
-            if mods & Qt.MetaModifier:
-                result |= 2   # Command → Ctrl on Linux
-            if mods & Qt.ControlModifier:
-                result |= 8   # Control → Meta/Super on Linux
+            # macOS: both Command and Control → Ctrl on Linux
+            # Command+V = paste, Control+C = SIGINT — both need Ctrl
+            if mods & (Qt.ControlModifier | Qt.MetaModifier):
+                result |= 2
         else:
             if mods & Qt.ControlModifier:
                 result |= 2
