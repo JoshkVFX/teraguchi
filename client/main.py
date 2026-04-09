@@ -1003,6 +1003,7 @@ def main():
                         help="Connect via broker instead of direct")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
+    print(f"PARSED ARGS: broker={args.broker}, verbose={args.verbose}, host={args.host!r}, mode={'broker' if args.broker else 'direct'}")
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
