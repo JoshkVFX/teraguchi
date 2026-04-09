@@ -32,6 +32,7 @@ from common.messages import (
 from broker.freeipa import FreeIPAClient
 from broker.pool import MachinePool
 from broker.tokens import generate_token
+from broker.admin import AdminServer
 
 logger = logging.getLogger("teragucci.broker")
 
@@ -62,10 +63,12 @@ def load_secret(path: str) -> str:
 
 pool: Optional[MachinePool] = None
 ipa: Optional[FreeIPAClient] = None
+admin_server: Optional[AdminServer] = None
 signing_secret: str = ""
 required_group: str = "teragucci-users"
 admin_group: str = "teragucci-admins"
 group_cache: dict = {}
+config_path: str = ""
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -224,8 +227,9 @@ def create_tls_context(cert_file: str, key_file: str) -> ssl.SSLContext:
     return ctx
 
 
-async def run_broker(host: str, port: int, tls_context: Optional[ssl.SSLContext]):
-    """Start the broker WebSocket server."""
+async def run_broker(host: str, port: int, admin_port: int,
+                     tls_context: Optional[ssl.SSLContext]):
+    """Start the broker WebSocket server and admin UI."""
     logger.info("Starting Teragucci broker on %s:%d", host, port)
 
     stop = asyncio.Future()
@@ -240,6 +244,10 @@ async def run_broker(host: str, port: int, tls_context: Optional[ssl.SSLContext]
 
     pool.start_health_probes()
 
+    # Start admin UI
+    if admin_server:
+        await admin_server.start(host=host, port=admin_port, tls_context=tls_context)
+
     async with websockets.serve(
         handle_client, host, port,
         ssl=tls_context,
@@ -250,6 +258,8 @@ async def run_broker(host: str, port: int, tls_context: Optional[ssl.SSLContext]
         logger.info("Broker ready. Waiting for connections...")
         await stop
 
+    if admin_server:
+        await admin_server.stop()
     pool.stop()
     logger.info("Broker shutdown complete")
 
@@ -268,6 +278,8 @@ def main():
                         help="FreeIPA group required for access (empty=no check)")
     parser.add_argument("--admin-group", default="teragucci-admins",
                         help="FreeIPA admin group")
+    parser.add_argument("--admin-port", type=int, default=8080,
+                        help="Admin UI HTTP port")
     parser.add_argument("--verbose", "-v", action="store_true")
 
     # FreeIPA
@@ -286,15 +298,16 @@ def main():
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    global pool, ipa, signing_secret, required_group, admin_group
+    global pool, ipa, admin_server, signing_secret, required_group, admin_group, config_path
 
     # Load config
+    config_path = args.config
     config = {}
-    if os.path.exists(args.config):
-        config = load_config(args.config)
-        logger.info("Loaded config: %s", args.config)
+    if os.path.exists(config_path):
+        config = load_config(config_path)
+        logger.info("Loaded config: %s", config_path)
     else:
-        logger.warning("No config file at %s — using defaults", args.config)
+        logger.warning("No config file at %s — using defaults", config_path)
 
     # Load signing secret
     if os.path.exists(args.secret):
@@ -321,6 +334,9 @@ def main():
     required_group = args.required_group
     admin_group = args.admin_group
 
+    # Admin UI
+    admin_server = AdminServer(pool, ipa, config_path, admin_group)
+
     # TLS
     tls_context = None
     if args.tls_cert and args.tls_key:
@@ -331,7 +347,7 @@ def main():
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(run_broker(args.host, args.port, tls_context))
+        loop.run_until_complete(run_broker(args.host, args.port, args.admin_port, tls_context))
     except KeyboardInterrupt:
         pass
 

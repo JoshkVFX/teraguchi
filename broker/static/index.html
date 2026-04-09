@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Teragucci Broker Admin</title>
+<style>
+:root {
+  --bg: #1a1a2e;
+  --surface: #16213e;
+  --surface2: #0f3460;
+  --accent: #e94560;
+  --accent2: #533483;
+  --text: #eee;
+  --text2: #aaa;
+  --green: #4ecca3;
+  --red: #e94560;
+  --yellow: #f0a500;
+  --border: #2a2a4a;
+  --radius: 8px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  padding: 0;
+}
+header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 16px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+header h1 {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 1px;
+}
+header h1 span { color: var(--accent); }
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 13px;
+  color: var(--text2);
+}
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 4px;
+}
+.status-dot.green { background: var(--green); }
+.status-dot.red { background: var(--red); }
+.status-dot.yellow { background: var(--yellow); }
+
+main { padding: 24px; max-width: 1400px; margin: 0 auto; }
+
+h2 {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 16px;
+  color: var(--text2);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+/* Machine Grid */
+.machine-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+  margin-bottom: 40px;
+}
+.machine-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  transition: border-color 0.2s;
+}
+.machine-card:hover { border-color: var(--accent); }
+.machine-card .name {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.machine-card .meta {
+  font-size: 12px;
+  color: var(--text2);
+  margin-bottom: 4px;
+}
+.machine-card .sessions {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+.machine-card .sessions .user {
+  display: inline-block;
+  background: var(--surface2);
+  padding: 2px 8px;
+  border-radius: 4px;
+  margin: 2px 4px 2px 0;
+}
+.pool-badge {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.pool-badge.floating { background: var(--surface2); color: var(--text2); }
+.pool-badge.assigned { background: var(--accent2); color: #fff; }
+
+/* Assignments Table */
+.assignments-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+.assignments-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 16px;
+}
+.assignments-table th {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 2px solid var(--border);
+  font-size: 12px;
+  color: var(--text2);
+  text-transform: uppercase;
+}
+.assignments-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.assignments-table tr:hover td { background: rgba(255,255,255,0.03); }
+.assignments-table .username { font-weight: 600; font-size: 14px; }
+
+.machine-tag {
+  display: inline-block;
+  background: var(--surface2);
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  margin: 2px 4px 2px 0;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.15s;
+}
+.machine-tag:hover { border-color: var(--red); }
+.machine-tag.selected { background: var(--accent2); border-color: var(--accent2); }
+
+/* Buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface2);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.btn:hover { border-color: var(--accent); background: var(--accent); }
+.btn.small { padding: 4px 10px; font-size: 12px; }
+.btn.danger { border-color: var(--red); }
+.btn.danger:hover { background: var(--red); }
+
+/* Add User Form */
+.add-user-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-top: 12px;
+}
+.add-user-row input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  color: var(--text);
+  font-size: 13px;
+  width: 200px;
+}
+.add-user-row input::placeholder { color: var(--text2); }
+.add-user-row input:focus { outline: none; border-color: var(--accent); }
+
+/* Machine Picker (dropdown) */
+.machine-picker {
+  position: relative;
+  display: inline-block;
+}
+.machine-picker-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px;
+  z-index: 100;
+  min-width: 220px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+}
+.machine-picker-dropdown label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.machine-picker-dropdown label:hover { background: rgba(255,255,255,0.05); }
+.machine-picker-dropdown input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+/* Toast */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  background: var(--green);
+  color: #000;
+  padding: 12px 20px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 600;
+  opacity: 0;
+  transform: translateY(10px);
+  transition: all 0.3s;
+  z-index: 200;
+}
+.toast.show { opacity: 1; transform: translateY(0); }
+.toast.error { background: var(--red); color: #fff; }
+
+/* Loading */
+.loading { color: var(--text2); font-style: italic; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span>Teragucci</span> Broker Admin</h1>
+  <div class="header-right">
+    <span id="refresh-status">Loading...</span>
+    <button class="btn small" onclick="refresh()">Refresh</button>
+  </div>
+</header>
+
+<main>
+  <h2>Machines</h2>
+  <div class="machine-grid" id="machine-grid">
+    <div class="loading">Loading machines...</div>
+  </div>
+
+  <h2>User Assignments</h2>
+  <div class="assignments-section">
+    <table class="assignments-table" id="assignments-table">
+      <thead>
+        <tr>
+          <th>User</th>
+          <th>Assigned Machines</th>
+          <th style="width:140px">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="assignments-body">
+        <tr><td colspan="3" class="loading">Loading...</td></tr>
+      </tbody>
+    </table>
+
+    <div class="add-user-row">
+      <input type="text" id="new-user-input" placeholder="username (e.g. jane.doe)">
+      <button class="btn" onclick="addUser()">Add User</button>
+    </div>
+  </div>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let machines = [];
+let assignments = {};
+let openPicker = null;
+
+async function api(method, path, body) {
+  const opts = { method, headers: {} };
+  if (body !== undefined) {
+    opts.headers["Content-Type"] = "application/json";
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch(path, opts);
+  if (res.status === 401) {
+    // Browser will show Basic Auth dialog automatically
+    throw new Error("Authentication required");
+  }
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+function toast(msg, isError) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.className = "toast show" + (isError ? " error" : "");
+  setTimeout(() => el.className = "toast", 3000);
+}
+
+async function refresh() {
+  try {
+    const [m, a] = await Promise.all([
+      api("GET", "/api/machines"),
+      api("GET", "/api/assignments"),
+    ]);
+    machines = m;
+    assignments = a;
+    renderMachines();
+    renderAssignments();
+    document.getElementById("refresh-status").textContent =
+      `Updated ${new Date().toLocaleTimeString()}`;
+  } catch (e) {
+    document.getElementById("refresh-status").textContent = "Error: " + e.message;
+  }
+}
+
+function renderMachines() {
+  const grid = document.getElementById("machine-grid");
+  if (!machines.length) {
+    grid.innerHTML = '<div class="loading">No machines configured</div>';
+    return;
+  }
+
+  grid.innerHTML = machines.map(m => {
+    const dotClass = m.healthy ? "green" : "red";
+    const poolClass = m.pool === "floating" ? "floating" : "assigned";
+    const sessions = (m.active_sessions || []);
+    const sessionsHtml = sessions.length
+      ? sessions.map(u => `<span class="user">${esc(u)}</span>`).join("")
+      : '<span style="color:var(--text2)">No active sessions</span>';
+    const assignedHtml = (m.assigned_users || []).length
+      ? m.assigned_users.map(u => esc(u)).join(", ")
+      : "—";
+
+    return `
+      <div class="machine-card">
+        <div class="name">
+          <span class="status-dot ${dotClass}"></span>
+          ${esc(m.name)}
+          <span class="pool-badge ${poolClass}">${m.pool}</span>
+        </div>
+        <div class="meta">${esc(m.host)}:${m.port}</div>
+        <div class="meta">${esc(m.gpu || "No GPU info")}</div>
+        <div class="meta">Load: ${m.load_avg ? m.load_avg.toFixed(2) : "—"} · Priority: ${m.priority}</div>
+        <div class="meta">Assigned to: ${assignedHtml}</div>
+        <div class="sessions">${sessionsHtml}</div>
+      </div>`;
+  }).join("");
+}
+
+function renderAssignments() {
+  const tbody = document.getElementById("assignments-body");
+  const users = Object.keys(assignments).sort();
+
+  if (!users.length) {
+    tbody.innerHTML = `<tr><td colspan="3" style="color:var(--text2)">
+      No assignments — all machines are in the floating pool.
+      Add a user below to assign specific machines.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = users.map(user => {
+    const userMachines = assignments[user] || [];
+    const tagsHtml = userMachines.map(m =>
+      `<span class="machine-tag">${esc(m)}</span>`
+    ).join("");
+
+    return `
+      <tr>
+        <td class="username">${esc(user)}</td>
+        <td>${tagsHtml || '<span style="color:var(--text2)">None</span>'}</td>
+        <td>
+          <button class="btn small" onclick="editUser('${esc(user)}')">Edit</button>
+          <button class="btn small danger" onclick="removeUser('${esc(user)}')">Remove</button>
+        </td>
+      </tr>`;
+  }).join("");
+}
+
+function editUser(user) {
+  // Close any open picker
+  if (openPicker) { openPicker.remove(); openPicker = null; }
+
+  const row = [...document.querySelectorAll(".assignments-table .username")]
+    .find(el => el.textContent === user)?.parentElement;
+  if (!row) return;
+
+  const cell = row.children[1];
+  const currentMachines = new Set(assignments[user] || []);
+  const allMachines = machines.map(m => m.name);
+
+  const picker = document.createElement("div");
+  picker.className = "machine-picker-dropdown";
+  picker.style.position = "fixed";
+
+  const rect = cell.getBoundingClientRect();
+  picker.style.top = rect.bottom + 4 + "px";
+  picker.style.left = rect.left + "px";
+
+  picker.innerHTML = allMachines.map(name => {
+    const checked = currentMachines.has(name) ? "checked" : "";
+    const m = machines.find(x => x.name === name);
+    const health = m?.healthy ? "🟢" : "🔴";
+    return `<label>
+      <input type="checkbox" value="${esc(name)}" ${checked}>
+      ${health} ${esc(name)}
+    </label>`;
+  }).join("") + `<div style="margin-top:8px;text-align:right">
+    <button class="btn small" id="picker-save">Save</button>
+    <button class="btn small" onclick="closePicker()">Cancel</button>
+  </div>`;
+
+  document.body.appendChild(picker);
+  openPicker = picker;
+
+  picker.querySelector("#picker-save").onclick = async () => {
+    const selected = [...picker.querySelectorAll("input:checked")].map(cb => cb.value);
+    closePicker();
+    try {
+      await api("POST", `/api/assignments/${encodeURIComponent(user)}`, { machines: selected });
+      toast(`Updated ${user}`);
+      await refresh();
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
+function closePicker() {
+  if (openPicker) { openPicker.remove(); openPicker = null; }
+}
+
+document.addEventListener("click", (e) => {
+  if (openPicker && !openPicker.contains(e.target) && !e.target.closest(".btn")) {
+    closePicker();
+  }
+});
+
+async function removeUser(user) {
+  if (!confirm(`Remove all assignments for ${user}?\nThey will use the floating pool instead.`)) return;
+  try {
+    await api("DELETE", `/api/assignments/${encodeURIComponent(user)}`);
+    toast(`Removed ${user}`);
+    await refresh();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function addUser() {
+  const input = document.getElementById("new-user-input");
+  const user = input.value.trim();
+  if (!user) { toast("Enter a username", true); return; }
+
+  // Open picker for the new user
+  assignments[user] = [];
+  renderAssignments();
+  input.value = "";
+
+  // Small delay so the row renders, then open the picker
+  setTimeout(() => editUser(user), 50);
+}
+
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// Auto-refresh every 10 seconds
+refresh();
+setInterval(refresh, 10000);
+</script>
+
+</body>
+</html>

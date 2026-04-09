@@ -237,6 +237,31 @@ class MachinePool:
             result.append(d)
         return result
 
+    def update_assignments(self, assignments: Optional[dict] = None):
+        """Rebuild assignment lookups from a new assignments dict (live reload)."""
+        self._user_machines.clear()
+        self._machine_users.clear()
+
+        effective = assignments or {}
+        for user, machine_names in effective.items():
+            valid = set()
+            for name in machine_names:
+                if name not in self._machines:
+                    logger.warning("Assignment references unknown machine: %s", name)
+                    continue
+                valid.add(name)
+                self._machine_users.setdefault(name, set()).add(user)
+            if valid:
+                self._user_machines[user] = valid
+
+        self._floating = {
+            name for name in self._machines
+            if name not in self._machine_users
+        }
+
+        logger.info("Assignments reloaded: %d assigned users, %d floating",
+                     len(self._user_machines), len(self._floating))
+
     def release(self, username: str, machine_name: str):
         """Release a machine assignment (for session tracking)."""
         m = self._machines.get(machine_name)
