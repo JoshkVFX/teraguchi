@@ -610,6 +610,9 @@ class MainWindow(QMainWindow):
         tb.addAction(self._action(
             "Settings", "", lambda: self._quality_dock.setVisible(
                 not self._quality_dock.isVisible()), icons.icon_settings()))
+        tb.addAction(self._action(
+            "USB Devices", "", lambda: self._usb_dock.setVisible(
+                not self._usb_dock.isVisible()), icons.icon_usb()))
 
     def _action(self, text, shortcut, slot, icon=None):
         a = QAction(text, self)
