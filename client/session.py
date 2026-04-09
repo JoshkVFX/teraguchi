@@ -140,6 +140,8 @@ class Session(QObject):
                        password: str = "", use_tls: bool = True,
                        auto_reconnect: bool = True):
         """Connect via broker — authenticate, get assigned a machine, redirect."""
+        import logging
+        logging.getLogger(__name__).info("Session.connect_broker: %s:%d user=%s", host, port, username)
         self._host = host
         self._port = port
         self._username = username

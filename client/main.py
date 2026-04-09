@@ -113,7 +113,7 @@ class ConnectionDialog(QDialog):
         self.cancel_btn.clicked.connect(self.reject)
 
     def _on_mode_changed(self, index):
-        is_broker = self.mode_combo.currentData() == "broker"
+        is_broker = (index == 1)
         if is_broker:
             self._host_label.setText("Broker:")
             self.host_input.setPlaceholderText("e.g. dxs-broker or 10.10.0.173")
@@ -126,7 +126,9 @@ class ConnectionDialog(QDialog):
             self.username_input.setPlaceholderText("(leave empty if no auth)")
 
     @property
-    def connection_mode(self): return self.mode_combo.currentData()
+    def connection_mode(self):
+        # Use currentIndex — more reliable than currentData across PySide6 versions
+        return "broker" if self.mode_combo.currentIndex() == 1 else "direct"
     @property
     def host(self): return self.host_input.text().strip()
     @property
@@ -445,7 +447,8 @@ class MainWindow(QMainWindow):
     """Tab-based main window with multiple concurrent sessions."""
 
     def __init__(self, initial_host="", initial_port=443,
-                 initial_user="", initial_pass=""):
+                 initial_user="", initial_pass="",
+                 initial_mode="direct"):
         super().__init__()
         self.setWindowTitle("Teragucci")
         self.setMinimumSize(900, 600)
@@ -534,7 +537,8 @@ class MainWindow(QMainWindow):
         # Auto-connect if host given
         if initial_host:
             self._new_session_and_connect(
-                initial_host, initial_port, initial_user, initial_pass)
+                initial_host, initial_port, initial_user, initial_pass,
+                mode=initial_mode)
 
     def _make_new_tab_btn(self):
         btn = QToolButton()
@@ -681,10 +685,13 @@ class MainWindow(QMainWindow):
         session.file_transfer_finished.connect(self._on_file_transfer_done)
         session.usb_devices_updated.connect(self._on_usb_devices_updated)
 
+        logger.info(">>> _new_session_and_connect mode=%r host=%s port=%d", mode, host, port)
         if mode == "broker":
+            logger.info(">>> Calling session.connect_broker()")
             session.connect_broker(host, port, username, password,
                                    use_tls=use_tls, auto_reconnect=auto_reconnect)
         else:
+            logger.info(">>> Calling session.connect() (direct)")
             session.connect(host, port, username, password,
                             use_tls=use_tls, auto_reconnect=auto_reconnect,
                             bookmark_id=bookmark_id)
@@ -761,10 +768,13 @@ class MainWindow(QMainWindow):
                     use_tls=dialog.use_tls)
                 self._bookmark_panel._refresh()
 
+            mode = dialog.connection_mode
+            logger.info("Connection mode: %s, host: %s, port: %d",
+                        mode, dialog.host, dialog.port)
             self._new_session_and_connect(
                 dialog.host, dialog.port, dialog.username, dialog.password,
                 use_tls=dialog.use_tls, auto_reconnect=dialog.auto_reconnect,
-                bookmark_id=bid, mode=dialog.connection_mode)
+                bookmark_id=bid, mode=mode)
 
     def _connect_bookmark(self, bookmark_id):
         profile = self._bookmarks.get(bookmark_id)
@@ -989,6 +999,8 @@ def main():
     parser.add_argument("--port", type=int, default=443)
     parser.add_argument("--username", "-u", default="")
     parser.add_argument("--password", "-p", default="")
+    parser.add_argument("--broker", action="store_true",
+                        help="Connect via broker instead of direct")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
 
@@ -1023,7 +1035,8 @@ def main():
 
     window = MainWindow(
         initial_host=args.host, initial_port=args.port,
-        initial_user=args.username, initial_pass=args.password)
+        initial_user=args.username, initial_pass=args.password,
+        initial_mode="broker" if args.broker else "direct")
     window.resize(1440, 900)
     window.show()
 
