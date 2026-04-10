@@ -121,10 +121,15 @@ class XTestInputInjector:
     def key(self, qt_key: int, pressed: bool):
         """Press/release a key by Qt key code."""
         keycode = self._qt_key_to_keycode(qt_key)
+        action = "PRESS" if pressed else "RELEASE"
         if keycode:
             event_type = X.KeyPress if pressed else X.KeyRelease
             xtest.fake_input(self._dpy, event_type, detail=keycode)
             self._dpy.sync()
+            keysym_name = QT_TO_XKEYSYM.get(qt_key, chr(qt_key) if 0x20 <= qt_key <= 0x7e else "?")
+            logger.info("KEY %s qt=0x%x → x11_keycode=%d (%s)", action, qt_key, keycode, keysym_name)
+        else:
+            logger.warning("KEY %s qt=0x%x → NO KEYCODE (unmapped)", action, qt_key)
 
     def key_char(self, char: str, pressed: bool):
         """Press/release a key by character."""
