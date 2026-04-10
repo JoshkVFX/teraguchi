@@ -263,7 +263,23 @@ class ClientProtocol:
             else:
                 return
 
-        await self._connect_to_server(host, port)
+        try:
+            await self._connect_to_server(host, port)
+        except Exception:
+            # If the broker-assigned target failed (e.g. Flame server offline),
+            # drop broker state so the next reconnect re-runs the broker
+            # handshake and re-prompts the user to pick a different machine.
+            # _run_loop passes the original broker host/port on each retry,
+            # so we just need to clear the token + redirect + preferred machine.
+            if self._broker_mode and self._broker_token:
+                logger.warning(
+                    "Broker-assigned target %s:%d failed — returning to broker",
+                    host, port)
+                self._broker_token = ""
+                self._redirect_host = ""
+                self._redirect_port = 0
+                self._preferred_machine = ""
+            raise
 
     async def _connect_to_server(self, host: str, port: int):
         """Connect to a server (Flame or broker) and handle the session."""
