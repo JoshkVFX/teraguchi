@@ -6,44 +6,44 @@ machines:
   - name: dxs-flame-01
     host: 10.10.0.11
     port: 4443
-    gpu: "NVIDIA RTX A4000"
+    gpu: "NVIDIA RTX 5000 Ada (32 GB)"
     priority: 10
-    tags: [flame, gpu]
+    tags: [flame, ada]
 
   - name: dxs-flame-02
     host: 10.10.0.12
     port: 4443
-    gpu: "NVIDIA RTX A4000"
+    gpu: "NVIDIA RTX A6000 (48 GB)"
     priority: 10
-    tags: [flame, gpu]
+    tags: [flame, a6000]
 
   - name: dxs-flame-03
     host: 10.10.0.31
     port: 4443
-    gpu: "NVIDIA RTX A4000"
+    gpu: "NVIDIA RTX A6000 (48 GB)"
     priority: 10
-    tags: [flame, gpu]
+    tags: [flame, a6000]
 
   - name: dxs-flame-04
     host: 10.10.0.14
     port: 4443
-    gpu: "NVIDIA RTX A4000"
+    gpu: "NVIDIA RTX 5000 Ada (32 GB)"
     priority: 10
-    tags: [flame, gpu]
+    tags: [flame, ada]
 
   - name: dxs-flame-05
     host: 10.10.0.15
     port: 4443
-    gpu: "NVIDIA RTX A4000"
+    gpu: "NVIDIA RTX 5000 Ada (32 GB)"
     priority: 10
-    tags: [flame, gpu]
+    tags: [flame, ada]
 
   - name: dxs-flame-06
     host: 10.10.0.16
     port: 4443
-    gpu: "NVIDIA RTX A4000"
-    priority: 10
-    tags: [flame, gpu]
+    gpu: "NVIDIA RTX PRO 6000 Blackwell (96 GB)"
+    priority: 5
+    tags: [flame, blackwell]
 
 # ── User Assignments ──────────────────────────────────────
 #
