@@ -1,5 +1,5 @@
 """
-QUIC transport layer for Teragucci.
+QUIC transport layer for Teraguchi.
 
 Provides a single multiplexed connection that replaces the dual TCP+UDP
 architecture with QUIC (RFC 9000):
@@ -249,7 +249,7 @@ class QUICTransportServer:
             cert_path, key_path = _generate_self_signed_cert()
             config.load_cert_chain(cert_path, key_path)
 
-        config.alpn_protocols = ["teragucci"]
+        config.alpn_protocols = ["teraguchi"]
 
         try:
             self._server = await quic_serve(
@@ -408,7 +408,7 @@ class QUICTransportClient:
             is_client=True,
             max_datagram_frame_size=65536,
         )
-        config.alpn_protocols = ["teragucci"]
+        config.alpn_protocols = ["teraguchi"]
 
         if not verify_cert:
             config.verify_mode = ssl.CERT_NONE
@@ -471,7 +471,7 @@ def _generate_self_signed_cert() -> tuple:
     """Generate a self-signed certificate for QUIC. Returns (cert_path, key_path)."""
     import tempfile
 
-    config_dir = os.path.expanduser("~/.config/teragucci")
+    config_dir = os.path.expanduser("~/.config/teraguchi")
     os.makedirs(config_dir, exist_ok=True)
     cert_path = os.path.join(config_dir, "quic_cert.pem")
     key_path = os.path.join(config_dir, "quic_key.pem")
@@ -489,7 +489,7 @@ def _generate_self_signed_cert() -> tuple:
         key = ec.generate_private_key(ec.SECP256R1())
 
         subject = issuer = x509.Name([
-            x509.NameAttribute(NameOID.COMMON_NAME, "teragucci"),
+            x509.NameAttribute(NameOID.COMMON_NAME, "teraguchi"),
         ])
 
         cert = (
@@ -527,7 +527,7 @@ def _generate_self_signed_cert() -> tuple:
             "-pkeyopt", "ec_paramgen_curve:prime256v1",
             "-days", "3650", "-nodes",
             "-keyout", key_path, "-out", cert_path,
-            "-subj", "/CN=teragucci",
+            "-subj", "/CN=teraguchi",
         ], capture_output=True)
         return cert_path, key_path
 

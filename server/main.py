@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Teragucci Server - Linux Remote Desktop Server v4
+Teraguchi Server - Linux Remote Desktop Server v4
 
 PCoIP / HP Anyware-like remote desktop with:
 - PAM authentication (Linux system users, LDAP, FreeIPA)
@@ -65,7 +65,7 @@ from common.hybrid_transport import HybridServerTransport, TransportMsg, Transpo
 from common.quic_transport import QUICTransportServer, quic_available
 from server.usb_passthrough import USBForwardingManager
 
-logger = logging.getLogger("teragucci.server")
+logger = logging.getLogger("teraguchi.server")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -925,7 +925,7 @@ async def run_server(host: str, port: int, tls_context: Optional[ssl.SSLContext]
     """Start the WebSocket server."""
     global running
 
-    logger.info("Starting Teragucci server on %s:%d", host, port)
+    logger.info("Starting Teraguchi server on %s:%d", host, port)
     if tls_context:
         logger.info("TLS enabled")
     if auth.mode == "pam":
@@ -993,7 +993,7 @@ def main():
     global auth, session_mgr, default_runtime, quality_settings
     global ffmpeg_caps, available_encoders, server_args, broker_secret
 
-    parser = argparse.ArgumentParser(description="Teragucci Remote Desktop Server")
+    parser = argparse.ArgumentParser(description="Teraguchi Remote Desktop Server")
     parser.add_argument("--host", default="0.0.0.0", help="Listen address")
     parser.add_argument("--port", type=int, default=443, help="Listen port")
     parser.add_argument("--fps", type=int, default=30, help="Target FPS")

@@ -1,5 +1,5 @@
 """
-Teragucci Protocol Message Definitions - v3
+Teraguchi Protocol Message Definitions - v3
 
 Comprehensive protocol supporting:
 - H.264/H.265 video with YUV 4:4:4 chroma
@@ -395,7 +395,7 @@ class ClipboardMsg:
 @dataclass
 class ClientHelloMsg:
     type: str = MsgType.CLIENT_HELLO
-    client_name: str = "Teragucci Client"
+    client_name: str = "Teraguchi Client"
     version: str = "3.0.0"
     screen_width: int = 1920
     screen_height: int = 1080
@@ -414,7 +414,7 @@ class ClientHelloMsg:
 @dataclass
 class ServerHelloMsg:
     type: str = MsgType.SERVER_HELLO
-    server_name: str = "Teragucci Server"
+    server_name: str = "Teraguchi Server"
     version: str = "3.0.0"
     screen_width: int = 1920
     screen_height: int = 1080

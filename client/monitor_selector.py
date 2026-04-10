@@ -1,5 +1,5 @@
 """
-Multi-monitor selector widget for Teragucci.
+Multi-monitor selector widget for Teraguchi.
 
 Replaces the single-select QComboBox with a checkable menu.
 Users can select any combination of monitors — beats PCoIP's

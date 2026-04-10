@@ -1,5 +1,5 @@
 """
-PAM authentication for Teragucci server.
+PAM authentication for Teraguchi server.
 
 Authenticates users against the Linux PAM stack, supporting:
 - Local users (/etc/passwd + /etc/shadow)

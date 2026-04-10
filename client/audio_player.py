@@ -1,5 +1,5 @@
 """
-Audio player for Teragucci client.
+Audio player for Teraguchi client.
 
 Receives raw PCM s16le audio from the server and plays via Qt QAudioSink.
 Keeps latency low by using a small buffer and dropping old data if behind.
@@ -22,7 +22,7 @@ except ImportError:
 
 class AudioPlayer:
     """
-    Plays raw PCM s16le audio from the Teragucci server.
+    Plays raw PCM s16le audio from the Teraguchi server.
 
     Keeps latency low (~100ms) by using a small Qt audio buffer
     and skipping frames if the buffer gets too full.

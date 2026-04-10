@@ -3,7 +3,7 @@ Broker Admin HTTP API — manages machine assignments via REST + web UI.
 
 Served on the same port as the broker WebSocket server via the
 process_request hook. Authenticates via LDAP Basic Auth and requires
-teragucci-admins group membership.
+teraguchi-admins group membership.
 """
 
 import asyncio
@@ -27,9 +27,9 @@ ADMIN_PATHS = ("/", "/api/", "/static/")
 
 
 class AdminServer:
-    """HTTP admin API for the Teragucci broker, served via websockets process_request."""
+    """HTTP admin API for the Teraguchi broker, served via websockets process_request."""
 
-    def __init__(self, pool, ipa, config_path: str, admin_group: str = "teragucci-admins",
+    def __init__(self, pool, ipa, config_path: str, admin_group: str = "teraguchi-admins",
                  assignments_path: Optional[str] = None):
         self._pool = pool
         self._ipa = ipa
@@ -138,7 +138,7 @@ class AdminServer:
             username = self._authenticate_headers(headers)
             if not username:
                 return make_response(401, [
-                    ("WWW-Authenticate", 'Basic realm="Teragucci Admin"'),
+                    ("WWW-Authenticate", 'Basic realm="Teraguchi Admin"'),
                     ("Content-Type", "text/plain"),
                 ], b"Authentication required")
         else:
@@ -219,10 +219,10 @@ class AdminServer:
         return self._json_response({"ok": True})
 
     def _list_users(self) -> list:
-        """List FreeIPA users in teragucci-users and teragucci-admins groups."""
+        """List FreeIPA users in teraguchi-users and teraguchi-admins groups."""
         import subprocess
         users = set()
-        for group in ("teragucci-users", "teragucci-admins"):
+        for group in ("teraguchi-users", "teraguchi-admins"):
             try:
                 result = subprocess.run(
                     ["getent", "group", group],

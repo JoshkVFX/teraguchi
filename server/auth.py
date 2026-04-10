@@ -22,7 +22,7 @@ from common.messages import generate_challenge, hash_password
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_USERS_FILE = os.path.expanduser("~/.config/teragucci/users.json")
+DEFAULT_USERS_FILE = os.path.expanduser("~/.config/teraguchi/users.json")
 
 
 class Authenticator:

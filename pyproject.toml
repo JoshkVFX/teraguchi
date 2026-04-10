@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "teragucci"
+name = "teraguchi"
 version = "3.0.0"
 description = "Open-source remote desktop for creative professionals — GPU-accelerated H.264/H.265/AV1 with YUV 4:4:4, full Wacom pen pressure, USB passthrough, file transfer, and per-user session isolation. Replaces Teradici PCoIP, HP Anywhere, Parsec, and HP RGS."
 requires-python = ">=3.10"
@@ -22,8 +22,8 @@ client = [
 ]
 
 [project.scripts]
-teragucci-server = "server.main:main"
-teragucci-client = "client.main:main"
+teraguchi-server = "server.main:main"
+teraguchi-client = "client.main:main"
 
 [tool.setuptools.packages.find]
 include = ["server*", "client*", "common*"]

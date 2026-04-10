@@ -34,7 +34,7 @@ class CursorTracker:
 
     The callback runs on the tracker's own polling thread. Callers
     are responsible for marshalling the update to whatever transport
-    they need (for teragucci, that's ``run_coroutine_threadsafe`` onto
+    they need (for teraguchi, that's ``run_coroutine_threadsafe`` onto
     the asyncio loop that owns the WebSocket).
 
     ``latest()`` returns the most recent update so newly-connected

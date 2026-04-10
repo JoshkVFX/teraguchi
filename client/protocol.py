@@ -1,7 +1,7 @@
 """
 Client-side WebSocket protocol handler v2.
 
-Manages the connection to the Teragucci server with:
+Manages the connection to the Teraguchi server with:
 - PAM authentication (send credentials directly for system auth)
 - Legacy challenge-response authentication
 - Hybrid TCP+UDP transport (UDP for video/audio, TCP for control)
@@ -128,7 +128,7 @@ class ClientProtocol:
 
         self._thread = threading.Thread(
             target=self._run_loop, args=(host, port),
-            daemon=True, name="teragucci-client-io")
+            daemon=True, name="teraguchi-client-io")
         self._thread.start()
 
     def connect_broker(self, host: str, port: int, username: str = "",
@@ -155,7 +155,7 @@ class ClientProtocol:
 
         self._thread = threading.Thread(
             target=self._run_loop, args=(host, port),
-            daemon=True, name="teragucci-broker-io")
+            daemon=True, name="teraguchi-broker-io")
         self._thread.start()
 
     def disconnect(self):

@@ -2,7 +2,7 @@
 FreeIPA LDAP integration for group-based access control.
 
 Queries FreeIPA LDAP for user group membership to authorize
-access to Teragucci workstations. Supports failover between
+access to Teraguchi workstations. Supports failover between
 primary and replica FreeIPA servers.
 """
 

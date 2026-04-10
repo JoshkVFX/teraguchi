@@ -42,7 +42,7 @@ from typing import Optional, Callable, Dict, List, Tuple
 logger = logging.getLogger(__name__)
 
 # Constants
-UDP_MAGIC = 0x5447           # 'TG' for Teragucci
+UDP_MAGIC = 0x5447           # 'TG' for Teraguchi
 UDP_HEADER_SIZE = 16
 DEFAULT_MTU = 1400           # Conservative MTU leaving room for IP/UDP/DTLS headers
 MAX_PACKET_SIZE = 65507      # Max UDP payload

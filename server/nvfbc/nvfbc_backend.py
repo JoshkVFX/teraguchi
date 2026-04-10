@@ -1,5 +1,5 @@
 """
-NvFBC capture backend for teragucci.
+NvFBC capture backend for teraguchi.
 
 Spawns the compiled ``nvfbc_capture`` helper (see ``nvfbc_capture.c``)
 as a child process and streams raw BGRA frames from its stdout into a
@@ -10,7 +10,7 @@ Why a subprocess instead of ctypes
 ----------------------------------
 NvFBC's Linux library internally creates a GLX context and owns it for
 the lifetime of the capture session. If we linked NvFBC directly into
-the teragucci Python process we'd drag GLX/OpenGL state into a process
+the teraguchi Python process we'd drag GLX/OpenGL state into a process
 that already has its own mixed threading + PAM + DBus + ffmpeg
 subprocess model, and any crash in the NVIDIA driver would take the
 whole server with it. Running NvFBC in a dedicated child gives us:
@@ -32,7 +32,7 @@ Protocol (see nvfbc_capture.c for the canonical definition)::
 
 The reader thread drains the pipe continuously; ``capture_raw_bgra()``
 returns whatever the most recent complete frame was under a lock.
-Old frames are silently dropped, which is what we want — teragucci
+Old frames are silently dropped, which is what we want — teraguchi
 always wants the freshest frame, never a backlog.
 """
 
@@ -162,7 +162,7 @@ class NvFBCBackend:
         """Return the most recent BGRA frame as bytes.
 
         Never blocks. If no new frame has arrived since the last call,
-        returns the previous frame (which is what the teragucci
+        returns the previous frame (which is what the teraguchi
         encoder wants — it needs *something* every tick to keep the
         codec alive).
 

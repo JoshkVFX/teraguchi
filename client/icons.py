@@ -1,5 +1,5 @@
 """
-Inline SVG icons for Teragucci — no external asset files needed.
+Inline SVG icons for Teraguchi — no external asset files needed.
 
 Each icon is a function returning a QIcon from embedded SVG data.
 Icons are 24x24 viewbox, stroke-based, 1.5px weight — matching

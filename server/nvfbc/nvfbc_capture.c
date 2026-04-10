@@ -1,5 +1,5 @@
 /*
- * nvfbc_capture — teragucci NvFBC capture helper.
+ * nvfbc_capture — teraguchi NvFBC capture helper.
  *
  * Spawned by screen_capture.py as a long-lived subprocess when
  * libnvidia-fbc.so.1 is available. Uses NVIDIA's NvFBC library to
@@ -19,7 +19,7 @@
  *       12     4    byte_size  uint32 (bytes of payload that follow)
  *      16    N    bgra       raw BGRA8888, row-major, top-down
  *
- * All diagnostic output goes to stderr. Teragucci captures the helper's
+ * All diagnostic output goes to stderr. Teraguchi captures the helper's
  * stderr and forwards it to its own logger.
  *
  * Shutdown: SIGTERM and SIGINT destroy the capture session and exit

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Teragucci Connection Broker
+Teraguchi Connection Broker
 
 Authenticates users via PAM/FreeIPA, checks group membership,
 and redirects clients to an available Flame workstation.
@@ -34,15 +34,15 @@ from broker.pool import MachinePool
 from broker.tokens import generate_token
 from broker.admin import AdminServer
 
-logger = logging.getLogger("teragucci.broker")
+logger = logging.getLogger("teraguchi.broker")
 
 # ═══════════════════════════════════════════════════════════════
 # Configuration
 # ═══════════════════════════════════════════════════════════════
 
-DEFAULT_CONFIG = "/etc/teragucci/broker.yml"
-DEFAULT_SECRET = "/etc/teragucci/broker.secret"
-DEFAULT_ASSIGNMENTS = "/var/log/teragucci/assignments.yml"
+DEFAULT_CONFIG = "/etc/teraguchi/broker.yml"
+DEFAULT_SECRET = "/etc/teraguchi/broker.secret"
+DEFAULT_ASSIGNMENTS = "/var/log/teraguchi/assignments.yml"
 
 
 def load_config(path: str) -> dict:
@@ -66,8 +66,8 @@ pool: Optional[MachinePool] = None
 ipa: Optional[FreeIPAClient] = None
 admin_server: Optional[AdminServer] = None
 signing_secret: str = ""
-required_group: str = "teragucci-users"
-admin_group: str = "teragucci-admins"
+required_group: str = "teraguchi-users"
+admin_group: str = "teraguchi-admins"
 group_cache: dict = {}
 config_path: str = ""
 
@@ -149,7 +149,7 @@ async def handle_client(websocket: WebSocketServerProtocol):
                                if pool.user_can_access(username, m["name"])]
         broker_hello = {
             "type": MsgType.BROKER_HELLO,
-            "broker_name": "Teragucci Broker",
+            "broker_name": "Teraguchi Broker",
             "version": "3.0.0",
             "machines": machines_status,
             "is_admin": is_admin,
@@ -232,7 +232,7 @@ def create_tls_context(cert_file: str, key_file: str) -> ssl.SSLContext:
 async def run_broker(host: str, port: int, admin_port: int,
                      tls_context: Optional[ssl.SSLContext]):
     """Start the broker WebSocket server with embedded admin UI."""
-    logger.info("Starting Teragucci broker on %s:%d", host, port)
+    logger.info("Starting Teraguchi broker on %s:%d", host, port)
 
     stop = asyncio.Future()
 
@@ -268,7 +268,7 @@ async def run_broker(host: str, port: int, admin_port: int,
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Teragucci Connection Broker")
+    parser = argparse.ArgumentParser(description="Teraguchi Connection Broker")
     parser.add_argument("--host", default="0.0.0.0", help="Listen address")
     parser.add_argument("--port", type=int, default=8443, help="Listen port")
     parser.add_argument("--config", default=DEFAULT_CONFIG,
@@ -277,9 +277,9 @@ def main():
                         help="Shared signing secret file")
     parser.add_argument("--tls-cert", help="TLS certificate")
     parser.add_argument("--tls-key", help="TLS key")
-    parser.add_argument("--required-group", default="teragucci-users",
+    parser.add_argument("--required-group", default="teraguchi-users",
                         help="FreeIPA group required for access (empty=no check)")
-    parser.add_argument("--admin-group", default="teragucci-admins",
+    parser.add_argument("--admin-group", default="teraguchi-admins",
                         help="FreeIPA admin group")
     parser.add_argument("--admin-port", type=int, default=8080,
                         help="Admin UI HTTP port")

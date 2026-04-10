@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Teragucci Client — Modern Remote Desktop Client
+Teraguchi Client — Modern Remote Desktop Client
 
 Features:
 - Multiple concurrent connections via tabs
@@ -553,7 +553,7 @@ class MainWindow(QMainWindow):
                  initial_user="", initial_pass="",
                  initial_mode="direct"):
         super().__init__()
-        self.setWindowTitle("Teragucci")
+        self.setWindowTitle("Teraguchi")
         self.setMinimumSize(900, 600)
 
         self._bookmarks = BookmarkManager()
@@ -706,7 +706,7 @@ class MainWindow(QMainWindow):
         # Help menu
         help_menu = mb.addMenu("&Help")
         help_menu.addAction(self._action(
-            "About Teragucci", "", self._show_about))
+            "About Teraguchi", "", self._show_about))
 
         # ── Toolbar ──
         tb = QToolBar("Main")
@@ -756,8 +756,8 @@ class MainWindow(QMainWindow):
 
     def _show_about(self):
         QMessageBox.about(
-            self, "About Teragucci",
-            "<h3>Teragucci</h3>"
+            self, "About Teraguchi",
+            "<h3>Teraguchi</h3>"
             "<p>Remote desktop for Flame workstations.</p>"
             "<p>GPU-accelerated H.264/H.265 streaming with "
             "full keyboard, mouse, and Wacom pen support.</p>"
@@ -1125,7 +1125,7 @@ class MainWindow(QMainWindow):
 # ════════════════════════════════════════════════════
 
 def main():
-    parser = argparse.ArgumentParser(description="Teragucci Remote Desktop Client")
+    parser = argparse.ArgumentParser(description="Teraguchi Remote Desktop Client")
     parser.add_argument("--host", default="", help="Server hostname or IP")
     parser.add_argument("--port", type=int, default=443)
     parser.add_argument("--username", "-u", default="")
@@ -1144,13 +1144,13 @@ def main():
         QApplication.setAttribute(Qt.AA_MacDontSwapCtrlAndMeta, True)
 
     app = QApplication(sys.argv)
-    app.setApplicationName("Teragucci")
-    app.setApplicationDisplayName("Teragucci")
-    app.setOrganizationName("Teragucci")
-    app.setDesktopFileName("teragucci")
+    app.setApplicationName("Teraguchi")
+    app.setApplicationDisplayName("Teraguchi")
+    app.setOrganizationName("Teraguchi")
+    app.setDesktopFileName("teraguchi")
     app.setStyle("Fusion")
 
-    # macOS: override process name so dock/menu bar shows "Teragucci"
+    # macOS: override process name so dock/menu bar shows "Teraguchi"
     import platform
     if platform.system() == "Darwin":
         try:
@@ -1158,8 +1158,8 @@ def main():
             bundle = NSBundle.mainBundle()
             info = bundle.localizedInfoDictionary() or bundle.infoDictionary()
             if info:
-                info["CFBundleName"] = "Teragucci"
-                info["CFBundleDisplayName"] = "Teragucci"
+                info["CFBundleName"] = "Teraguchi"
+                info["CFBundleDisplayName"] = "Teraguchi"
         except ImportError:
             pass
     app.setStyleSheet(theme.generate_stylesheet())

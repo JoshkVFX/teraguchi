@@ -1,5 +1,5 @@
 """
-X Session Manager for Teragucci server.
+X Session Manager for Teraguchi server.
 
 Manages per-user X11 sessions, replacing HP Anyware / PCoIP:
 - Each authenticated user gets a GPU-accelerated X display (real Xorg with NVIDIA)
@@ -23,9 +23,37 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from server.input_injector import VirtualPenTablet
 
 logger = logging.getLogger(__name__)
+
+
+def _find_input_event_device(name_match: str) -> Optional[str]:
+    """Find /dev/input/eventN for a uinput device by its registered name.
+
+    Parses /proc/bus/input/devices which lists every evdev node and its
+    name. Needed because uinput assigns event numbers dynamically.
+    """
+    try:
+        with open("/proc/bus/input/devices") as f:
+            data = f.read()
+    except OSError:
+        return None
+
+    current_name = None
+    for block in data.split("\n\n"):
+        for line in block.splitlines():
+            if line.startswith("N: Name="):
+                current_name = line.split("=", 1)[1].strip().strip('"')
+            elif line.startswith("H: Handlers=") and current_name == name_match:
+                for handler in line.split("=", 1)[1].split():
+                    if handler.startswith("event"):
+                        return f"/dev/input/{handler}"
+        current_name = None
+    return None
 
 DEFAULT_WIDTH = 1920
 DEFAULT_HEIGHT = 1200
@@ -36,7 +64,7 @@ MIN_DISPLAY = 10
 MAX_DISPLAY = 99
 
 # Path to our Xorg config for headless GPU display
-XORG_CONFIG = str(Path(__file__).parent / "xorg-teragucci.conf")
+XORG_CONFIG = str(Path(__file__).parent / "xorg-teraguchi.conf")
 
 
 def find_free_display() -> int:
@@ -121,7 +149,7 @@ def _generate_edid(path: str, width: int, height: int):
     # Header
     edid[0:8] = b'\x00\xff\xff\xff\xff\xff\xff\x00'
 
-    # Manufacturer ID "TGC" (Teragucci) - encoded as 2 bytes
+    # Manufacturer ID "TGC" (Teraguchi) - encoded as 2 bytes
     # T=20, G=7, C=3 -> ((20-1)<<10) | ((7-1)<<5) | (3-1) = 0x4CC2
     edid[8] = 0x4C
     edid[9] = 0xC2
@@ -206,7 +234,7 @@ def _generate_edid(path: str, width: int, height: int):
     # Descriptor #2: Monitor name
     name_offset = 72
     edid[name_offset:name_offset + 5] = b'\x00\x00\x00\xFC\x00'
-    name = "Teragucci"
+    name = "Teraguchi"
     name_bytes = name.encode('ascii')[:13].ljust(13, b'\x0a')
     edid[name_offset + 5:name_offset + 18] = name_bytes
 
@@ -248,13 +276,24 @@ class UserSession:
     xorg_proc: Optional[subprocess.Popen] = None  # Real Xorg or Xvfb
     gpu_display: bool = False  # True if using real GPU Xorg
     wm_proc: Optional[subprocess.Popen] = None
+    compositor_proc: Optional[subprocess.Popen] = None
     dbus_proc: Optional[subprocess.Popen] = None
     dbus_pid: Optional[int] = None  # PID from dbus-launch (for cleanup)
     dbus_address: str = ""  # D-Bus session bus address from dbus-launch
+    # Long-lived helper process that holds the logind fifo_fd open so that
+    # the logind session created for gnome-shell stays alive. See
+    # logind_session_helper.py for the gory details.
+    logind_proc: Optional[subprocess.Popen] = None
+    logind_session_id: str = ""
     pulseaudio_proc: Optional[subprocess.Popen] = None
     connected_clients: int = 0
     created_at: float = field(default_factory=time.time)
     xauthority: str = ""
+    # uinput pen tablet created before Xorg so that Xorg picks it up via an
+    # explicit InputDevice section. Kept here to control its lifetime (closing
+    # the fd destroys the device) and to hand it to the input injector.
+    pen_tablet: Optional["VirtualPenTablet"] = None
+    pen_tablet_event: str = ""  # /dev/input/eventN path
 
     @property
     def alive(self) -> bool:
@@ -342,7 +381,7 @@ class SessionManager:
         os.chown(runtime_dir, uid, gid)
 
         # Xauthority
-        xauth_dir = "/run/teragucci"
+        xauth_dir = "/run/teraguchi"
         os.makedirs(xauth_dir, mode=0o755, exist_ok=True)
         xauthority = f"{xauth_dir}/{username}.xauth"
 
@@ -361,8 +400,10 @@ class SessionManager:
 
         # Launch X server — real Xorg with NVIDIA GPU, or Xvfb fallback
         gpu_display = False
+        pen_tablet = None
+        pen_tablet_event = ""
         if self._has_nvidia:
-            xorg_proc, gpu_display = self._start_xorg_gpu(
+            xorg_proc, gpu_display, pen_tablet, pen_tablet_event = self._start_xorg_gpu(
                 display, display_num, w, h, xauthority)
         else:
             xorg_proc = None
@@ -377,7 +418,8 @@ class SessionManager:
             display=display, display_num=display_num,
             width=w, height=h,
             xorg_proc=xorg_proc, gpu_display=gpu_display,
-            xauthority=xauthority)
+            xauthority=xauthority,
+            pen_tablet=pen_tablet, pen_tablet_event=pen_tablet_event)
 
         # Start D-Bus session for the user
         self._start_dbus(session)
@@ -392,6 +434,12 @@ class SessionManager:
                 time.sleep(1)
             self._start_window_manager(session)
 
+        # Start X compositor so screen capture reads coherent framebuffers
+        # (fixes tearing during video playback). gnome-shell is already a
+        # compositor, so skip it in that case.
+        if not (self._wm_cmd and self._wm_cmd[0] == "gnome-shell"):
+            self._start_compositor(session)
+
         self._sessions[username] = session
         return session
 
@@ -400,20 +448,43 @@ class SessionManager:
                         xauthority: str) -> tuple:
         """Start a real Xorg server with NVIDIA GPU acceleration.
 
-        Returns (Popen, True) on success, (None, False) on failure.
+        Returns (Popen, True, pen_tablet, pen_event_path) on success,
+        (None, False, None, "") on failure.
         """
         xorg_bin = "/usr/libexec/Xorg"
         if not os.path.exists(xorg_bin):
             xorg_bin = shutil.which("Xorg") or shutil.which("X")
         if not xorg_bin:
             logger.warning("Xorg binary not found, falling back to Xvfb")
-            return None, False
+            return None, False, None, ""
+
+        # Create a uinput virtual pen tablet BEFORE Xorg starts so that we
+        # can wire its event device into the xorg.conf as an explicit
+        # InputDevice. With AutoAddDevices=false Xorg will not pick up
+        # anything we create later.
+        pen_tablet = None
+        pen_event_path = ""
+        try:
+            from server.input_injector import VirtualPenTablet
+            pen_tablet = VirtualPenTablet(screen_width=width, screen_height=height)
+            # Uinput name is fixed in VirtualPenTablet
+            pen_event_path = _find_input_event_device("Teraguchi Virtual Pen Tablet") or ""
+            if not pen_event_path:
+                logger.warning("Pen tablet created but event device not found; pressure disabled")
+            else:
+                logger.info("Pen tablet event device: %s", pen_event_path)
+        except PermissionError:
+            logger.warning("No access to /dev/uinput — pen pressure disabled")
+            pen_tablet = None
+        except Exception as e:
+            logger.warning("Failed to create virtual pen tablet: %s", e)
+            pen_tablet = None
 
         # Write a per-display xorg config with the EDID path filled in
-        config_path = f"/tmp/teragucci-xorg-{display_num}.conf"
-        self._write_xorg_config(config_path, width, height)
+        config_path = f"/tmp/teraguchi-xorg-{display_num}.conf"
+        self._write_xorg_config(config_path, width, height, pen_event_path=pen_event_path)
 
-        log_file = f"/var/log/teragucci-Xorg-{display_num}.log"
+        log_file = f"/var/log/teraguchi-Xorg-{display_num}.log"
 
         xorg_cmd = [
             xorg_bin, display,
@@ -450,12 +521,16 @@ class SessionManager:
                         logger.error("Xorg log tail:\n%s", log_tail)
                     except Exception:
                         pass
-                    return None, False
+                    if pen_tablet:
+                        pen_tablet.close()
+                    return None, False, None, ""
                 time.sleep(0.1)
             else:
                 xorg_proc.kill()
                 logger.error("Xorg timed out waiting for socket on %s", display)
-                return None, False
+                if pen_tablet:
+                    pen_tablet.close()
+                return None, False, None, ""
 
             logger.info("Xorg GPU started on %s (pid %d)", display, xorg_proc.pid)
 
@@ -463,27 +538,75 @@ class SessionManager:
             time.sleep(0.5)  # Give Xorg a moment to fully initialize
             self._set_gpu_resolution(display, width, height, xauthority)
 
-            return xorg_proc, True
+            return xorg_proc, True, pen_tablet, pen_event_path
 
         except Exception as e:
             logger.error("Failed to start Xorg GPU: %s", e)
-            return None, False
+            if pen_tablet:
+                pen_tablet.close()
+            return None, False, None, ""
 
-    def _write_xorg_config(self, config_path: str, width: int, height: int):
-        """Write a per-display xorg.conf with EDID and resolution settings."""
+    def _write_xorg_config(self, config_path: str, width: int, height: int,
+                           pen_event_path: str = ""):
+        """Write a per-display xorg.conf with EDID and resolution settings.
+
+        If `pen_event_path` is provided, an explicit InputDevice section is
+        added so that Xorg picks up our uinput virtual Wacom tablet despite
+        AutoAddDevices being disabled.
+        """
         edid = self._edid_file
 
-        config = f'''# Auto-generated by Teragucci session manager
+        pen_input_section = ""
+        pen_layout_line = ""
+        if pen_event_path:
+            # Use the xf86-input-wacom driver (not libinput) because Flame
+            # and most pro creative apps specifically look for the Wacom
+            # XInput driver to enable pressure curves, pen prefs, etc. We
+            # create three logical sub-devices (stylus, eraser, cursor)
+            # from the same uinput node — same pattern as real Wacom
+            # tablets plugged into xorg.
+            pen_input_section = f'''
+Section "InputDevice"
+    Identifier     "TeraguchiPen stylus"
+    Driver         "wacom"
+    Option         "Device" "{pen_event_path}"
+    Option         "Type" "stylus"
+    Option         "USB" "on"
+EndSection
+
+Section "InputDevice"
+    Identifier     "TeraguchiPen eraser"
+    Driver         "wacom"
+    Option         "Device" "{pen_event_path}"
+    Option         "Type" "eraser"
+    Option         "USB" "on"
+EndSection
+
+Section "InputDevice"
+    Identifier     "TeraguchiPen cursor"
+    Driver         "wacom"
+    Option         "Device" "{pen_event_path}"
+    Option         "Type" "cursor"
+    Option         "USB" "on"
+EndSection
+'''
+            pen_layout_line = (
+                '    InputDevice "TeraguchiPen stylus" "SendCoreEvents"\n'
+                '    InputDevice "TeraguchiPen eraser" "SendCoreEvents"\n'
+                '    InputDevice "TeraguchiPen cursor" "SendCoreEvents"\n'
+            )
+
+        config = f'''# Auto-generated by Teraguchi session manager
 # GPU-accelerated headless display with NVIDIA driver
 
 Section "ServerLayout"
-    Identifier     "Teragucci"
+    Identifier     "Teraguchi"
     Screen      0  "Screen0"
-    Option         "AllowEmptyInitialConfiguration" "true"
+{pen_layout_line}    Option         "AllowEmptyInitialConfiguration" "true"
 EndSection
 
 Section "ServerFlags"
-    Option         "DefaultServerLayout" "Teragucci"
+    Option         "DefaultServerLayout" "Teraguchi"
     Option         "AllowMouseOpenFail" "true"
     Option         "AutoAddDevices" "false"
     Option         "AutoEnableDevices" "false"
@@ -499,7 +622,11 @@ Section "Device"
     Option         "HardDPMS" "false"
     Option         "Interactive" "false"
     Option         "ModeValidation" "AllowNonEdidModes, NoEdidMaxPClkCheck, NoHorizSyncCheck, NoVertRefreshCheck, NoMaxSizeCheck"
-    Option         "MetaModes" "DFP-0: {width}x{height} +0+0"
+    # ForceFullCompositionPipeline routes all rendering through the NVIDIA
+    # driver's internal composition engine, giving us a coherent framebuffer
+    # for mss/XGetImage capture and eliminating tear bands during video
+    # playback. Cheap on headless/virtual displays.
+    Option         "MetaModes" "DFP-0: {width}x{height} +0+0 {{ ForceCompositionPipeline = On, ForceFullCompositionPipeline = On }}"
 EndSection
 
 Section "Monitor"
@@ -524,7 +651,7 @@ Section "Extensions"
     Option         "GLX" "Enable"
     Option         "RANDR" "Enable"
 EndSection
-'''
+{pen_input_section}'''
         with open(config_path, 'w') as f:
             f.write(config)
         logger.debug("Wrote Xorg config: %s", config_path)
@@ -749,79 +876,230 @@ EndSection
             logger.warning("PulseAudio failed for %s: %s", session.username, e)
 
     def _get_logind_session_id(self, username: str) -> str:
-        """Find an existing logind session ID for the user."""
+        """Find an existing logind session ID for the user.
+
+        Prefers sessions in 'active' state, falling back to any
+        running session. Returns empty string if none found.
+        """
         try:
             result = subprocess.run(
                 ["loginctl", "list-sessions", "--no-legend"],
                 capture_output=True, text=True, timeout=5)
+            # Columns: SESSION UID USER SEAT TTY STATE [IDLE SINCE]
+            # Rocky 9 loginctl doesn't show STATE in list-sessions by default
+            # so we query each candidate session individually.
+            candidates = []
             for line in result.stdout.strip().split("\n"):
                 parts = line.split()
                 if len(parts) >= 3 and parts[2] == username:
-                    return parts[0]
+                    candidates.append(parts[0])
+
+            active = []
+            other = []
+            for sid in candidates:
+                try:
+                    show = subprocess.run(
+                        ["loginctl", "show-session", sid,
+                         "-p", "State", "--value"],
+                        capture_output=True, text=True, timeout=5)
+                    state = show.stdout.strip()
+                    if state == "active":
+                        active.append(sid)
+                    elif state in ("online", "opening"):
+                        other.append(sid)
+                except Exception:
+                    continue
+
+            if active:
+                return active[0]
+            if other:
+                return other[0]
         except Exception as e:
             logger.debug("Could not query logind sessions: %s", e)
         return ""
 
-    def _create_logind_session(self, uid: int, username: str, display: str) -> str:
-        """Create a logind session for the user via busctl."""
+    def _start_logind_session(self, session: UserSession) -> str:
+        """Create a real logind session for the user and hold it open.
+
+        gnome-shell's ScreenShield initialization calls
+        ``getCurrentSessionProxy()`` which queries logind for a session
+        owned by the user. Without one, it crashes at start with::
+
+            TypeError: this._userProxy.Display is null
+
+        We can't just call ``busctl CreateSession`` because busctl
+        returns and exits immediately, which closes its copy of the
+        returned ``fifo_fd``, which causes logind to tear the session
+        down. Instead we spawn a tiny Python helper that calls
+        ``login1.Manager.CreateSession`` via Gio/GLib and blocks
+        forever on ``signal.pause()`` holding the fd. When we kill the
+        helper during session cleanup, logind sees EOF on the fifo and
+        destroys the session cleanly.
+
+        The helper must be spawned from outside any existing user
+        session cgroup, otherwise logind refuses with
+        ``SessionBusy: Already running in a session or user slice``.
+        teraguchi-server runs in ``system.slice``, so the helper
+        inherits that cgroup and CreateSession succeeds. If you ever
+        invoke this path from an interactive shell for debugging, wrap
+        it in ``systemd-run --scope --slice=system.slice``.
+
+        Returns the logind session id (e.g. ``"c5"``) on success, or
+        an empty string on failure.
+        """
+        helper_path = os.path.join(os.path.dirname(__file__),
+                                   "logind_session_helper.py")
+        if not os.path.exists(helper_path):
+            logger.warning("logind_session_helper.py not found at %s, "
+                           "gnome-shell will likely crash at ScreenShield init",
+                           helper_path)
+            return ""
+
+        # python3-gobject on Rocky 9 is only installed for the system
+        # Python 3.9. The teraguchi venv does not have it, and /usr/bin/
+        # python3 may be 3.11 on some hosts without gi installed.
+        py = "/usr/bin/python3.9"
+        if not os.path.exists(py):
+            py = "/usr/bin/python3"
+
+        try:
+            proc = subprocess.Popen(
+                [py, helper_path, str(session.uid), session.display],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                # Do NOT preexec_fn=_demote — logind's CreateSession
+                # needs to be called as root to register a session for
+                # another uid.
+                start_new_session=True,
+            )
+        except Exception as e:
+            logger.warning("Failed to spawn logind session helper: %s", e)
+            return ""
+
+        # Read one line of stdout to get the session id. If the helper
+        # hits an error it writes ERROR to stderr and exits; we detect
+        # that by polling.
+        try:
+            line = proc.stdout.readline().strip()
+        except Exception as e:
+            logger.warning("Failed to read logind session helper stdout: %s", e)
+            line = ""
+
+        if not line or proc.poll() is not None:
+            err = ""
+            try:
+                err = proc.stderr.read().strip()
+            except Exception:
+                pass
+            logger.warning("logind session helper failed for %s: %s",
+                           session.username, err or "no output")
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+            return ""
+
+        session.logind_proc = proc
+        session.logind_session_id = line
+        logger.info("Created logind session %s for %s (helper pid %d)",
+                    line, session.username, proc.pid)
+        return line
+
+    def _ensure_linger(self, username: str) -> bool:
+        """Enable systemd-logind linger for the user (idempotent).
+
+        Linger keeps ``user@UID.service`` and the user D-Bus bus at
+        ``/run/user/<uid>/bus`` running regardless of whether the user
+        has an active login session. Without it, D-Bus activation of
+        services like ``gnome-terminal-server`` fails whenever no
+        interactive session exists — which is exactly our situation
+        (the "session" is a headless Xorg spawned by the teraguchi
+        server, not a real logind session).
+        """
+        try:
+            check = subprocess.run(
+                ["loginctl", "show-user", username,
+                 "-p", "Linger", "--value"],
+                capture_output=True, text=True, timeout=5)
+            if check.returncode == 0 and check.stdout.strip() == "yes":
+                return True
+        except Exception as e:
+            logger.debug("Could not check linger state for %s: %s", username, e)
+
         try:
             result = subprocess.run(
-                ["busctl", "call", "org.freedesktop.login1",
-                 "/org/freedesktop/login1",
-                 "org.freedesktop.login1.Manager",
-                 "CreateSession",
-                 "uusssssussbssa(sv)",
-                 str(uid),       # uid
-                 "0",            # pid (0 = let logind pick)
-                 username,       # service
-                 "x11",          # type
-                 "",             # class
-                 "",             # desktop
-                 "",             # seat_id
-                 "0",            # vtnr
-                 "",             # tty
-                 display,        # display
-                 "false",        # remote
-                 "",             # remote_user
-                 "",             # remote_host
-                 "0",            # properties count
-                 ],
-                capture_output=True, text=True, timeout=5)
+                ["loginctl", "enable-linger", username],
+                capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
-                # Parse session ID from response
-                parts = result.stdout.strip().split()
-                for p in parts:
-                    p = p.strip('"')
-                    if p.isdigit():
-                        return p
-                    if p.startswith('/org/freedesktop/login1/session/'):
-                        sid = p.split('/')[-1].lstrip('_')
-                        return sid
-            logger.debug("CreateSession failed: %s", result.stderr)
+                logger.info("Enabled logind linger for %s", username)
+                # Give user@UID.service / dbus-broker a moment to come up
+                time.sleep(1)
+                return True
+            logger.warning("enable-linger for %s failed: %s",
+                           username, result.stderr.strip())
         except Exception as e:
-            logger.debug("Could not create logind session: %s", e)
-        return ""
+            logger.warning("Could not enable linger for %s: %s", username, e)
+        return False
 
     def _start_window_manager(self, session: UserSession):
         try:
             env = session.env.copy()
 
             if self._wm_cmd and self._wm_cmd[0] == "gnome-shell":
-                # gnome-shell needs XDG_SESSION_ID for ScreenShield/loginManager.js
-                session_id = self._create_logind_session(
-                    session.uid, session.username, session.display)
-                if not session_id:
-                    session_id = self._get_logind_session_id(session.username)
-                if session_id:
-                    env["XDG_SESSION_ID"] = session_id
-                    logger.info("Using logind session %s for gnome-shell", session_id)
+                # Belt-and-suspenders: linger keeps user@UID.service up
+                # even if our logind helper somehow dies. D-Bus activation
+                # of gnome-terminal-server needs the user bus to exist.
+                self._ensure_linger(session.username)
+
+                # gnome-shell crashes at startup without a real logind
+                # session because ScreenShield.init calls
+                # getCurrentSessionProxy() and dereferences null on no
+                # session. Create (or reuse) a real session before WM
+                # spawn. Helper holds the fifo_fd alive for the lifetime
+                # of the session.
+                if not session.logind_session_id or (
+                        session.logind_proc and
+                        session.logind_proc.poll() is not None):
+                    self._start_logind_session(session)
+
+                if session.logind_session_id:
+                    env["XDG_SESSION_ID"] = session.logind_session_id
+                    logger.info("Using logind session %s for gnome-shell",
+                                session.logind_session_id)
                 else:
-                    logger.warning("No logind session found for %s, gnome-shell may fail",
-                                   session.username)
+                    # Fall back to any pre-existing session for the user
+                    # (from a real login, ssh, etc.).
+                    fallback_id = self._get_logind_session_id(session.username)
+                    if fallback_id:
+                        env["XDG_SESSION_ID"] = fallback_id
+                        logger.info("Using pre-existing logind session %s "
+                                    "for gnome-shell", fallback_id)
+                    else:
+                        logger.warning("No logind session for %s; gnome-shell "
+                                       "will likely crash at ScreenShield init",
+                                       session.username)
 
                 env["GNOME_SHELL_SESSION_MODE"] = "classic"
                 env["XDG_CURRENT_DESKTOP"] = "GNOME-Classic:GNOME"
                 env["GDK_BACKEND"] = "x11"
+                # Force Mutter to always composite — do NOT unredirect
+                # fullscreen windows OR honor _NET_WM_BYPASS_COMPOSITOR.
+                # Pro creative apps like Flame set BYPASS_COMPOSITOR on
+                # their top-level window, which causes Mutter to stop
+                # compositing them. That bypasses the compositor entirely
+                # and renders directly to the front buffer, which in turn
+                # causes torn frames to be captured by mss/XGetImage.
+                # With this flag set, Mutter always composites through
+                # its own pipeline, giving us coherent framebuffer reads
+                # during video playback.
+                env["MUTTER_DEBUG_DISABLE_UNREDIRECT"] = "1"
+                # NVIDIA-specific: tell the GLX driver to block Mutter's
+                # swap until vblank, so the compositor never presents a
+                # half-drawn frame. USLEEP yield avoids busy-waiting.
+                # These are no-ops on Mesa, so safe to set unconditionally.
+                env["__GL_SYNC_TO_VBLANK"] = "1"
+                env["__GL_YIELD"] = "USLEEP"
                 if not session.gpu_display:
                     # Force software rendering for Xvfb — the GPU's EGL/GLX
                     # context isn't available on virtual displays
@@ -835,7 +1113,7 @@ EndSection
             session.wm_proc = subprocess.Popen(
                 wm_cmd,
                 stdout=subprocess.DEVNULL,
-                stderr=open(f"/tmp/teragucci-wm-{session.username}.log", "w"),
+                stderr=open(f"/tmp/teraguchi-wm-{session.username}.log", "w"),
                 preexec_fn=lambda: self._demote(session.uid, session.gid),
                 env=env)
             logger.info("Window manager started for %s: %s",
@@ -846,6 +1124,37 @@ EndSection
                 self._start_gnome_terminal_server(session)
         except Exception as e:
             logger.warning("WM failed for %s: %s", session.username, e)
+
+    def _start_compositor(self, session: UserSession):
+        """Start an X compositor (xcompmgr) so that screen capture reads
+        coherent, non-torn framebuffers during video playback.
+
+        Without a compositor, apps draw directly to the X front buffer and
+        mss/XGetImage can read mid-swap, producing horizontal tear bands.
+        xcompmgr enables the Composite extension and redirects every window
+        to an off-screen pixmap, which it then composites to the root — so
+        every read sees a finished frame.
+
+        Flags:
+          -n   no client-side shadows/fade (we don't want visual effects,
+               just the composite redirect)
+        """
+        compositor_bin = shutil.which("xcompmgr")
+        if not compositor_bin:
+            logger.warning("xcompmgr not installed — screen capture may tear "
+                           "during video playback. Install xcompmgr to fix.")
+            return
+        try:
+            session.compositor_proc = subprocess.Popen(
+                [compositor_bin, "-n"],
+                stdout=subprocess.DEVNULL,
+                stderr=open(f"/tmp/teraguchi-xcompmgr-{session.username}.log", "w"),
+                preexec_fn=lambda: self._demote(session.uid, session.gid),
+                env=session.env)
+            logger.info("xcompmgr started for %s (pid %d)",
+                        session.username, session.compositor_proc.pid)
+        except Exception as e:
+            logger.warning("xcompmgr failed for %s: %s", session.username, e)
 
     def _start_gnome_terminal_server(self, session: UserSession):
         """Pre-start gnome-terminal-server so gnome-terminal can connect."""
@@ -930,8 +1239,23 @@ EndSection
             logger.info("Session destroyed: %s", username)
 
     def _cleanup_session(self, session: UserSession):
+        # Close the pen tablet first so the uinput device is destroyed
+        # before Xorg shuts down (avoids stale input device errors in log).
+        if session.pen_tablet:
+            try:
+                session.pen_tablet.close()
+            except Exception as e:
+                logger.debug("pen_tablet close: %s", e)
+            session.pen_tablet = None
+
         x_name = "Xorg" if session.gpu_display else "Xvfb"
-        for name, proc in [("WM", session.wm_proc),
+        # Order matters: kill the WM and compositor before tearing down
+        # the logind session, because gnome-shell tries to talk to logind
+        # on exit. Xorg goes last so input devices and GL contexts can
+        # unwind cleanly.
+        for name, proc in [("xcompmgr", session.compositor_proc),
+                           ("WM", session.wm_proc),
+                           ("logind-session", session.logind_proc),
                            ("PulseAudio", session.pulseaudio_proc),
                            ("D-Bus", session.dbus_proc),
                            (x_name, session.xorg_proc)]:
@@ -960,7 +1284,7 @@ EndSection
                 pass
 
         # Clean up temp xorg config
-        config_path = f"/tmp/teragucci-xorg-{session.display_num}.conf"
+        config_path = f"/tmp/teraguchi-xorg-{session.display_num}.conf"
         if os.path.exists(config_path):
             try:
                 os.unlink(config_path)

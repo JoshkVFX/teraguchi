@@ -1,1 +1,1 @@
-# Teragucci - Linux Remote Desktop Server
+# Teraguchi - Linux Remote Desktop Server

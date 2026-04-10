@@ -1,6 +1,6 @@
-# Teragucci Connection Broker - Machine Configuration
+# Teraguchi Connection Broker - Machine Configuration
 #
-# Copy to /etc/teragucci/broker.yml and edit for your environment.
+# Copy to /etc/teraguchi/broker.yml and edit for your environment.
 
 machines:
   - name: dxs-flame-01

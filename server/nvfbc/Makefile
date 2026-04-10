@@ -10,7 +10,7 @@
 #   make clean    — remove the built binary
 #
 # Invoked by install-server.sh on NVIDIA hosts. Does nothing fancy on
-# purpose; teragucci's Python code spawns this as a subprocess and
+# purpose; teraguchi's Python code spawns this as a subprocess and
 # reads raw frames from its stdout.
 
 CC      ?= cc

@@ -2,7 +2,7 @@
 Broker token generation and verification.
 
 Uses HMAC-SHA256 signed tokens for single-use authentication
-between the broker and Teragucci servers. Avoids sending user
+between the broker and Teraguchi servers. Avoids sending user
 passwords to the server after broker authentication.
 """
 

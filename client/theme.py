@@ -1,10 +1,10 @@
 """
-Teragucci visual identity — dark luxury remote desktop.
+Teraguchi visual identity — dark luxury remote desktop.
 
 Design references:
   - Parsec.app: deep blacks, gaming-meets-pro, overlay HUD, moderate rounding
   - Pizzint.watch: monospace data, semi-transparent panels, 1px borders, command center density
-  - "Teragucci" brand: luxury fashion (Gucci) + computing (tera) = emerald green + gold on near-black
+  - "Teraguchi" brand: luxury fashion (Gucci) + computing (tera) = emerald green + gold on near-black
 """
 
 
@@ -67,7 +67,7 @@ def generate_stylesheet() -> str:
     return f"""
 
 /* ═══════════════════════════════════════════════════════
-   Teragucci — Dark Luxury Remote Desktop Theme
+   Teraguchi — Dark Luxury Remote Desktop Theme
    ═══════════════════════════════════════════════════════ */
 
 /* ── Global ────────────────────────────────────── */

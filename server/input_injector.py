@@ -118,6 +118,38 @@ def _setup_abs(fd, code, minimum, maximum, fuzz=0, flat=0, resolution=0):
     fcntl.ioctl(fd, UI_ABS_SETUP, data)
 
 
+ABS_CNT = 64  # kernel ABS_MAX + 1
+
+
+def _pack_uinput_user_dev(name: bytes, bustype: int, vendor: int,
+                          product: int, version: int,
+                          abs_ranges: dict) -> bytes:
+    """Pack a uinput_user_dev struct with absmin/absmax/absfuzz/absflat.
+
+    abs_ranges: {axis_code: (minimum, maximum, fuzz, flat)}
+
+    This is the OLD uinput API which works reliably across kernels.
+    Must NOT be mixed with UI_ABS_SETUP ioctl — the struct's arrays
+    will overwrite whatever was set via the ioctl.
+    """
+    absmax = [0] * ABS_CNT
+    absmin = [0] * ABS_CNT
+    absfuzz = [0] * ABS_CNT
+    absflat = [0] * ABS_CNT
+    for code, (mn, mx, fz, fl) in abs_ranges.items():
+        if 0 <= code < ABS_CNT:
+            absmin[code] = mn
+            absmax[code] = mx
+            absfuzz[code] = fz
+            absflat[code] = fl
+    header = struct.pack('80sHHHHI', name, bustype, vendor, product, version, 0)
+    body = struct.pack(f'{ABS_CNT}i', *absmax) + \
+           struct.pack(f'{ABS_CNT}i', *absmin) + \
+           struct.pack(f'{ABS_CNT}i', *absfuzz) + \
+           struct.pack(f'{ABS_CNT}i', *absflat)
+    return header + body
+
+
 class VirtualMouse:
     """Virtual mouse device using uinput."""
 
@@ -152,7 +184,7 @@ class VirtualMouse:
         _setup_abs(self._fd, ABS_Y, 0, self.screen_height - 1, resolution=1)
 
         # Create the device
-        name = b"Teragucci Virtual Mouse"
+        name = b"Teraguchi Virtual Mouse"
         dev_data = struct.pack('80sHHHHI',
                                name, 0x03, 0x01, 0x01, 0x01, 0)
         # Pad with zeros for abs arrays
@@ -213,7 +245,7 @@ class VirtualKeyboard:
             _ioctl_set(self._fd, UI_SET_KEYBIT, key)
 
         # Create the device
-        name = b"Teragucci Virtual Keyboard"
+        name = b"Teraguchi Virtual Keyboard"
         dev_data = struct.pack('80sHHHHI',
                                name, 0x03, 0x01, 0x01, 0x01, 0)
         dev_data += b'\x00' * (64 * 4 * 4)
@@ -276,21 +308,40 @@ class VirtualPenTablet:
         # MSC for serial
         _ioctl_set(self._fd, UI_SET_MSCBIT, MSC_SERIAL)
 
-        # Setup absolute axis ranges
-        _setup_abs(self._fd, ABS_X, 0, PEN_MAX_X, resolution=100)
-        _setup_abs(self._fd, ABS_Y, 0, PEN_MAX_Y, resolution=100)
+        # Populate absmin/absmax via the uinput_user_dev struct (old API).
+        # Must NOT call UI_ABS_SETUP BEFORE write() — the zeroed arrays in
+        # the struct overwrite the ioctl values and libinput rejects the
+        # device with "min == max on ABS_X".
+        abs_ranges = {
+            ABS_X: (0, PEN_MAX_X, 0, 0),
+            ABS_Y: (0, PEN_MAX_Y, 0, 0),
+            ABS_PRESSURE: (0, PEN_MAX_PRESSURE, 0, 0),
+            ABS_TILT_X: (-PEN_MAX_TILT, PEN_MAX_TILT, 0, 0),
+            ABS_TILT_Y: (-PEN_MAX_TILT, PEN_MAX_TILT, 0, 0),
+            ABS_MISC: (0, 0xFFFF, 0, 0),
+        }
+        # Bus=0x03(USB), vendor=0x056a(Wacom), product=0x0001, version=0x0100
+        dev_data = _pack_uinput_user_dev(
+            b"Teraguchi Virtual Pen Tablet",
+            bustype=0x03, vendor=0x056a, product=0x0001, version=0x0100,
+            abs_ranges=abs_ranges,
+        )
+        os.write(self._fd, dev_data)
+
+        # AFTER write(): call UI_ABS_SETUP to add the `resolution` field,
+        # which is required by libinput for tablet devices but is not
+        # representable in the legacy uinput_user_dev struct. Using the
+        # ioctl here UPDATES the previously-written abs info (it does not
+        # reset fields we care about since we pass the same min/max).
+        # Resolution is in units per mm. PEN_MAX_X=65535 / 200 units/mm ≈
+        # 328mm active width, matching a large tablet.
+        _setup_abs(self._fd, ABS_X, 0, PEN_MAX_X, resolution=200)
+        _setup_abs(self._fd, ABS_Y, 0, PEN_MAX_Y, resolution=200)
         _setup_abs(self._fd, ABS_PRESSURE, 0, PEN_MAX_PRESSURE)
-        _setup_abs(self._fd, ABS_TILT_X, -PEN_MAX_TILT, PEN_MAX_TILT)
-        _setup_abs(self._fd, ABS_TILT_Y, -PEN_MAX_TILT, PEN_MAX_TILT)
+        _setup_abs(self._fd, ABS_TILT_X, -PEN_MAX_TILT, PEN_MAX_TILT, resolution=57)
+        _setup_abs(self._fd, ABS_TILT_Y, -PEN_MAX_TILT, PEN_MAX_TILT, resolution=57)
         _setup_abs(self._fd, ABS_MISC, 0, 0xFFFF)
 
-        # Create the device - use Wacom-like vendor/product IDs
-        name = b"Teragucci Virtual Pen Tablet"
-        # Bus=0x03(USB), vendor=0x056a(Wacom), product=0x0001, version=0x0001
-        dev_data = struct.pack('80sHHHHI',
-                               name, 0x03, 0x056a, 0x0001, 0x0100, 0)
-        dev_data += b'\x00' * (64 * 4 * 4)
-        os.write(self._fd, dev_data[:UINPUT_USER_DEV_SIZE])
         fcntl.ioctl(self._fd, UI_DEV_CREATE)
         time.sleep(0.3)  # Tablet needs a bit more time
         logger.info("Virtual pen tablet created (%dx%d, %d pressure levels)",

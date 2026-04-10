@@ -14,11 +14,11 @@ Two modes:
 
 Both approaches work by:
 - Client captures raw USB device data (via libusb/WinUSB/IOKit)
-- Data is tunneled over the Teragucci WebSocket connection
+- Data is tunneled over the Teraguchi WebSocket connection
 - Server presents the device via usbip or vhci
 
 For the client side, USB device enumeration and forwarding is handled
-by a helper process (teragucci-usb-helper) that uses platform-native
+by a helper process (teraguchi-usb-helper) that uses platform-native
 USB APIs.
 """
 
@@ -242,7 +242,7 @@ class USBForwardingManager:
     High-level USB forwarding manager that coordinates between
     client device exports and server attachments.
 
-    Integrates with the Teragucci protocol to handle USB device
+    Integrates with the Teraguchi protocol to handle USB device
     list/attach/detach messages over the WebSocket connection.
     """
 

@@ -2,7 +2,7 @@
 Client-side USB device forwarding.
 
 Enumerates local USB devices and manages forwarding them to the
-Teragucci server using USB/IP protocol.
+Teraguchi server using USB/IP protocol.
 
 Platform-specific implementation:
 - Windows: Uses usbipd-win (https://github.com/dorssel/usbipd-win)
@@ -108,42 +108,65 @@ class USBDeviceEnumerator:
         return devices
 
     def _list_macos(self) -> List[LocalUSBDevice]:
-        """List USB devices on macOS using system_profiler."""
+        """List USB devices on macOS via ioreg.
+
+        `system_profiler SPUSBDataType` returns an empty list on Apple
+        Silicon / recent macOS releases, so we parse the IORegistry plist
+        directly which still has full device metadata.
+        """
+        import plistlib
         devices = []
         try:
             result = subprocess.run(
-                ["system_profiler", "SPUSBDataType", "-json"],
-                capture_output=True, text=True, timeout=10,
+                ["ioreg", "-a", "-p", "IOUSB", "-l", "-w", "0"],
+                capture_output=True, timeout=10,
             )
-            if result.returncode == 0:
-                data = json.loads(result.stdout)
-                self._parse_macos_usb(data.get("SPUSBDataType", []), devices)
+            if result.returncode != 0 or not result.stdout:
+                logger.warning("ioreg failed: %s", result.stderr.decode(errors="ignore"))
+                return devices
+            root = plistlib.loads(result.stdout)
+            self._walk_ioreg(root, devices)
+        except FileNotFoundError:
+            logger.error("ioreg not found — unexpected on macOS")
         except Exception as e:
             logger.error("Error listing macOS USB devices: %s", e)
 
         return devices
 
-    def _parse_macos_usb(self, items: list, devices: list, depth: int = 0):
-        """Recursively parse macOS USB device tree."""
-        for item in items:
-            if isinstance(item, dict):
-                vid = item.get("vendor_id", "")
-                pid = item.get("product_id", "")
-                if vid and pid:
-                    # Clean up hex format
-                    vid = vid.replace("0x", "").strip()
-                    pid = pid.replace("0x", "").strip()
-                    devices.append(LocalUSBDevice(
-                        bus_id=item.get("location_id", ""),
-                        vendor_id=vid,
-                        product_id=pid,
-                        manufacturer=item.get("manufacturer", ""),
-                        product=item.get("_name", ""),
-                        serial=item.get("serial_num", ""),
-                    ))
-                # Recurse into child hubs
-                if "_items" in item:
-                    self._parse_macos_usb(item["_items"], devices, depth + 1)
+    def _walk_ioreg(self, node, devices: list):
+        """Recursively walk an ioreg plist tree, collecting USB devices."""
+        if isinstance(node, list):
+            for child in node:
+                self._walk_ioreg(child, devices)
+            return
+        if not isinstance(node, dict):
+            return
+
+        vid = node.get("idVendor")
+        pid = node.get("idProduct")
+        if vid is not None and pid is not None:
+            # Skip hubs (class 0x09) — they aren't useful to forward and
+            # confuse the UI by listing each port as a "device"
+            device_class = node.get("bDeviceClass", 0)
+            if device_class != 0x09:
+                name = node.get("USB Product Name") or node.get("kUSBProductString") or ""
+                mfr = node.get("USB Vendor Name") or node.get("kUSBVendorString") or ""
+                serial = node.get("USB Serial Number") or node.get("kUSBSerialNumberString") or ""
+                loc = node.get("locationID", 0)
+                # Format location as hex (matches what Apple shows in About This Mac)
+                bus_id = f"0x{loc:08x}" if isinstance(loc, int) else str(loc)
+                devices.append(LocalUSBDevice(
+                    bus_id=bus_id,
+                    vendor_id=f"{vid:04x}",
+                    product_id=f"{pid:04x}",
+                    manufacturer=str(mfr),
+                    product=str(name),
+                    serial=str(serial),
+                    device_class=f"{device_class:02x}",
+                ))
+
+        for child in node.get("IORegistryEntryChildren", []) or []:
+            self._walk_ioreg(child, devices)
 
     def _list_linux(self) -> List[LocalUSBDevice]:
         """List USB devices on Linux using lsusb."""

@@ -23,9 +23,11 @@ except ImportError:
 
 # Qt key code → X11 keysym mapping (common keys)
 QT_TO_XKEYSYM = {
-    0x01000000: 'Escape', 0x01000001: 'Tab', 0x01000003: 'BackSpace',
+    0x01000000: 'Escape', 0x01000001: 'Tab', 0x01000002: 'ISO_Left_Tab',
+    0x01000003: 'BackSpace',
     0x01000004: 'Return', 0x01000005: 'KP_Enter', 0x01000006: 'Insert',
     0x01000007: 'Delete', 0x01000008: 'Pause', 0x01000009: 'Print',
+    0x0100000a: 'Sys_Req',
     0x01000010: 'Home', 0x01000011: 'End',
     0x01000012: 'Left', 0x01000013: 'Up', 0x01000014: 'Right', 0x01000015: 'Down',
     0x01000016: 'Page_Up', 0x01000017: 'Page_Down',
@@ -35,19 +37,43 @@ QT_TO_XKEYSYM = {
     0x01000030: 'F1', 0x01000031: 'F2', 0x01000032: 'F3', 0x01000033: 'F4',
     0x01000034: 'F5', 0x01000035: 'F6', 0x01000036: 'F7', 0x01000037: 'F8',
     0x01000038: 'F9', 0x01000039: 'F10', 0x0100003a: 'F11', 0x0100003b: 'F12',
+    0x0100003c: 'F13', 0x0100003d: 'F14', 0x0100003e: 'F15', 0x0100003f: 'F16',
+    0x01000040: 'F17', 0x01000041: 'F18', 0x01000042: 'F19', 0x01000043: 'F20',
+    0x01000044: 'F21', 0x01000045: 'F22', 0x01000046: 'F23', 0x01000047: 'F24',
     0x01000058: 'Super_L', 0x01000059: 'Super_R',
     0x01000055: 'Menu',
+    0x01000056: 'Hyper_L', 0x01000057: 'Hyper_R',
     0x20: 'space',
 }
 
 
-class XTestInputInjector:
-    """Input injector using X11 XTest extension for Xvfb displays."""
+# When the KeypadModifier flag is set (bit 0x10 in wire modifiers), Qt
+# digit/symbol keys should resolve to numpad keysyms instead of the main
+# row equivalents. Qt.Key_Enter is already handled above.
+KEYPAD_REMAP = {
+    0x30: 'KP_0', 0x31: 'KP_1', 0x32: 'KP_2', 0x33: 'KP_3', 0x34: 'KP_4',
+    0x35: 'KP_5', 0x36: 'KP_6', 0x37: 'KP_7', 0x38: 'KP_8', 0x39: 'KP_9',
+    0x2a: 'KP_Multiply', 0x2b: 'KP_Add', 0x2c: 'KP_Separator',
+    0x2d: 'KP_Subtract', 0x2e: 'KP_Decimal', 0x2f: 'KP_Divide',
+    0x3d: 'KP_Equal',
+}
 
-    def __init__(self, display_name: str, screen_width: int = 1920, screen_height: int = 1080):
+
+class XTestInputInjector:
+    """Input injector using X11 XTest extension for Xvfb/Xorg displays.
+
+    Can optionally hold a uinput VirtualPenTablet so that pen events with
+    pressure/tilt/rotation reach Xorg as proper XInput2 tablet events.
+    Mouse and keyboard still go through XTest, which is fast and works
+    without needing any physical or uinput input devices to be hot-plugged.
+    """
+
+    def __init__(self, display_name: str, screen_width: int = 1920, screen_height: int = 1080,
+                 pen_tablet=None):
         self.screen_width = screen_width
         self.screen_height = screen_height
         self._display_name = display_name
+        self._pen_tablet = pen_tablet
 
         if not XLIB_AVAILABLE:
             raise RuntimeError("python-xlib required for XTest input injection")
@@ -59,8 +85,9 @@ class XTestInputInjector:
 
         self._root = self._dpy.screen().root
         self.reset_modifiers()
-        logger.info("XTest input injector ready on %s (%dx%d)",
-                     display_name, screen_width, screen_height)
+        logger.info("XTest input injector ready on %s (%dx%d)%s",
+                     display_name, screen_width, screen_height,
+                     " + uinput pen tablet" if pen_tablet else "")
 
     def reset_modifiers(self):
         """Release all modifier keys to prevent stuck state."""
@@ -118,9 +145,9 @@ class XTestInputInjector:
                 xtest.fake_input(self._dpy, X.ButtonRelease, detail=7)
         self._dpy.sync()
 
-    def key(self, qt_key: int, pressed: bool):
+    def key(self, qt_key: int, pressed: bool, modifiers: int = 0):
         """Press/release a key by Qt key code."""
-        keycode = self._qt_key_to_keycode(qt_key)
+        keycode = self._qt_key_to_keycode(qt_key, modifiers)
         action = "PRESS" if pressed else "RELEASE"
         if keycode:
             event_type = X.KeyPress if pressed else X.KeyRelease
@@ -143,15 +170,33 @@ class XTestInputInjector:
             self._dpy.sync()
 
     def pen_move(self, x_norm: float, y_norm: float, pressure: float = 0.0):
-        """Pen/stylus move — mapped to mouse move (XTest has no pressure)."""
-        self.move_abs(x_norm, y_norm)
+        """Pen/stylus move. Routes through uinput tablet if available."""
+        if self._pen_tablet is not None:
+            # Hover move — no tip touch, no button
+            self._pen_tablet.pen_event(
+                x=x_norm, y=y_norm, pressure=pressure,
+                pressed=pressure > 0.0, hovering=pressure <= 0.0)
+        else:
+            self.move_abs(x_norm, y_norm)
 
     def pen_button(self, button: int, pressed: bool):
-        """Pen button — mapped to mouse button."""
-        self.button(button, pressed)
+        """Pen button — mapped to mouse button when no uinput tablet."""
+        if self._pen_tablet is None:
+            self.button(button, pressed)
 
-    def _qt_key_to_keycode(self, qt_key: int) -> Optional[int]:
+    def _qt_key_to_keycode(self, qt_key: int, modifiers: int = 0) -> Optional[int]:
         """Convert Qt key code to X11 keycode."""
+        # Numpad-origin keys: remap to KP_* keysyms when the client marked
+        # the event as coming from the keypad.
+        if modifiers & 0x10:
+            kp_name = KEYPAD_REMAP.get(qt_key)
+            if kp_name:
+                keysym = string_to_keysym(kp_name)
+                if keysym:
+                    kc = self._dpy.keysym_to_keycode(keysym)
+                    if kc:
+                        return kc
+
         # Check special keys map
         keysym_name = QT_TO_XKEYSYM.get(qt_key)
         if keysym_name:
@@ -186,12 +231,38 @@ class XTestInputInjector:
 
         elif msg_type == "key_event":
             # scan_code here is Qt key code (NOT Linux scancode)
-            self.key(msg["scan_code"], msg["pressed"])
+            self.key(msg["scan_code"], msg["pressed"], msg.get("modifiers", 0))
 
         elif msg_type == "pen_event":
-            self.pen_move(msg["x"], msg["y"], msg.get("pressure", 0.0))
-            if msg.get("button", 0) and "pressed" in msg:
-                self.pen_button(msg["button"], msg["pressed"])
+            # Diagnostic: log first event + one per 60 to confirm the path
+            self._pen_msg_count = getattr(self, "_pen_msg_count", 0) + 1
+            if self._pen_msg_count == 1 or self._pen_msg_count % 60 == 0:
+                logger.info("PEN #%d x=%.3f y=%.3f p=%.3f tx=%.1f ty=%.1f "
+                            "pressed=%s hover=%s type=%s via=%s",
+                            self._pen_msg_count, msg.get("x", 0), msg.get("y", 0),
+                            msg.get("pressure", 0.0),
+                            msg.get("tilt_x", 0.0), msg.get("tilt_y", 0.0),
+                            msg.get("pressed", False), msg.get("hovering", False),
+                            msg.get("pen_type", "pen"),
+                            "uinput" if self._pen_tablet else "xtest")
+            if self._pen_tablet is not None:
+                # Full pressure/tilt/rotation path via uinput
+                self._pen_tablet.pen_event(
+                    x=msg["x"],
+                    y=msg["y"],
+                    pressure=msg.get("pressure", 0.0),
+                    tilt_x=msg.get("tilt_x", 0.0),
+                    tilt_y=msg.get("tilt_y", 0.0),
+                    rotation=msg.get("rotation", 0.0),
+                    button=msg.get("button", 0),
+                    pressed=msg.get("pressed", False),
+                    hovering=msg.get("hovering", False),
+                    pen_type=msg.get("pen_type", "pen"),
+                )
+            else:
+                self.pen_move(msg["x"], msg["y"], msg.get("pressure", 0.0))
+                if msg.get("button", 0) and "pressed" in msg:
+                    self.pen_button(msg["button"], msg["pressed"])
 
     def close(self):
         if self._dpy:

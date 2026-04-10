@@ -1,1 +1,1 @@
-# Teragucci - Common protocol and message definitions
+# Teraguchi - Common protocol and message definitions

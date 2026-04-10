@@ -25,11 +25,11 @@ def _get_config_dir() -> Path:
     """Get platform-appropriate config directory."""
     system = platform.system()
     if system == "Darwin":
-        base = Path.home() / "Library" / "Application Support" / "Teragucci"
+        base = Path.home() / "Library" / "Application Support" / "Teraguchi"
     elif system == "Windows":
-        base = Path(os.environ.get("APPDATA", Path.home())) / "Teragucci"
+        base = Path(os.environ.get("APPDATA", Path.home())) / "Teraguchi"
     else:
-        base = Path.home() / ".config" / "teragucci"
+        base = Path.home() / ".config" / "teraguchi"
     base.mkdir(parents=True, exist_ok=True)
     return base
 

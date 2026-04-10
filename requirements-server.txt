@@ -1,4 +1,4 @@
-# Teragucci Server Requirements (Linux only)
+# Teraguchi Server Requirements (Linux only)
 # Install: pip install -r requirements-server.txt
 
 websockets>=12.0

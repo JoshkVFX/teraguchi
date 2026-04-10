@@ -1,5 +1,5 @@
 #!/bin/bash
-# Setup script for Teragucci server on Linux
+# Setup script for Teraguchi server on Linux
 # Configures uinput permissions so the server can create virtual input devices
 # without running as root.
 #
@@ -7,7 +7,7 @@
 
 set -e
 
-echo "=== Teragucci Server Setup ==="
+echo "=== Teraguchi Server Setup ==="
 echo ""
 
 # Check if running as root
@@ -28,10 +28,10 @@ echo "Adding user '$REAL_USER' to 'uinput' group..."
 usermod -aG uinput "$REAL_USER"
 
 # Create udev rule for uinput access
-UDEV_RULE="/etc/udev/rules.d/99-teragucci-uinput.rules"
+UDEV_RULE="/etc/udev/rules.d/99-teraguchi-uinput.rules"
 echo "Creating udev rule at $UDEV_RULE..."
 cat > "$UDEV_RULE" << 'EOF'
-# Teragucci: Allow uinput group to access /dev/uinput
+# Teraguchi: Allow uinput group to access /dev/uinput
 KERNEL=="uinput", GROUP="uinput", MODE="0660"
 EOF
 
@@ -45,12 +45,12 @@ modprobe usbip-core 2>/dev/null || echo "  usbip-core not available (USB passthr
 modprobe vhci-hcd 2>/dev/null || echo "  vhci-hcd not available (USB passthrough won't work)"
 
 # Ensure modules load on boot
-MODULES_FILE="/etc/modules-load.d/teragucci.conf"
+MODULES_FILE="/etc/modules-load.d/teraguchi.conf"
 echo "Configuring kernel modules to load on boot..."
 cat > "$MODULES_FILE" << 'MODEOF'
-# Teragucci: virtual input devices
+# Teraguchi: virtual input devices
 uinput
-# Teragucci: USB/IP passthrough (optional)
+# Teraguchi: USB/IP passthrough (optional)
 usbip-core
 vhci-hcd
 MODEOF

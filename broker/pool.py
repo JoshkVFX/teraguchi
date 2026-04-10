@@ -23,7 +23,7 @@ HEALTH_OK_THRESHOLD = 2    # consecutive successes to mark healthy
 
 @dataclass
 class Machine:
-    """A Teragucci server in the pool."""
+    """A Teraguchi server in the pool."""
     name: str = ""
     host: str = ""
     port: int = 4443
@@ -59,7 +59,7 @@ class Machine:
 
 
 class MachinePool:
-    """Manages the fleet of Teragucci servers."""
+    """Manages the fleet of Teraguchi servers."""
 
     def __init__(self, machines_config: list[dict],
                  assignments: Optional[dict] = None):
@@ -184,7 +184,7 @@ class MachinePool:
         2. Available machine from user's assigned set (or floating pool)
         3. Least-loaded machine from allowed set (if all busy)
         """
-        is_admin = "teragucci-admins" in groups
+        is_admin = "teraguchi-admins" in groups
 
         # Determine candidate machines for this user
         if username in self._user_machines:

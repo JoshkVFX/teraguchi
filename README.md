@@ -1,10 +1,10 @@
-# Teragucci
+# Teraguchi
 
 Open-source remote desktop built for creative professionals. GPU-accelerated H.264/H.265/AV1 video with YUV 4:4:4 chroma, full Wacom pen pressure, USB device passthrough, file transfer, clipboard sync, and per-user session isolation. Designed to replace Teradici PCoIP, HP Anywhere, Parsec, and HP RGS on Linux workstations.
 
-## Why Teragucci
+## Why Teraguchi
 
-Commercial remote desktop tools cost thousands per seat, lock you into proprietary protocols, and treat creative workflows as an afterthought. Teragucci was built for VFX and post-production environments where color accuracy, pen pressure, and low-latency input are non-negotiable.
+Commercial remote desktop tools cost thousands per seat, lock you into proprietary protocols, and treat creative workflows as an afterthought. Teraguchi was built for VFX and post-production environments where color accuracy, pen pressure, and low-latency input are non-negotiable.
 
 - **YUV 4:4:4** chroma means no color subsampling — text stays sharp, color pickers stay accurate
 - **Full Wacom support** — 8192 pressure levels, tilt, rotation, express keys via USB passthrough
@@ -135,7 +135,7 @@ sudo bash install-server.sh --no-service    # skip systemd setup
 sudo bash install-server.sh --no-auth       # skip user creation prompt
 ```
 
-Installs to `/opt/teragucci` with a `.venv` and creates the `teragucci-server` systemd service.
+Installs to `/opt/teraguchi` with a `.venv` and creates the `teraguchi-server` systemd service.
 
 #### Manual Setup
 
@@ -179,7 +179,7 @@ python -m client.main --host 10.10.0.12 --port 4443 -u randy -p mypassword
 ```bash
 pip install pyinstaller
 python build_client.py
-# Output: dist/Teragucci/
+# Output: dist/Teraguchi/
 ```
 
 ## Server Configuration
@@ -224,12 +224,12 @@ python build_client.py
 ### Systemd Service
 
 ```bash
-sudo systemctl enable --now teragucci-server
-sudo systemctl status teragucci-server
-sudo journalctl -u teragucci-server -f
+sudo systemctl enable --now teraguchi-server
+sudo systemctl status teraguchi-server
+sudo journalctl -u teraguchi-server -f
 ```
 
-Logs: `/var/log/teragucci/server.log`
+Logs: `/var/log/teraguchi/server.log`
 
 ## Client Usage
 
@@ -296,7 +296,7 @@ The quality bias slider maps to encoder parameters:
 ## Project Structure
 
 ```
-teragucci/
+teraguchi/
 ├── client/
 │   ├── main.py              # Main window, UI, tabs, menus
 │   ├── session.py           # Per-connection session (protocol + viewer + decoder)
@@ -349,7 +349,7 @@ teragucci/
 
 ## Protocol
 
-Teragucci uses a hybrid WebSocket protocol:
+Teraguchi uses a hybrid WebSocket protocol:
 
 - **Binary frames** for video and audio (low overhead, type-length headers)
 - **JSON messages** for control, input, health, clipboard, file transfer, USB
@@ -383,7 +383,7 @@ Teragucci uses a hybrid WebSocket protocol:
 
 ## Comparison
 
-| Feature | Teragucci | Teradici PCoIP | Parsec | HP RGS |
+| Feature | Teraguchi | Teradici PCoIP | Parsec | HP RGS |
 |---------|-----------|----------------|--------|--------|
 | Open Source | **Yes** | No | No | No |
 | License Cost | **Free** | ~$300/seat/yr | Freemium | ~$200/seat |

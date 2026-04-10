@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Teragucci Client Installer (macOS / Linux)
+# Teraguchi Client Installer (macOS / Linux)
 #
 # Installs Python dependencies, creates a launch script, and optionally
 # builds a standalone app bundle with PyInstaller.
@@ -125,10 +125,10 @@ fi
 
 # ── Create launch script ────────────────────────────────────────
 
-LAUNCHER="$SCRIPT_DIR/teragucci"
+LAUNCHER="$SCRIPT_DIR/teraguchi"
 cat > "$LAUNCHER" << LAUNCHEOF
 #!/usr/bin/env bash
-# Teragucci Client Launcher
+# Teraguchi Client Launcher
 SCRIPT_DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
 source "\$SCRIPT_DIR/.venv/bin/activate"
 cd "\$SCRIPT_DIR"
@@ -140,31 +140,31 @@ ok "Created launcher: $LAUNCHER"
 # ── macOS: Create .app bundle shortcut ───────────────────────────
 
 if [ "$SYSTEM" = "Darwin" ]; then
-    APP_DIR="$SCRIPT_DIR/Teragucci.app/Contents/MacOS"
+    APP_DIR="$SCRIPT_DIR/Teraguchi.app/Contents/MacOS"
     mkdir -p "$APP_DIR"
 
-    cat > "$APP_DIR/Teragucci" << APPEOF
+    cat > "$APP_DIR/Teraguchi" << APPEOF
 #!/usr/bin/env bash
 SCRIPT_DIR="$SCRIPT_DIR"
 source "\$SCRIPT_DIR/.venv/bin/activate"
 cd "\$SCRIPT_DIR"
 exec python -m client.main "\$@"
 APPEOF
-    chmod +x "$APP_DIR/Teragucci"
+    chmod +x "$APP_DIR/Teraguchi"
 
     # Info.plist
-    cat > "$SCRIPT_DIR/Teragucci.app/Contents/Info.plist" << PLISTEOF
+    cat > "$SCRIPT_DIR/Teraguchi.app/Contents/Info.plist" << PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key>
-    <string>Teragucci</string>
+    <string>Teraguchi</string>
     <key>CFBundleIdentifier</key>
-    <string>com.teragucci.client</string>
+    <string>com.teraguchi.client</string>
     <key>CFBundleName</key>
-    <string>Teragucci</string>
+    <string>Teraguchi</string>
     <key>CFBundleVersion</key>
     <string>2.0.0</string>
     <key>CFBundleShortVersionString</key>
@@ -177,8 +177,8 @@ APPEOF
 </plist>
 PLISTEOF
 
-    ok "Created macOS app: Teragucci.app"
-    info "You can drag Teragucci.app to /Applications or double-click it."
+    ok "Created macOS app: Teraguchi.app"
+    info "You can drag Teraguchi.app to /Applications or double-click it."
 fi
 
 # ── Optional: Build standalone app ───────────────────────────────
@@ -188,14 +188,14 @@ if [ "$BUILD_APP" = true ]; then
     info "Building standalone application with PyInstaller..."
     pip install pyinstaller -q
     python "$SCRIPT_DIR/build_client.py"
-    ok "Standalone app built in: $SCRIPT_DIR/dist/Teragucci/"
+    ok "Standalone app built in: $SCRIPT_DIR/dist/Teraguchi/"
 fi
 
 # ── Done ─────────────────────────────────────────────────────────
 
 echo ""
 echo "═══════════════════════════════════════════════════════════"
-echo -e "${GREEN}  Teragucci client installation complete!${NC}"
+echo -e "${GREEN}  Teraguchi client installation complete!${NC}"
 echo "═══════════════════════════════════════════════════════════"
 echo ""
 echo "  Launch:"
@@ -208,7 +208,7 @@ echo "  With credentials:"
 echo "    $LAUNCHER --host 192.168.1.100 -u myuser"
 echo ""
 if [ "$SYSTEM" = "Darwin" ]; then
-    echo "  macOS: Double-click Teragucci.app or drag it to Applications."
+    echo "  macOS: Double-click Teraguchi.app or drag it to Applications."
     echo ""
 fi
 echo "  To build a portable .app/.exe later:"

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Teragucci Keystroke Diagnostic Tool
+Teraguchi Keystroke Diagnostic Tool
 
 Shows the full key translation path:
   Physical key → Qt key code → Wire message → X11 keysym → X11 keycode
@@ -108,12 +108,12 @@ def run_client_diag():
         QApplication.setAttribute(Qt.AA_MacDontSwapCtrlAndMeta, True)
 
     app = QApplication(sys.argv)
-    app.setApplicationName("Teragucci Key Diagnostic")
+    app.setApplicationName("Teraguchi Key Diagnostic")
 
     class KeyDiagWindow(QWidget):
         def __init__(self):
             super().__init__()
-            self.setWindowTitle("Teragucci Key Diagnostic")
+            self.setWindowTitle("Teraguchi Key Diagnostic")
             self.setMinimumSize(700, 500)
             self.setFocusPolicy(Qt.StrongFocus)
 
@@ -121,7 +121,7 @@ def run_client_diag():
 
             # Header
             header = QLabel(
-                "Press any key or combo. Shows what Teragucci would send to the remote server.\n"
+                "Press any key or combo. Shows what Teraguchi would send to the remote server.\n"
                 "Green = mapped correctly  |  Red = UNMAPPED (will be dropped)")
             header.setWordWrap(True)
             layout.addWidget(header)
@@ -246,7 +246,7 @@ def run_server_diag(display: str):
         print("ERROR: python-xlib not installed. Install with: pip install python-xlib")
         sys.exit(1)
 
-    print(f"Teragucci Server Key Diagnostic — Display {display}")
+    print(f"Teraguchi Server Key Diagnostic — Display {display}")
     print("=" * 70)
 
     try:
@@ -351,7 +351,7 @@ def run_server_diag(display: str):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Teragucci Keystroke Diagnostic Tool",
+        description="Teraguchi Keystroke Diagnostic Tool",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

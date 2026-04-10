@@ -1,5 +1,5 @@
 [Unit]
-Description=Teragucci Remote Desktop Server
+Description=Teraguchi Remote Desktop Server
 After=network.target graphical.target
 Wants=graphical.target
 
@@ -8,8 +8,8 @@ Type=simple
 # Change User to your actual username
 User=CHANGEME
 Environment=DISPLAY=:0
-# Adjust the path to your Teragucci installation
-WorkingDirectory=/opt/teragucci
+# Adjust the path to your Teraguchi installation
+WorkingDirectory=/opt/teraguchi
 ExecStart=/usr/bin/python3 -m server.main --port 443 --quic-port 444 --fps 30 --codec h264 --chroma yuv444
 Restart=on-failure
 RestartSec=5

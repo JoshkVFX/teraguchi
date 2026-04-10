@@ -150,6 +150,10 @@ class VideoDecoder:
                 # Convert to RGB24
                 rgb_frame = frame.to_ndarray(format="rgb24")
                 self._frame_count += 1
+                if self._frame_count == 1:
+                    logger.info("First frame decoded: %dx%d (codec=%s, hw=%s)",
+                                frame.width, frame.height,
+                                self._codec_name, self._hw_type or "software")
                 elapsed_ms = (time.time() - start) * 1000
                 self._decode_times.append(elapsed_ms)
                 if len(self._decode_times) > 100:
@@ -158,11 +162,20 @@ class VideoDecoder:
                 # Return raw bytes for QImage (Format_RGB888)
                 return bytes(rgb_frame)
 
-        except av.error.InvalidDataError:
-            # Common when receiving partial data — not fatal
-            logger.debug("Decode: invalid data (waiting for keyframe?)")
+        except av.error.InvalidDataError as e:
+            # Log at warning the first few times so we can see whether we're
+            # stuck waiting for a keyframe or actually failing to decode.
+            if self._frame_count == 0:
+                self._decode_error_count = getattr(self, "_decode_error_count", 0) + 1
+                if self._decode_error_count <= 5:
+                    logger.warning("Decode: invalid data #%d (%d bytes): %s",
+                                   self._decode_error_count, len(encoded_data), e)
         except Exception as e:
-            logger.debug("Decode error: %s", e)
+            if self._frame_count == 0:
+                self._decode_error_count = getattr(self, "_decode_error_count", 0) + 1
+                if self._decode_error_count <= 5:
+                    logger.warning("Decode error #%d (%d bytes): %s",
+                                   self._decode_error_count, len(encoded_data), e)
 
         return None
 

@@ -1,5 +1,5 @@
 [Unit]
-Description=Teragucci Connection Broker
+Description=Teraguchi Connection Broker
 After=network.target syslog.target
 Wants=network-online.target
 
@@ -7,30 +7,30 @@ Wants=network-online.target
 Type=simple
 User=root
 Group=root
-WorkingDirectory=/opt/teragucci
+WorkingDirectory=/opt/teraguchi
 ExecStart=/usr/bin/python3 -m broker.main \
     --host 0.0.0.0 \
     --port 8443 \
-    --config /etc/teragucci/broker.yml \
-    --secret /etc/teragucci/broker.secret \
-    --tls-cert /etc/teragucci/tls/broker.crt \
-    --tls-key /etc/teragucci/tls/broker.key \
+    --config /etc/teraguchi/broker.yml \
+    --secret /etc/teraguchi/broker.secret \
+    --tls-cert /etc/teraguchi/tls/broker.crt \
+    --tls-key /etc/teraguchi/tls/broker.key \
     --ipa-servers ldap://dxs-salt.the-dxs.com,ldap://dxs-salty.the-dxs.com \
     --ipa-base-dn dc=the-dxs,dc=com \
-    --required-group teragucci-users \
-    --admin-group teragucci-admins
+    --required-group teraguchi-users \
+    --admin-group teraguchi-admins
 
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=teragucci-broker
+SyslogIdentifier=teraguchi-broker
 
 # Security hardening
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/var/log/teragucci
+ReadWritePaths=/var/log/teraguchi
 PrivateTmp=yes
 
 [Install]

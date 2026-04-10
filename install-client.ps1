@@ -1,5 +1,5 @@
 #
-# Teragucci Client Installer (Windows)
+# Teraguchi Client Installer (Windows)
 #
 # Installs Python dependencies, creates a launch shortcut, and optionally
 # builds a standalone .exe with PyInstaller.
@@ -34,7 +34,7 @@ if ($Help) {
 
 Write-Host ""
 Write-Host "=============================================" -ForegroundColor Cyan
-Write-Host "  Teragucci Client Installer (Windows)       " -ForegroundColor Cyan
+Write-Host "  Teraguchi Client Installer (Windows)       " -ForegroundColor Cyan
 Write-Host "=============================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -133,26 +133,26 @@ try {
 
 # ── Create launch script ────────────────────────────────────────
 
-$LauncherBat = Join-Path $ScriptDir "teragucci.bat"
+$LauncherBat = Join-Path $ScriptDir "teraguchi.bat"
 $LauncherContent = @"
 @echo off
-REM Teragucci Client Launcher
+REM Teraguchi Client Launcher
 cd /d "$ScriptDir"
 call "$VenvDir\Scripts\activate.bat"
 python -m client.main %*
 "@
 Set-Content -Path $LauncherBat -Value $LauncherContent
-Write-Ok "Created launcher: teragucci.bat"
+Write-Ok "Created launcher: teraguchi.bat"
 
 # Also create a PowerShell launcher
-$LauncherPs1 = Join-Path $ScriptDir "teragucci-launch.ps1"
+$LauncherPs1 = Join-Path $ScriptDir "teraguchi-launch.ps1"
 $PsContent = @"
-# Teragucci Client Launcher
+# Teraguchi Client Launcher
 Set-Location "$ScriptDir"
 & "$VenvPython" -m client.main @args
 "@
 Set-Content -Path $LauncherPs1 -Value $PsContent
-Write-Ok "Created launcher: teragucci-launch.ps1"
+Write-Ok "Created launcher: teraguchi-launch.ps1"
 
 # ── Desktop shortcut ─────────────────────────────────────────────
 
@@ -161,13 +161,13 @@ if ($Shortcut) {
     Write-Info "Creating Desktop shortcut..."
 
     $Desktop = [Environment]::GetFolderPath("Desktop")
-    $ShortcutPath = Join-Path $Desktop "Teragucci.lnk"
+    $ShortcutPath = Join-Path $Desktop "Teraguchi.lnk"
 
     $WshShell = New-Object -ComObject WScript.Shell
     $Lnk = $WshShell.CreateShortcut($ShortcutPath)
     $Lnk.TargetPath = $LauncherBat
     $Lnk.WorkingDirectory = $ScriptDir
-    $Lnk.Description = "Teragucci Remote Desktop Client"
+    $Lnk.Description = "Teraguchi Remote Desktop Client"
     $Lnk.Save()
 
     Write-Ok "Desktop shortcut created: $ShortcutPath"
@@ -182,10 +182,10 @@ if ($Build) {
     & $VenvPip install pyinstaller -q
     & $VenvPython (Join-Path $ScriptDir "build_client.py")
 
-    $DistDir = Join-Path $ScriptDir "dist\Teragucci"
+    $DistDir = Join-Path $ScriptDir "dist\Teraguchi"
     if (Test-Path $DistDir) {
         Write-Ok "Standalone app built: $DistDir"
-        Write-Host "  You can copy the dist\Teragucci folder to any Windows PC." -ForegroundColor Yellow
+        Write-Host "  You can copy the dist\Teraguchi folder to any Windows PC." -ForegroundColor Yellow
     }
 }
 
@@ -193,17 +193,17 @@ if ($Build) {
 
 Write-Host ""
 Write-Host "=============================================" -ForegroundColor Green
-Write-Host "  Teragucci client installation complete!     " -ForegroundColor Green
+Write-Host "  Teraguchi client installation complete!     " -ForegroundColor Green
 Write-Host "=============================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "  Launch:"
-Write-Host "    teragucci.bat" -ForegroundColor White
+Write-Host "    teraguchi.bat" -ForegroundColor White
 Write-Host ""
 Write-Host "  Or with a direct connection:"
-Write-Host "    teragucci.bat --host 192.168.1.100" -ForegroundColor White
+Write-Host "    teraguchi.bat --host 192.168.1.100" -ForegroundColor White
 Write-Host ""
 Write-Host "  With credentials:"
-Write-Host "    teragucci.bat --host 192.168.1.100 -u myuser" -ForegroundColor White
+Write-Host "    teraguchi.bat --host 192.168.1.100 -u myuser" -ForegroundColor White
 Write-Host ""
 Write-Host "  To create a Desktop shortcut later:"
 Write-Host "    .\install-client.ps1 -Shortcut" -ForegroundColor Gray

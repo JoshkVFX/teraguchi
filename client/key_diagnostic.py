@@ -1,5 +1,5 @@
 """
-Built-in keystroke diagnostic dialog for Teragucci.
+Built-in keystroke diagnostic dialog for Teraguchi.
 
 Shows the full key translation path in real time:
   Physical key → Qt key code → Wire message → X11 keysym
@@ -90,7 +90,7 @@ class KeyDiagnosticDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Teragucci — Key Diagnostic")
+        self.setWindowTitle("Teraguchi — Key Diagnostic")
         self.setMinimumSize(680, 480)
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -99,7 +99,7 @@ class KeyDiagnosticDialog(QDialog):
 
         # Header
         header = QLabel(
-            "Press any key or combo to see how Teragucci translates it.\n"
+            "Press any key or combo to see how Teraguchi translates it.\n"
             "Green = mapped to X11   Red = UNMAPPED (will be dropped)")
         header.setWordWrap(True)
         layout.addWidget(header)

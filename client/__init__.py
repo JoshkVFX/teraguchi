@@ -1,1 +1,1 @@
-# Teragucci - Remote Desktop Client (Mac/Windows)
+# Teraguchi - Remote Desktop Client (Mac/Windows)

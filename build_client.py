@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Build script for packaging the Teragucci client as a standalone application.
+Build script for packaging the Teraguchi client as a standalone application.
 
 Usage:
     python build_client.py
 
-Creates a standalone executable in dist/Teragucci/ that can be distributed
+Creates a standalone executable in dist/Teraguchi/ that can be distributed
 to Mac and Windows users without requiring a Python installation.
 """
 
@@ -13,13 +13,13 @@ import platform
 import subprocess
 import sys
 
-APP_NAME = "Teragucci"
+APP_NAME = "Teraguchi"
 MAIN_SCRIPT = "client/main.py"
 
 
 def build():
     system = platform.system()
-    print(f"Building Teragucci client for {system}...")
+    print(f"Building Teraguchi client for {system}...")
 
     cmd = [
         sys.executable, "-m", "PyInstaller",
@@ -42,7 +42,7 @@ def build():
 
     if system == "Darwin":
         cmd.extend([
-            "--osx-bundle-identifier", "com.teragucci.client",
+            "--osx-bundle-identifier", "com.teraguchi.client",
         ])
 
     print("Running:", " ".join(cmd))

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Teragucci Server Installer (Linux)
+# Teraguchi Server Installer (Linux)
 #
 # Installs all system dependencies, Python packages, configures uinput,
 # and optionally sets up a systemd service.
@@ -14,9 +14,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INSTALL_DIR="/opt/teragucci"
+INSTALL_DIR="/opt/teraguchi"
 VENV_DIR="$INSTALL_DIR/.venv"
-SERVICE_NAME="teragucci-server"
+SERVICE_NAME="teraguchi-server"
 
 # Colors
 RED='\033[0;31m'
@@ -58,7 +58,7 @@ if [ "$REAL_USER" = "root" ]; then
     read -rp "Enter the username that will run the server: " REAL_USER
 fi
 
-info "Installing Teragucci server for user: $REAL_USER"
+info "Installing Teraguchi server for user: $REAL_USER"
 echo ""
 
 # ── Detect distro ────────────────────────────────────────────────
@@ -136,7 +136,7 @@ case "$DISTRO" in
         # driver alone.
         if ! command -v nvidia-smi &>/dev/null; then
             warn "nvidia-smi not found — NVIDIA driver appears to be missing."
-            warn "Teragucci will run on Xvfb (software rendering) which is"
+            warn "Teraguchi will run on Xvfb (software rendering) which is"
             warn "unusable for Flame. Install the NVIDIA driver out-of-band"
             warn "(DKU, .run installer, or your normal provisioning) BEFORE"
             warn "starting the server."
@@ -229,9 +229,9 @@ usermod -aG uinput "$REAL_USER"
 ok "Added '$REAL_USER' to 'uinput' group"
 
 # udev rule
-UDEV_RULE="/etc/udev/rules.d/99-teragucci-uinput.rules"
+UDEV_RULE="/etc/udev/rules.d/99-teraguchi-uinput.rules"
 cat > "$UDEV_RULE" << 'EOF'
-# Teragucci: Allow uinput group to access /dev/uinput
+# Teraguchi: Allow uinput group to access /dev/uinput
 KERNEL=="uinput", GROUP="uinput", MODE="0660"
 EOF
 ok "Created udev rule: $UDEV_RULE"
@@ -244,7 +244,7 @@ modprobe usbip-core 2>/dev/null && ok "Loaded usbip-core module" || info "usbip-
 modprobe vhci-hcd 2>/dev/null && ok "Loaded vhci-hcd module" || info "vhci-hcd not available (USB passthrough disabled)"
 
 # Persist modules
-cat > /etc/modules-load.d/teragucci.conf << 'EOF'
+cat > /etc/modules-load.d/teraguchi.conf << 'EOF'
 uinput
 usbip-core
 vhci-hcd
@@ -255,10 +255,10 @@ udevadm control --reload-rules
 udevadm trigger
 ok "udev rules reloaded"
 
-# ── Install Teragucci ────────────────────────────────────────────
+# ── Install Teraguchi ────────────────────────────────────────────
 
 echo ""
-info "Installing Teragucci to $INSTALL_DIR ..."
+info "Installing Teraguchi to $INSTALL_DIR ..."
 
 mkdir -p "$INSTALL_DIR"
 
@@ -273,7 +273,7 @@ ok "Copied source files"
 #
 # Build and install the small C helper that screen_capture.py uses
 # for tear-free framebuffer capture on NVIDIA hosts. Silently skipped
-# on non-NVIDIA machines — teragucci falls back to mss/XShmGetImage
+# on non-NVIDIA machines — teraguchi falls back to mss/XShmGetImage
 # automatically in that case.
 
 NVFBC_LIB=""
@@ -317,8 +317,8 @@ if [ "$SETUP_AUTH" = true ]; then
     echo "  Create a login for remote connections."
     echo "  (You can skip this and use --no-auth on the server later.)"
     echo ""
-    read -rp "  Username [teragucci]: " AUTH_USER
-    AUTH_USER="${AUTH_USER:-teragucci}"
+    read -rp "  Username [teraguchi]: " AUTH_USER
+    AUTH_USER="${AUTH_USER:-teraguchi}"
 
     # Use the venv Python to add the user
     sudo -u "$REAL_USER" "$VENV_DIR/bin/python" -c "
@@ -340,7 +340,7 @@ if [ "$SETUP_SERVICE" = true ]; then
 
     cat > "/etc/systemd/system/${SERVICE_NAME}.service" << SVCEOF
 [Unit]
-Description=Teragucci Remote Desktop Server
+Description=Teraguchi Remote Desktop Server
 After=network.target
 
 [Service]
@@ -350,14 +350,14 @@ WorkingDirectory=$INSTALL_DIR
 ExecStart=$VENV_DIR/bin/python -m server.main --port 4443 --fps 30 --codec h264 --chroma yuv444
 Restart=on-failure
 RestartSec=5
-StandardOutput=append:/var/log/teragucci/server.log
-StandardError=append:/var/log/teragucci/server.log
+StandardOutput=append:/var/log/teraguchi/server.log
+StandardError=append:/var/log/teraguchi/server.log
 
 [Install]
 WantedBy=multi-user.target
 SVCEOF
 
-    mkdir -p /var/log/teragucci
+    mkdir -p /var/log/teraguchi
 
     systemctl daemon-reload
     ok "Systemd service created: $SERVICE_NAME"
@@ -374,7 +374,7 @@ fi
 # ── Firewall ─────────────────────────────────────────────────────
 
 echo ""
-info "Firewall: Teragucci uses port 443 (TCP+UDP) and 444 (QUIC/UDP)."
+info "Firewall: Teraguchi uses port 443 (TCP+UDP) and 444 (QUIC/UDP)."
 
 if command -v ufw &>/dev/null; then
     read -rp "  Open ports 443-444 (TCP+UDP) in UFW? [y/N]: " OPEN_FW
@@ -401,7 +401,7 @@ fi
 
 echo ""
 echo "═══════════════════════════════════════════════════════════"
-echo -e "${GREEN}  Teragucci server installation complete!${NC}"
+echo -e "${GREEN}  Teraguchi server installation complete!${NC}"
 echo "═══════════════════════════════════════════════════════════"
 echo ""
 echo "  Install dir:  $INSTALL_DIR"

@@ -1,4 +1,4 @@
-# Teragucci Broker Requirements
+# Teraguchi Broker Requirements
 # Install: pip install -r requirements-broker.txt
 
 websockets>=12.0
