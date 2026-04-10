@@ -102,38 +102,51 @@ class AdminServer:
 
     # ── process_request hook for websockets ──────────
 
-    async def process_request(self, path: str, headers):
+    async def process_request(self, connection, request):
         """
         Called by websockets server for every incoming request.
-        Returns (status, headers, body) for admin routes, or None for WebSocket.
+        Returns a Response for admin routes, or None for WebSocket upgrade.
+
+        websockets 15 API: process_request(connection, request) -> Response | None
         """
+        from websockets.datastructures import Headers as WsHeaders
+        from websockets.http11 import Response
+
+        path = request.path
+        headers = request.headers
+
         # Let WebSocket upgrade requests pass through
-        if headers.get("Upgrade", "").lower() == "websocket":
+        if "websocket" in headers.get("Upgrade", "").lower():
             return None
 
         # Only handle admin paths
         if not any(path.startswith(p) for p in ADMIN_PATHS):
             return None
 
+        def make_response(status, header_list, body):
+            h = WsHeaders()
+            for k, v in header_list:
+                h[k] = v
+            return Response(status, "", h, body)
+
         # Authenticate
         if path != "/api/ping":
             username = self._authenticate_headers(headers)
             if not username:
-                return (
-                    401,
-                    [("WWW-Authenticate", 'Basic realm="Teragucci Admin"'),
-                     ("Content-Type", "text/plain")],
-                    b"Authentication required",
-                )
+                return make_response(401, [
+                    ("WWW-Authenticate", 'Basic realm="Teragucci Admin"'),
+                    ("Content-Type", "text/plain"),
+                ], b"Authentication required")
         else:
             username = None
 
         # Route
         try:
-            return await self._route(path, headers, username)
+            status, resp_headers, body = await self._route(path, headers, username)
+            return make_response(status, resp_headers, body)
         except Exception as e:
             logger.error("Admin request error: %s", e, exc_info=True)
-            return (500, [("Content-Type", "text/plain")], b"Internal server error")
+            return make_response(500, [("Content-Type", "text/plain")], b"Internal server error")
 
     async def _route(self, path: str, headers, username: Optional[str]):
         """Route admin HTTP requests."""

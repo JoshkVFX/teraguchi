@@ -84,7 +84,11 @@ async def handle_client(websocket: WebSocketServerProtocol):
     # Route admin WebSocket connections
     if ws_path == "/admin-ws" and admin_server:
         # Admin WS auth: check Basic Auth from the upgrade request headers
-        headers = getattr(websocket, "request_headers", None) or {}
+        # websockets 15: request_headers or request.headers
+        headers = getattr(websocket, "request_headers", None)
+        if headers is None:
+            req = getattr(websocket, "request", None)
+            headers = req.headers if req else {}
         username = admin_server._authenticate_headers(headers)
         if not username:
             await websocket.close(4001, "Authentication required")
