@@ -17,14 +17,20 @@ Commercial remote desktop tools cost thousands per seat, lock you into proprieta
 ### Video
 - H.264, H.265, AV1 encoding with YUV 4:2:0, 4:2:2, or 4:4:4 chroma
 - GPU-accelerated encoding via NVENC (NVIDIA), VAAPI (Intel/AMD), AMF (AMD)
-- NvFBC capture on NVIDIA GPUs for lowest-latency screen grab
+- **NvFBC zero-copy capture** on NVIDIA GPUs — tear-free, sub-millisecond framebuffer grab running as a sandboxed helper process (`nvfbc_capture`)
 - Lossless mode for pixel-perfect accuracy
 - JPEG dirty-rectangle fallback for environments without FFmpeg
 - Adaptive quality slider: sharpness vs temporal stability
 
+### Cursor
+- **Local cursor rendering** — the server polls the X cursor shape via XFixes and ships only *shape* updates to the client, which then draws the cursor locally at native refresh rate. Cursor motion never round-trips through the video encoder, so pointer lag is effectively zero regardless of network quality. This is how PCoIP, RDP, VNC, and Parsec all handle cursors.
+- Tracks Flame's dynamic cursor swaps (arrow → crosshair → move → text-insert → wait) and applies them as native `QCursor` shapes with correct hotspots
+- Late-joining clients receive the current cursor shape immediately on connect — no stale placeholder
+
 ### Input
 - Full mouse and keyboard with Qt-to-Linux keycode mapping
 - macOS key remapping — Command and Control both map to Ctrl on Linux
+- macOS Ctrl+click is caught before the OS rewrites it to RightButton, so Flame hotkeys like Ctrl+Shift+click work as expected
 - Wacom pen/stylus: 8192 pressure levels, tilt X/Y, rotation, barrel button, eraser, hover
 - Virtual uinput tablet device (recognized by Flame, GIMP, Krita, Nuke, etc.)
 - XTest injection for virtual displays, uinput for physical
@@ -83,15 +89,18 @@ Commercial remote desktop tools cost thousands per seat, lock you into proprieta
 │   Client (macOS/Win)    │  ─ JSON control/input ──►   │   Server (Linux)        │
 │                         │  ◄─ Binary video/audio ──   │                         │
 │  PySide6 GUI            │  ◄─ JSON health/clipboard   │  Screen Capture         │
-│  ├─ RemoteViewer        │                             │  ├─ NvFBC (NVIDIA)      │
-│  ├─ QTabletEvent (pen)  │  ─ USB/IP (sideband) ──►   │  ├─ mss / XShm          │
-│  ├─ Tabbed sessions     │                             │  └─ Multi-monitor       │
+│  ├─ RemoteViewer        │  ◄─ JSON cursor shapes ──   │  ├─ NvFBC helper (NV)   │
+│  ├─ QTabletEvent (pen)  │                             │  ├─ mss / XShm          │
+│  ├─ Tabbed sessions     │  ─ USB/IP (sideband) ──►   │  └─ Multi-monitor       │
 │  ├─ Bookmark panel      │                             │                         │
-│  ├─ Quality controls    │                             │  Video Encoder (FFmpeg)  │
-│  ├─ USB device panel    │                             │  ├─ h264_nvenc          │
-│  ├─ Health overlay      │                             │  ├─ hevc_nvenc          │
-│  ├─ File drag-and-drop  │                             │  ├─ libx264 / libx265   │
-│  └─ Audio playback      │                             │  └─ YUV 4:4:4 profiles  │
+│  ├─ Quality controls    │                             │  Cursor Tracker         │
+│  ├─ USB device panel    │                             │  └─ XFixes shape poll   │
+│  ├─ Health overlay      │                             │                         │
+│  ├─ Local cursor render │                             │  Video Encoder (FFmpeg)  │
+│  ├─ File drag-and-drop  │                             │  ├─ h264_nvenc          │
+│  └─ Audio playback      │                             │  ├─ hevc_nvenc          │
+│                         │                             │  ├─ libx264 / libx265   │
+│                         │                             │  └─ YUV 4:4:4 profiles  │
 │                         │                             │                         │
 │  Decoders (PyAV)        │                             │  Input Injection         │
 │  ├─ H.264 / H.265      │                             │  ├─ XTest (Xvfb)        │
@@ -307,7 +316,9 @@ teragucci/
 │   └── key_diagnostic.py    # Key event debug dialog
 ├── server/
 │   ├── main.py              # Server entry point, SessionRuntime, WebSocket handler
-│   ├── screen_capture.py    # Screen capture (NvFBC, mss/XShm, multi-monitor)
+│   ├── screen_capture.py    # Screen capture dispatch (NvFBC, mss/XShm, multi-monitor)
+│   ├── nvfbc/               # Sandboxed NvFBC helper (tear-free NVIDIA framebuffer grab)
+│   ├── cursor_tracker.py    # XFixes cursor shape poller for local client rendering
 │   ├── video_encoder.py     # FFmpeg H.264/H.265/AV1 encoder with HW accel
 │   ├── input_injector.py    # uinput mouse/keyboard/pen injection
 │   ├── xtest_injector.py    # XTest injection for Xvfb virtual displays
