@@ -81,10 +81,26 @@ async def handle_client(websocket: WebSocketServerProtocol):
     addr = websocket.remote_address
     ws_path = getattr(websocket, "_admin_path", "/")
 
-    # Route admin WebSocket connections
-    if ws_path == "/admin-ws" and admin_server:
-        headers = getattr(websocket, "_admin_headers", {})
-        username = admin_server._authenticate_headers(headers)
+    # Route admin WebSocket connections (/admin-ws?token=xxx)
+    if ws_path.startswith("/admin-ws") and admin_server:
+        # Extract token from query string
+        token = None
+        if "?" in ws_path:
+            qs = ws_path.split("?", 1)[1]
+            for pair in qs.split("&"):
+                if pair.startswith("token="):
+                    token = pair[6:]
+                    break
+
+        username = None
+        if token:
+            username = admin_server.verify_ws_token(token)
+
+        # Fallback: try Basic Auth header (for non-browser clients like curl)
+        if not username:
+            headers = getattr(websocket, "_admin_headers", {})
+            username = admin_server._authenticate_headers(headers)
+
         if not username:
             await websocket.close(4001, "Authentication required")
             return

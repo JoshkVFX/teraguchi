@@ -315,9 +315,24 @@ let msgId = 0;
 
 // ── WebSocket for mutations ─────────────────────────
 
-function connectAdminWs() {
+async function connectAdminWs() {
+  // Fetch a short-lived token via HTTP (browser sends cached Basic Auth).
+  // Browsers can't set custom headers on WebSocket connections, so we pass
+  // the token as a query parameter instead.
+  let token;
+  try {
+    const res = await fetch("/api/ws-token");
+    if (!res.ok) throw new Error(`token fetch HTTP ${res.status}`);
+    const data = await res.json();
+    token = data.token;
+  } catch (e) {
+    document.getElementById("ws-status").classList.remove("connected");
+    setTimeout(connectAdminWs, 5000);
+    return;
+  }
+
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const url = `${proto}//${location.host}/admin-ws`;
+  const url = `${proto}//${location.host}/admin-ws?token=${encodeURIComponent(token)}`;
   adminWs = new WebSocket(url);
 
   adminWs.onopen = () => {

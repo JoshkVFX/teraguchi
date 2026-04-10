@@ -153,34 +153,55 @@ class AdminServer:
             return make_response(500, [("Content-Type", "text/plain")], b"Internal server error")
 
     async def _route(self, path: str, headers, username: Optional[str]):
-        """Route admin HTTP requests."""
-        method = "GET"  # websockets process_request doesn't expose method directly
-        # Check for method override via custom header or determine from path
-        # websockets only gives us GET requests via process_request
-        # For mutations, the UI will use fetch() which goes through WebSocket
-        # Actually, websockets process_request intercepts ALL HTTP requests
-        # but only exposes path and headers. We need to handle this differently.
+        """Route admin HTTP requests. Mutations go through the admin WebSocket."""
+        # Strip query string from path for routing
+        route_path = path.split("?", 1)[0]
 
-        # For the admin UI, we'll use a simpler approach:
-        # GET requests are served here, mutations go through a WebSocket admin channel
-        # OR we read the body from... actually websockets process_request doesn't give body.
-
-        # Best approach: serve the UI and read-only APIs here,
-        # handle mutations via a dedicated admin WebSocket handler.
-
-        if path == "/" or path == "/admin" or path == "/admin/":
+        if route_path == "/" or route_path == "/admin" or route_path == "/admin/":
             return self._serve_index()
-        elif path == "/api/machines":
+        elif route_path == "/api/machines":
             return self._json_response(self._pool.get_status())
-        elif path == "/api/assignments":
+        elif route_path == "/api/assignments":
             result = {u: sorted(names) for u, names in self._pool._user_machines.items()}
             return self._json_response(result)
-        elif path.startswith("/static/"):
-            return self._serve_static(path)
-        elif path == "/api/ping":
+        elif route_path == "/api/ws-token":
+            # Issue a short-lived token for the admin WebSocket connection
+            token = self._issue_ws_token(username)
+            return self._json_response({"token": token})
+        elif route_path.startswith("/static/"):
+            return self._serve_static(route_path)
+        elif route_path == "/api/ping":
             return self._json_response({"ok": True})
         else:
             return (404, [("Content-Type", "text/plain")], b"Not found")
+
+    def _issue_ws_token(self, username: str) -> str:
+        """Issue a short-lived token that the browser can use to open /admin-ws."""
+        import secrets
+        token = secrets.token_urlsafe(32)
+        expires = time.time() + 60  # 60 seconds
+        if not hasattr(self, "_ws_tokens"):
+            self._ws_tokens = {}
+        # Clean up expired tokens
+        now = time.time()
+        self._ws_tokens = {t: (u, e) for t, (u, e) in self._ws_tokens.items() if e > now}
+        self._ws_tokens[token] = (username, expires)
+        return token
+
+    def verify_ws_token(self, token: str) -> Optional[str]:
+        """Verify a WebSocket token and return the associated username."""
+        if not hasattr(self, "_ws_tokens"):
+            return None
+        entry = self._ws_tokens.get(token)
+        if not entry:
+            return None
+        username, expires = entry
+        if expires < time.time():
+            self._ws_tokens.pop(token, None)
+            return None
+        # Token is single-use
+        self._ws_tokens.pop(token, None)
+        return username
 
     def _json_response(self, data, status: int = 200):
         body = json.dumps(data).encode()
