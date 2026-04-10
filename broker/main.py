@@ -77,8 +77,21 @@ config_path: str = ""
 # ═══════════════════════════════════════════════════════════════
 
 async def handle_client(websocket: WebSocketServerProtocol):
-    """Handle a broker client connection."""
+    """Handle a broker client connection (or admin WebSocket)."""
     addr = websocket.remote_address
+    ws_path = getattr(websocket, "path", "/")
+
+    # Route admin WebSocket connections
+    if ws_path == "/admin-ws" and admin_server:
+        # Admin WS auth: check Basic Auth from the upgrade request headers
+        headers = getattr(websocket, "request_headers", None) or {}
+        username = admin_server._authenticate_headers(headers)
+        if not username:
+            await websocket.close(4001, "Authentication required")
+            return
+        await admin_server.handle_admin_ws(websocket, username)
+        return
+
     logger.info("Client connected: %s", addr)
 
     try:
@@ -230,7 +243,7 @@ def create_tls_context(cert_file: str, key_file: str) -> ssl.SSLContext:
 
 async def run_broker(host: str, port: int, admin_port: int,
                      tls_context: Optional[ssl.SSLContext]):
-    """Start the broker WebSocket server and admin UI."""
+    """Start the broker WebSocket server with embedded admin UI."""
     logger.info("Starting Teragucci broker on %s:%d", host, port)
 
     stop = asyncio.Future()
@@ -245,12 +258,11 @@ async def run_broker(host: str, port: int, admin_port: int,
 
     pool.start_health_probes()
 
-    # Start admin UI
+    # Admin process_request hook — serves admin UI on the same port
+    admin_process_request = None
     if admin_server:
-        try:
-            await admin_server.start(host=host, port=admin_port, tls_context=tls_context)
-        except Exception as e:
-            logger.error("Failed to start admin UI: %s", e, exc_info=True)
+        admin_process_request = admin_server.process_request
+        logger.info("Admin UI enabled on same port (https://HOST:%d/)", port)
 
     async with websockets.serve(
         handle_client, host, port,
@@ -258,12 +270,11 @@ async def run_broker(host: str, port: int, admin_port: int,
         max_size=1024 * 1024,
         ping_interval=20,
         ping_timeout=30,
+        process_request=admin_process_request,
     ):
         logger.info("Broker ready. Waiting for connections...")
         await stop
 
-    if admin_server:
-        await admin_server.stop()
     pool.stop()
     logger.info("Broker shutdown complete")
 

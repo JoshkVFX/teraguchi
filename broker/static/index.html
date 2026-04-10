@@ -253,6 +253,15 @@ h2 {
 
 /* Loading */
 .loading { color: var(--text2); font-style: italic; }
+
+/* WS status */
+.ws-status {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--red);
+}
+.ws-status.connected { background: var(--green); }
 </style>
 </head>
 <body>
@@ -260,6 +269,7 @@ h2 {
 <header>
   <h1><span>Teragucci</span> Broker Admin</h1>
   <div class="header-right">
+    <span><span class="ws-status" id="ws-status"></span> Admin WS</span>
     <span id="refresh-status">Loading...</span>
     <button class="btn small" onclick="refresh()">Refresh</button>
   </div>
@@ -299,18 +309,70 @@ h2 {
 let machines = [];
 let assignments = {};
 let openPicker = null;
+let adminWs = null;
+let pendingCallbacks = {};
+let msgId = 0;
 
-async function api(method, path, body) {
-  const opts = { method, headers: {} };
-  if (body !== undefined) {
-    opts.headers["Content-Type"] = "application/json";
-    opts.body = JSON.stringify(body);
-  }
-  const res = await fetch(path, opts);
-  if (res.status === 401) {
-    // Browser will show Basic Auth dialog automatically
-    throw new Error("Authentication required");
-  }
+// ── WebSocket for mutations ─────────────────────────
+
+function connectAdminWs() {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const url = `${proto}//${location.host}/admin-ws`;
+  adminWs = new WebSocket(url);
+
+  adminWs.onopen = () => {
+    document.getElementById("ws-status").classList.add("connected");
+  };
+
+  adminWs.onclose = () => {
+    document.getElementById("ws-status").classList.remove("connected");
+    // Reconnect after 3 seconds
+    setTimeout(connectAdminWs, 3000);
+  };
+
+  adminWs.onerror = () => {};
+
+  adminWs.onmessage = (ev) => {
+    try {
+      const data = JSON.parse(ev.data);
+      const id = data._id;
+      if (id && pendingCallbacks[id]) {
+        pendingCallbacks[id](data);
+        delete pendingCallbacks[id];
+      }
+    } catch (e) {}
+  };
+}
+
+function wsCommand(action, payload) {
+  return new Promise((resolve, reject) => {
+    if (!adminWs || adminWs.readyState !== WebSocket.OPEN) {
+      reject(new Error("Admin WebSocket not connected"));
+      return;
+    }
+    const id = ++msgId;
+    payload.action = action;
+    payload._id = id;
+    pendingCallbacks[id] = (resp) => {
+      if (resp.error) reject(new Error(resp.error));
+      else resolve(resp);
+    };
+    adminWs.send(JSON.stringify(payload));
+    // Timeout after 10s
+    setTimeout(() => {
+      if (pendingCallbacks[id]) {
+        delete pendingCallbacks[id];
+        reject(new Error("Timeout"));
+      }
+    }, 10000);
+  });
+}
+
+// ── HTTP for reads ──────────────────────────────────
+
+async function apiGet(path) {
+  const res = await fetch(path);
+  if (res.status === 401) throw new Error("Authentication required");
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
@@ -326,8 +388,8 @@ function toast(msg, isError) {
 async function refresh() {
   try {
     const [m, a] = await Promise.all([
-      api("GET", "/api/machines"),
-      api("GET", "/api/assignments"),
+      apiGet("/api/machines"),
+      apiGet("/api/assignments"),
     ]);
     machines = m;
     assignments = a;
@@ -356,7 +418,7 @@ function renderMachines() {
       : '<span style="color:var(--text2)">No active sessions</span>';
     const assignedHtml = (m.assigned_users || []).length
       ? m.assigned_users.map(u => esc(u)).join(", ")
-      : "—";
+      : "\u2014";
 
     return `
       <div class="machine-card">
@@ -367,7 +429,7 @@ function renderMachines() {
         </div>
         <div class="meta">${esc(m.host)}:${m.port}</div>
         <div class="meta">${esc(m.gpu || "No GPU info")}</div>
-        <div class="meta">Load: ${m.load_avg ? m.load_avg.toFixed(2) : "—"} · Priority: ${m.priority}</div>
+        <div class="meta">Load: ${m.load_avg ? m.load_avg.toFixed(2) : "\u2014"}</div>
         <div class="meta">Assigned to: ${assignedHtml}</div>
         <div class="sessions">${sessionsHtml}</div>
       </div>`;
@@ -380,7 +442,7 @@ function renderAssignments() {
 
   if (!users.length) {
     tbody.innerHTML = `<tr><td colspan="3" style="color:var(--text2)">
-      No assignments — all machines are in the floating pool.
+      No assignments \u2014 all machines are in the floating pool.
       Add a user below to assign specific machines.</td></tr>`;
     return;
   }
@@ -404,7 +466,6 @@ function renderAssignments() {
 }
 
 function editUser(user) {
-  // Close any open picker
   if (openPicker) { openPicker.remove(); openPicker = null; }
 
   const row = [...document.querySelectorAll(".assignments-table .username")]
@@ -426,7 +487,7 @@ function editUser(user) {
   picker.innerHTML = allMachines.map(name => {
     const checked = currentMachines.has(name) ? "checked" : "";
     const m = machines.find(x => x.name === name);
-    const health = m?.healthy ? "🟢" : "🔴";
+    const health = m?.healthy ? "\uD83D\uDFE2" : "\uD83D\uDD34";
     return `<label>
       <input type="checkbox" value="${esc(name)}" ${checked}>
       ${health} ${esc(name)}
@@ -443,7 +504,7 @@ function editUser(user) {
     const selected = [...picker.querySelectorAll("input:checked")].map(cb => cb.value);
     closePicker();
     try {
-      await api("POST", `/api/assignments/${encodeURIComponent(user)}`, { machines: selected });
+      await wsCommand("set_user", { user, machines: selected });
       toast(`Updated ${user}`);
       await refresh();
     } catch (e) { toast(e.message, true); }
@@ -463,7 +524,7 @@ document.addEventListener("click", (e) => {
 async function removeUser(user) {
   if (!confirm(`Remove all assignments for ${user}?\nThey will use the floating pool instead.`)) return;
   try {
-    await api("DELETE", `/api/assignments/${encodeURIComponent(user)}`);
+    await wsCommand("delete_user", { user });
     toast(`Removed ${user}`);
     await refresh();
   } catch (e) { toast(e.message, true); }
@@ -474,12 +535,10 @@ async function addUser() {
   const user = input.value.trim();
   if (!user) { toast("Enter a username", true); return; }
 
-  // Open picker for the new user
   assignments[user] = [];
   renderAssignments();
   input.value = "";
 
-  // Small delay so the row renders, then open the picker
   setTimeout(() => editUser(user), 50);
 }
 
@@ -489,7 +548,8 @@ function esc(s) {
   return d.innerHTML;
 }
 
-// Auto-refresh every 10 seconds
+// ── Init ────────────────────────────────────────────
+connectAdminWs();
 refresh();
 setInterval(refresh, 10000);
 </script>
