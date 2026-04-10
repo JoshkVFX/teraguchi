@@ -115,6 +115,10 @@ class AdminServer:
         path = request.path
         headers = request.headers
 
+        # Store path and headers on the connection for use in handle_client
+        connection._admin_path = path
+        connection._admin_headers = headers
+
         # Let WebSocket upgrade requests pass through
         if "websocket" in headers.get("Upgrade", "").lower():
             return None

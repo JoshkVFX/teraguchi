@@ -79,16 +79,11 @@ config_path: str = ""
 async def handle_client(websocket: WebSocketServerProtocol):
     """Handle a broker client connection (or admin WebSocket)."""
     addr = websocket.remote_address
-    ws_path = getattr(websocket, "path", "/")
+    ws_path = getattr(websocket, "_admin_path", "/")
 
     # Route admin WebSocket connections
     if ws_path == "/admin-ws" and admin_server:
-        # Admin WS auth: check Basic Auth from the upgrade request headers
-        # websockets 15: request_headers or request.headers
-        headers = getattr(websocket, "request_headers", None)
-        if headers is None:
-            req = getattr(websocket, "request", None)
-            headers = req.headers if req else {}
+        headers = getattr(websocket, "_admin_headers", {})
         username = admin_server._authenticate_headers(headers)
         if not username:
             await websocket.close(4001, "Authentication required")
