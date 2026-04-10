@@ -46,6 +46,7 @@ class _Bridge(QObject):
     clipboard_recv = Signal(str)
     file_response = Signal(dict)
     usb_response = Signal(dict)
+    broker_machine_needed = Signal(list)
 
 
 class Session(QObject):
@@ -68,6 +69,7 @@ class Session(QObject):
     monitor_list_received = Signal(list)
     file_transfer_finished = Signal(str, bool, str)  # transfer_id, success, message
     usb_devices_updated = Signal(dict)  # server response with device list + attached
+    broker_machine_needed = Signal(list)  # broker wants user to pick a machine
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -189,6 +191,10 @@ class Session(QObject):
     def select_monitor(self, mon_id: int):
         self.protocol.select_monitor(mon_id)
 
+    def select_broker_machine(self, machine_name: str):
+        """Forward the user's broker machine choice to the protocol."""
+        self.protocol.select_broker_machine(machine_name or "")
+
     def request_full_frame(self):
         self.protocol.request_full_frame()
 
@@ -219,6 +225,7 @@ class Session(QObject):
         p.on_clipboard = b.clipboard_recv.emit
         p.on_file_response = b.file_response.emit
         p.on_usb_response = b.usb_response.emit
+        p.on_broker_machine_needed = b.broker_machine_needed.emit
 
         b.server_hello.connect(self._on_server_hello)
         b.jpeg_frame.connect(self._on_jpeg_frame)
@@ -238,6 +245,7 @@ class Session(QObject):
         self.file_sender.finished.connect(self.file_transfer_finished.emit)
 
         b.usb_response.connect(self._on_usb_response)
+        b.broker_machine_needed.connect(self.broker_machine_needed.emit)
 
     def _wire_viewer(self):
         v = self.viewer

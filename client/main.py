@@ -148,6 +148,109 @@ class ConnectionDialog(QDialog):
 
 
 # ════════════════════════════════════════════════════
+# Broker Machine Picker
+# ════════════════════════════════════════════════════
+
+class BrokerMachinePicker(QDialog):
+    """Dialog shown after broker auth, letting the user pick a machine."""
+
+    def __init__(self, parent, machines: list):
+        super().__init__(parent)
+        self.setWindowTitle("Select a Flame")
+        self.setMinimumWidth(520)
+        self.setMinimumHeight(380)
+        self._machines = machines
+        self._selected = ""  # "" = auto-assign
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+
+        header = QLabel("Pick a Flame workstation")
+        header_font = QFont()
+        header_font.setPointSize(13)
+        header_font.setWeight(QFont.DemiBold)
+        header.setFont(header_font)
+        layout.addWidget(header)
+
+        hint = QLabel("The broker will connect you to the machine you choose. "
+                      "Use <b>Auto-assign</b> to let the broker pick for you.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
+        layout.addWidget(hint)
+
+        self.list_widget = QListWidget()
+        self.list_widget.setAlternatingRowColors(True)
+        self.list_widget.itemDoubleClicked.connect(self._accept_selection)
+        layout.addWidget(self.list_widget, 1)
+
+        # Auto-assign row (empty name)
+        auto_item = QListWidgetItem("Auto-assign  —  let the broker pick the best machine")
+        auto_item.setData(Qt.UserRole, "")
+        self.list_widget.addItem(auto_item)
+
+        def _fmt_machine(m: dict) -> str:
+            name = m.get("name", "?")
+            gpu = m.get("gpu", "")
+            healthy = m.get("healthy", False)
+            sessions = m.get("active_sessions", []) or []
+            tags = m.get("tags", []) or []
+            parts = [name]
+            if gpu:
+                parts.append(f"— {gpu}")
+            status_bits = []
+            if not healthy:
+                status_bits.append("offline")
+            if sessions:
+                status_bits.append(f"{len(sessions)} active session{'s' if len(sessions) != 1 else ''}")
+            if tags:
+                status_bits.append(", ".join(tags))
+            if status_bits:
+                parts.append(f"  [{' · '.join(status_bits)}]")
+            return "  ".join(parts)
+
+        # Sort: healthy first, then by priority, then by name
+        sorted_machines = sorted(
+            machines,
+            key=lambda m: (not m.get("healthy", False),
+                           m.get("priority", 10),
+                           m.get("name", "")))
+
+        for m in sorted_machines:
+            item = QListWidgetItem(_fmt_machine(m))
+            item.setData(Qt.UserRole, m.get("name", ""))
+            if not m.get("healthy", False):
+                item.setForeground(QColor(theme.TEXT_MUTED))
+            self.list_widget.addItem(item)
+
+        self.list_widget.setCurrentRow(0)
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        connect_btn = QPushButton("Connect")
+        connect_btn.setDefault(True)
+        connect_btn.clicked.connect(self._accept_selection)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(connect_btn)
+        layout.addLayout(btn_row)
+
+    def _accept_selection(self, *args):
+        item = self.list_widget.currentItem()
+        if item is None:
+            self._selected = ""
+        else:
+            self._selected = item.data(Qt.UserRole) or ""
+        self.accept()
+
+    @property
+    def selected_machine(self) -> str:
+        return self._selected
+
+
+# ════════════════════════════════════════════════════
 # Bookmark Panel
 # ════════════════════════════════════════════════════
 
@@ -684,6 +787,8 @@ class MainWindow(QMainWindow):
         session.monitor_list_received.connect(self._on_monitor_list)
         session.file_transfer_finished.connect(self._on_file_transfer_done)
         session.usb_devices_updated.connect(self._on_usb_devices_updated)
+        session.broker_machine_needed.connect(
+            lambda machines, s=session: self._on_broker_machine_needed(s, machines))
 
         if mode == "broker":
             logger.info("Connecting via broker to %s:%d", host, port)
@@ -804,6 +909,20 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"File sent: {message}", 5000)
         else:
             self.statusBar().showMessage(f"File transfer failed: {message}", 5000)
+
+    def _on_broker_machine_needed(self, session, machines: list):
+        """Broker has authenticated and is waiting for the user to pick a machine."""
+        logger.info("Broker needs machine selection — %d available", len(machines))
+        dialog = BrokerMachinePicker(self, machines)
+        if dialog.exec() == QDialog.Accepted:
+            choice = dialog.selected_machine
+            logger.info("User selected broker machine: %r", choice or "(auto)")
+            session.select_broker_machine(choice)
+        else:
+            # User cancelled — tear down the session. The async handshake's
+            # future wait will be cancelled when the loop stops.
+            logger.info("User cancelled broker machine selection")
+            session.disconnect()
 
     def _usb_attach(self, bus_id: str):
         s = self._active_session

@@ -72,6 +72,8 @@ class ClientProtocol:
         self._broker_token = ""
         self._redirect_host = ""
         self._redirect_port = 0
+        self._preferred_machine = ""  # Remembered selection for reconnects
+        self._machine_selection_future: Optional[asyncio.Future] = None
 
         # UDP transport
         self._udp_client: Optional[UDPMediaClient] = None
@@ -99,6 +101,7 @@ class ClientProtocol:
         self.on_usb_response: Optional[Callable] = None  # usb_device_list/attached/detached/error
         self.on_broker_hello: Optional[Callable] = None  # broker_hello with machine list
         self.on_broker_assign: Optional[Callable] = None  # broker_assign with redirect info
+        self.on_broker_machine_needed: Optional[Callable] = None  # prompts user to pick a machine
 
     @property
     def connected(self) -> bool:
@@ -140,6 +143,7 @@ class ClientProtocol:
         self._broker_token = ""
         self._redirect_host = ""
         self._redirect_port = 0
+        self._preferred_machine = ""
         self._username = username
         self._password = password
         self._use_tls = use_tls
@@ -188,6 +192,29 @@ class ClientProtocol:
 
     def select_monitor(self, monitor_id: int):
         self.send_input({"type": MsgType.SELECT_MONITOR, "monitor_id": monitor_id})
+
+    def select_broker_machine(self, machine_name: str):
+        """Resolve a pending broker machine selection from the GUI thread.
+
+        Pass empty string to request auto-assignment. Safe to call from any thread.
+        """
+        loop = self._loop
+        fut = self._machine_selection_future
+        if loop is None or fut is None:
+            # Either no selection pending, or handshake already moved on.
+            # Still cache the preference for any next handshake pass.
+            self._preferred_machine = machine_name or ""
+            return
+
+        def _resolve():
+            if not fut.done():
+                fut.set_result(machine_name or "")
+
+        try:
+            loop.call_soon_threadsafe(_resolve)
+        except RuntimeError:
+            # Loop stopped — ignore
+            pass
 
     def send_clipboard(self, text: str):
         self.send_input({"type": MsgType.CLIPBOARD_SEND,
@@ -360,14 +387,37 @@ class ClientProtocol:
             raw = await asyncio.wait_for(ws.recv(), timeout=30)
             msg = parse_message(raw)
 
+            machines = []
             if msg.get("type") == MsgType.BROKER_HELLO:
+                machines = msg.get("machines", []) or []
                 if self.on_broker_hello:
                     self.on_broker_hello(msg)
 
-            # Request auto-assignment (empty machine_name = auto)
+            # Determine which machine to request:
+            # 1. If we already have a cached preference (reconnect), reuse it.
+            # 2. Else if a machine-needed callback is wired, prompt the user.
+            # 3. Else fall back to auto-assign (empty machine_name).
+            selected_name = self._preferred_machine
+            if not selected_name and self.on_broker_machine_needed:
+                self._machine_selection_future = asyncio.get_event_loop().create_future()
+                try:
+                    self.on_broker_machine_needed(machines)
+                except Exception as e:
+                    logger.error("on_broker_machine_needed raised: %s", e)
+                try:
+                    selected_name = await asyncio.wait_for(
+                        self._machine_selection_future, timeout=120)
+                except asyncio.TimeoutError:
+                    logger.warning("Machine selection timed out — falling back to auto-assign")
+                    selected_name = ""
+                finally:
+                    self._machine_selection_future = None
+                # Cache the choice so reconnects don't re-prompt
+                self._preferred_machine = selected_name or ""
+
             await ws.send(json.dumps({
                 "type": MsgType.BROKER_MACHINE_REQUEST,
-                "machine_name": "",
+                "machine_name": selected_name or "",
             }))
 
             # Get assignment
