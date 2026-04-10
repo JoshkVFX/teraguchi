@@ -482,6 +482,7 @@ class ConnectionProfile:
     last_connected: str = ""
     created: str = ""
     color_label: str = ""  # For visual organization
+    mode: str = "direct"  # "direct" or "broker"
 
     def to_dict(self) -> dict:
         return asdict(self)

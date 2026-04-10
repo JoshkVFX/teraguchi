@@ -863,15 +863,15 @@ class MainWindow(QMainWindow):
         dialog = ConnectionDialog(self)
         if dialog.exec() == QDialog.Accepted:
             bid = ""
+            mode = dialog.connection_mode
             if dialog.save_bookmark:
                 name = dialog.bookmark_name or f"{dialog.host}:{dialog.port}"
                 bid = self._bookmarks.add(
                     name=name, host=dialog.host, port=dialog.port,
                     username=dialog.username, password=dialog.password,
-                    use_tls=dialog.use_tls)
+                    use_tls=dialog.use_tls, mode=mode)
                 self._bookmark_panel._refresh()
 
-            mode = dialog.connection_mode
             self._new_session_and_connect(
                 dialog.host, dialog.port, dialog.username, dialog.password,
                 use_tls=dialog.use_tls, auto_reconnect=dialog.auto_reconnect,
@@ -882,11 +882,27 @@ class MainWindow(QMainWindow):
         if not profile:
             return
         password = self._bookmarks.get_password(bookmark_id)
+        mode = getattr(profile, "mode", "direct") or "direct"
+
+        # If no saved password (or user didn't opt to save), re-open the
+        # connection dialog pre-filled so they can type credentials.
+        if not password:
+            dialog = ConnectionDialog(
+                self, default_host=profile.host,
+                default_port=profile.port,
+                default_username=profile.username,
+                default_password="")
+            dialog.mode_combo.setCurrentIndex(1 if mode == "broker" else 0)
+            if dialog.exec() != QDialog.Accepted:
+                return
+            password = dialog.password
+            mode = dialog.connection_mode
+
         self._quality_panel.load_from_profile(profile)
         self._new_session_and_connect(
             profile.host, profile.port, profile.username, password,
             use_tls=profile.use_tls, auto_reconnect=profile.auto_connect,
-            bookmark_id=bookmark_id)
+            bookmark_id=bookmark_id, mode=mode)
 
     def _disconnect_active(self):
         s = self._active_session

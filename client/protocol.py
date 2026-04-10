@@ -542,13 +542,31 @@ class ClientProtocol:
             # Auto-detect broker: connected in direct mode but server is a broker.
             # Handle the full broker redirect inline.
             logger.info("Detected broker (auto-switching from direct mode)")
+            machines = hello.get("machines", []) or []
             if self.on_broker_hello:
                 self.on_broker_hello(hello)
 
-            # Request auto-assignment
+            # Prompt the user to pick a machine (same flow as broker mode)
+            selected_name = self._preferred_machine
+            if not selected_name and self.on_broker_machine_needed:
+                self._machine_selection_future = asyncio.get_event_loop().create_future()
+                try:
+                    self.on_broker_machine_needed(machines)
+                except Exception as e:
+                    logger.error("on_broker_machine_needed raised: %s", e)
+                try:
+                    selected_name = await asyncio.wait_for(
+                        self._machine_selection_future, timeout=120)
+                except asyncio.TimeoutError:
+                    logger.warning("Machine selection timed out — falling back to auto-assign")
+                    selected_name = ""
+                finally:
+                    self._machine_selection_future = None
+                self._preferred_machine = selected_name or ""
+
             await ws.send(json.dumps({
                 "type": MsgType.BROKER_MACHINE_REQUEST,
-                "machine_name": "",
+                "machine_name": selected_name or "",
             }))
 
             raw = await asyncio.wait_for(ws.recv(), timeout=30)
