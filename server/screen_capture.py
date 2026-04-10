@@ -27,6 +27,31 @@ from common.messages import MonitorInfo
 
 logger = logging.getLogger(__name__)
 
+# NvFBC backend — preferred capture path on NVIDIA hosts. Reads the
+# framebuffer directly from the compositor's output via NVIDIA's
+# libnvidia-fbc.so.1 (wrapped by a small C helper we spawn), which is
+# tear-free and much lower latency than mss/XShmGetImage. The mss
+# path stays as the fallback for non-NVIDIA machines and for the
+# legacy JPEG / dirty-region paths.
+try:
+    from .nvfbc import NvFBCBackend, helper_available as _nvfbc_helper_available
+    _HAS_NVFBC_BACKEND = True
+except Exception as _e:
+    _HAS_NVFBC_BACKEND = False
+    _nvfbc_helper_available = lambda: False  # noqa: E731
+    NvFBCBackend = None  # type: ignore
+
+# XDamage-based capture gating — see ScreenCapture._init_damage_tracker for
+# the full story. Imported lazily/optionally so a missing python-xlib or
+# absent DAMAGE extension degrades to unsynchronized mss capture instead of
+# crashing.
+try:
+    from Xlib import display as _xdisplay
+    from Xlib.ext import damage as _xdamage
+    _HAS_XLIB_DAMAGE = True
+except Exception:
+    _HAS_XLIB_DAMAGE = False
+
 DEFAULT_JPEG_QUALITY = 60
 CHANGE_THRESHOLD = 10
 BLOCK_SIZE = 32
@@ -130,10 +155,165 @@ class ScreenCapture:
         self._refresh_monitor_info()
         self._select_monitor(monitor_index)
 
-        if self._nvfbc_available:
-            logger.info("NvFBC capture available (lowest latency)")
-        logger.info("Screen capture initialized: %dx%d (monitor %d)",
-                     self.width, self.height, monitor_index)
+        # NvFBC backend — preferred raw BGRA capture path on NVIDIA.
+        # We try to spin it up opportunistically and fall back to mss
+        # if anything fails (no helper binary, GeForce without patched
+        # driver, Xvfb without an NVIDIA output, etc.).
+        self._nvfbc: Optional[NvFBCBackend] = None
+        if (_HAS_NVFBC_BACKEND
+                and self._nvfbc_available
+                and _nvfbc_helper_available()):
+            try:
+                self._nvfbc = NvFBCBackend(
+                    display=os.environ.get("DISPLAY"),
+                    fps=60,
+                    # Cursor off: the client already renders its own
+                    # cursor over the frame, so compositing the X
+                    # hardware cursor sprite into NvFBC frames would
+                    # produce a double cursor. mss never captured the
+                    # hw cursor so we never noticed before NvFBC.
+                    with_cursor=False,
+                    push_model=True,
+                    # direct_capture off: known to be unstable under
+                    # heavy compositor activity (Flame playback) and
+                    # contributed to mid-stream frame layout drift.
+                    direct_capture=False,
+                )
+                # NvFBC captures the whole screen — override width/height
+                # so downstream encoders see the real framebuffer size
+                # instead of mss's first-monitor view.
+                self.width = self._nvfbc.width
+                self.height = self._nvfbc.height
+            except Exception as e:
+                logger.warning("NvFBC backend unavailable (%s) — "
+                               "falling back to mss/XShmGetImage", e)
+                self._nvfbc = None
+
+        # Tearing mitigation for the mss fallback path: gate captures
+        # on XDamage events so we only read the framebuffer after the
+        # compositor has published a new frame. Not needed when NvFBC
+        # is active because NvFBC already reads tear-free frames.
+        self._xdisplay = None
+        self._damage_obj = None
+        self._damage_has_events = False
+        if self._nvfbc is None:
+            self._init_damage_tracker()
+
+        if self._nvfbc is not None:
+            logger.info("Screen capture initialized: %dx%d via NvFBC",
+                        self.width, self.height)
+        else:
+            logger.info("Screen capture initialized: %dx%d via mss "
+                        "(monitor %d)",
+                        self.width, self.height, monitor_index)
+
+    def _init_damage_tracker(self):
+        """Open a python-xlib connection and create a root-window damage object.
+
+        The damage object tells Xorg to send us an XDamageNotify event
+        whenever the compositor (Mutter) dirties the root window. We use
+        this as a sync point: drain pending events + XSync before each
+        capture, so mss.grab() reads a stable framebuffer snapshot
+        instead of racing with Mutter's mid-composite writes (which
+        produces horizontal tear bands during Flame timeline playback).
+
+        Silently degrades to raw mss capture if python-xlib is missing
+        or the X server doesn't advertise DAMAGE. Not all X connections
+        work from every thread context; failures here are logged at
+        WARNING but not fatal.
+        """
+        if not _HAS_XLIB_DAMAGE:
+            logger.info("python-xlib / DAMAGE ext unavailable; "
+                        "capture will not be XDamage-gated")
+            return
+
+        display_name = os.environ.get("DISPLAY", ":0")
+        try:
+            self._xdisplay = _xdisplay.Display(display_name)
+            if not self._xdisplay.has_extension("DAMAGE"):
+                logger.warning("Xorg %s lacks DAMAGE extension; tearing "
+                               "mitigation disabled", display_name)
+                self._xdisplay.close()
+                self._xdisplay = None
+                return
+
+            # DAMAGE requires an explicit version handshake before use.
+            self._xdisplay.damage_query_version()
+
+            root = self._xdisplay.screen().root
+            # DamageReportBoundingBox = one event per damage region
+            # aggregated into a bounding box. Lowest event rate, which
+            # is what we want — we don't care where the damage is, only
+            # that *some* damage happened since last capture.
+            self._damage_obj = root.damage_create(
+                _xdamage.DamageReportBoundingBox)
+            self._xdisplay.sync()
+            logger.info("XDamage capture gate enabled on %s (damage obj id=%d)",
+                        display_name, self._damage_obj.id)
+        except Exception as e:
+            logger.warning("XDamage init failed on %s: %s — "
+                           "falling back to unsynced capture",
+                           display_name, e)
+            if self._xdisplay is not None:
+                try:
+                    self._xdisplay.close()
+                except Exception:
+                    pass
+            self._xdisplay = None
+            self._damage_obj = None
+
+    def _sync_before_capture(self):
+        """Drain pending XDamage events and flush the X pipeline.
+
+        Called on the hot path right before every mss.grab(). Does two
+        things:
+
+        1. Pulls all pending XDamage events off the wire and issues
+           ``DamageSubtract`` to mark them consumed. This prevents the
+           event queue from growing unbounded and keeps the signal
+           "there is new damage to report" usable.
+
+        2. Calls ``Display.sync()`` (= XSync(False)) which is a
+           round-trip to the server. That forces the server to finish
+           processing any in-flight requests — crucially including
+           anything the compositor queued via the same X connection.
+
+        Note: XSync does NOT synchronize direct-rendered (DRI) OpenGL
+        commands, and Mutter on NVIDIA uses direct rendering. What it
+        DOES do is guarantee we are not stepping on the X protocol
+        queue while the server is draining compositor-side requests
+        (damage events, region updates, present pixmap completions,
+        etc.). In practice this eliminates most of the mid-composite
+        grabs we were seeing — the remaining tear budget is the time
+        between the last GL command flush and our XShmGetImage read,
+        which is small enough that Mutter's vsync-aligned redraws
+        rarely land inside it.
+
+        Cheap: a single round-trip plus any pending damage subtracts.
+        Sub-millisecond on a local X connection.
+        """
+        if not self._xdisplay or not self._damage_obj:
+            return
+        try:
+            # Drain all pending events and mark damage consumed.
+            while self._xdisplay.pending_events() > 0:
+                evt = self._xdisplay.next_event()
+                if isinstance(evt, _xdamage.DamageNotify):
+                    self._damage_has_events = True
+            # DamageSubtract with None,None resets the accumulated
+            # damage region on the server side. This also flushes.
+            self._damage_obj.subtract(None, None)
+            self._xdisplay.sync()
+        except Exception as e:
+            # Don't let a transient X error kill the capture loop —
+            # just disable the gate for the rest of this session.
+            logger.warning("XDamage sync failed, disabling gate: %s", e)
+            try:
+                self._xdisplay.close()
+            except Exception:
+                pass
+            self._xdisplay = None
+            self._damage_obj = None
 
     def _refresh_monitor_info(self):
         """Refresh monitor information from xrandr."""
@@ -251,11 +431,38 @@ class ScreenCapture:
         This is the format expected by FFmpeg rawvideo input.
         Returns width * height * 4 bytes.
         """
+        if self._nvfbc is not None:
+            try:
+                return self._nvfbc.capture_raw_bgra()
+            except Exception as e:
+                logger.warning("NvFBC capture failed mid-stream (%s) — "
+                               "falling back to mss for the rest of "
+                               "this session", e)
+                try:
+                    self._nvfbc.close()
+                except Exception:
+                    pass
+                self._nvfbc = None
+                self._init_damage_tracker()
+        self._sync_before_capture()
         sct_img = self._sct.grab(self._monitor)
         return bytes(sct_img.raw)
 
     def capture_raw_frame(self) -> np.ndarray:
         """Capture and return as numpy BGRA array."""
+        if self._nvfbc is not None:
+            try:
+                return self._nvfbc.capture_raw_frame()
+            except Exception as e:
+                logger.warning("NvFBC capture failed mid-stream (%s) — "
+                               "falling back to mss", e)
+                try:
+                    self._nvfbc.close()
+                except Exception:
+                    pass
+                self._nvfbc = None
+                self._init_damage_tracker()
+        self._sync_before_capture()
         sct_img = self._sct.grab(self._monitor)
         return np.array(sct_img)
 
@@ -359,4 +566,22 @@ class ScreenCapture:
         self._last_frame = None
 
     def close(self):
+        if self._nvfbc is not None:
+            try:
+                self._nvfbc.close()
+            except Exception:
+                pass
+            self._nvfbc = None
         self._sct.close()
+        if self._damage_obj is not None:
+            try:
+                self._damage_obj.destroy()
+            except Exception:
+                pass
+            self._damage_obj = None
+        if self._xdisplay is not None:
+            try:
+                self._xdisplay.close()
+            except Exception:
+                pass
+            self._xdisplay = None

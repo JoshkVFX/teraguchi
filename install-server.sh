@@ -251,6 +251,36 @@ cp    "$SCRIPT_DIR/requirements-server.txt" "$INSTALL_DIR/"
 cp    "$SCRIPT_DIR/pyproject.toml"          "$INSTALL_DIR/"
 ok "Copied source files"
 
+# ── NvFBC helper (NVIDIA only) ───────────────────────────────────
+#
+# Build and install the small C helper that screen_capture.py uses
+# for tear-free framebuffer capture on NVIDIA hosts. Silently skipped
+# on non-NVIDIA machines — teragucci falls back to mss/XShmGetImage
+# automatically in that case.
+
+NVFBC_LIB=""
+for p in /usr/lib64/libnvidia-fbc.so.1 \
+         /usr/lib/libnvidia-fbc.so.1 \
+         /usr/lib/x86_64-linux-gnu/libnvidia-fbc.so.1; do
+    if [ -e "$p" ]; then NVFBC_LIB="$p"; break; fi
+done
+
+if [ -n "$NVFBC_LIB" ] && command -v cc &>/dev/null; then
+    info "Building NvFBC capture helper (${NVFBC_LIB})..."
+    if (cd "$INSTALL_DIR/server/nvfbc" && make clean >/dev/null 2>&1 && make >/dev/null 2>&1); then
+        ok "NvFBC helper built: $INSTALL_DIR/server/nvfbc/nvfbc_capture"
+    else
+        warn "NvFBC helper build failed — capture will fall back to mss."
+        warn "Try building manually: cd $INSTALL_DIR/server/nvfbc && make"
+    fi
+elif [ -n "$NVFBC_LIB" ]; then
+    warn "libnvidia-fbc.so.1 present but no C compiler found — install gcc"
+    warn "and rebuild $INSTALL_DIR/server/nvfbc to enable tear-free capture."
+else
+    info "No libnvidia-fbc.so.1 detected (non-NVIDIA or headless) — skipping"
+    info "NvFBC helper build. Capture will use mss/XShmGetImage."
+fi
+
 # Create venv and install Python deps
 python3 -m venv "$VENV_DIR"
 "$VENV_DIR/bin/pip" install --upgrade pip -q
