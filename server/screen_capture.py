@@ -167,16 +167,19 @@ class ScreenCapture:
                 self._nvfbc = NvFBCBackend(
                     display=os.environ.get("DISPLAY"),
                     fps=60,
-                    # Cursor off: the client already renders its own
-                    # cursor over the frame, so compositing the X
-                    # hardware cursor sprite into NvFBC frames would
-                    # produce a double cursor. mss never captured the
-                    # hw cursor so we never noticed before NvFBC.
-                    with_cursor=False,
+                    # Cursor ON: NvFBC composites the real X cursor
+                    # sprite into the frame, so Flame's application
+                    # cursor (crosshair, move, text-insert, etc.)
+                    # shows up in the stream. The client hides its
+                    # local OS cursor over the viewer widget, so
+                    # there's no double-cursor.
+                    with_cursor=True,
                     push_model=True,
                     # direct_capture off: known to be unstable under
                     # heavy compositor activity (Flame playback) and
                     # contributed to mid-stream frame layout drift.
+                    # Also, direct_capture is mutually exclusive with
+                    # cursor compositing in NvFBC.
                     direct_capture=False,
                 )
                 # NvFBC captures the whole screen — override width/height

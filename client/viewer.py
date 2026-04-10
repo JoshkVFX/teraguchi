@@ -76,6 +76,17 @@ class RemoteViewer(QWidget):
         # Accept file drag-and-drop
         self.setAcceptDrops(True)
 
+        # Hide the local (Mac/Windows) cursor while it's over the remote
+        # canvas. The server composites the real remote cursor into the
+        # video stream via NvFBC's bWithCursor path, so Flame's actual
+        # cursor — which changes between crosshair, move, text, etc. —
+        # comes through as part of the pixels. If we ALSO drew the local
+        # OS cursor on top, you'd see two cursors and the local one
+        # wouldn't match what Flame is doing. Qt automatically restores
+        # the normal cursor when the pointer leaves the widget (onto
+        # menus, titlebars, other windows), which is what we want.
+        self.setCursor(Qt.BlankCursor)
+
         logger.info("RemoteViewer initialized")
 
     def set_remote_size(self, width: int, height: int):
@@ -268,6 +279,15 @@ class RemoteViewer(QWidget):
         # Only handle real pen/eraser devices — macOS trackpads generate
         # tablet events that would block normal mouse input
         pointer_type = event.pointerType()
+        # Diagnostic: log the first few tablet events to confirm delivery
+        self._tablet_event_count = getattr(self, "_tablet_event_count", 0) + 1
+        if self._tablet_event_count <= 5 or self._tablet_event_count % 60 == 0:
+            logger.info("tabletEvent #%d: type=%s pointerType=%s pressure=%.3f "
+                        "buttons=0x%x accepted=%s",
+                        self._tablet_event_count, event.type(), pointer_type,
+                        event.pressure(), int(event.buttons()),
+                        pointer_type in (QTabletEvent.PointerType.Pen,
+                                         QTabletEvent.PointerType.Eraser))
         if pointer_type not in (QTabletEvent.PointerType.Pen,
                                 QTabletEvent.PointerType.Eraser):
             event.ignore()
@@ -412,6 +432,9 @@ class RemoteViewer(QWidget):
             result |= 1
         if mods & Qt.AltModifier:
             result |= 4
+        if mods & Qt.KeypadModifier:
+            # bit 0x10 = numpad-origin key; server disambiguates KP_*
+            result |= 0x10
         import sys
         if sys.platform == "darwin":
             # macOS: both Command and Control → Ctrl on Linux
