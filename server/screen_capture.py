@@ -167,19 +167,17 @@ class ScreenCapture:
                 self._nvfbc = NvFBCBackend(
                     display=os.environ.get("DISPLAY"),
                     fps=60,
-                    # Cursor ON: NvFBC composites the real X cursor
-                    # sprite into the frame, so Flame's application
-                    # cursor (crosshair, move, text-insert, etc.)
-                    # shows up in the stream. The client hides its
-                    # local OS cursor over the viewer widget, so
-                    # there's no double-cursor.
-                    with_cursor=True,
+                    # Cursor OFF: we ship the real cursor shape to the
+                    # client out-of-band via XFixes (CursorTracker) and
+                    # the client draws it locally as a QCursor. That
+                    # gives zero-latency cursor motion instead of the
+                    # full encode→network→decode round-trip we'd get
+                    # if we baked the cursor into the video stream.
+                    with_cursor=False,
                     push_model=True,
                     # direct_capture off: known to be unstable under
                     # heavy compositor activity (Flame playback) and
                     # contributed to mid-stream frame layout drift.
-                    # Also, direct_capture is mutually exclusive with
-                    # cursor compositing in NvFBC.
                     direct_capture=False,
                 )
                 # NvFBC captures the whole screen — override width/height

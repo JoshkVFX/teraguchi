@@ -102,6 +102,7 @@ class ClientProtocol:
         self.on_broker_hello: Optional[Callable] = None  # broker_hello with machine list
         self.on_broker_assign: Optional[Callable] = None  # broker_assign with redirect info
         self.on_broker_machine_needed: Optional[Callable] = None  # prompts user to pick a machine
+        self.on_cursor_update: Optional[Callable] = None  # cursor shape change
 
     @property
     def connected(self) -> bool:
@@ -708,6 +709,9 @@ class ClientProtocol:
             elif msg_type == MsgType.BROKER_ASSIGN:
                 if self.on_broker_assign:
                     self.on_broker_assign(msg)
+            elif msg_type == MsgType.CURSOR_UPDATE:
+                if self.on_cursor_update:
+                    self.on_cursor_update(msg)
         except json.JSONDecodeError:
             pass
 
@@ -721,6 +725,19 @@ class ClientProtocol:
             if len(data) >= VIDEO_HEADER_SIZE and self.on_video_frame:
                 ft, codec, chroma, flags, ts, mon, payload = \
                     decode_video_header(data)
+                # Diagnostic: log first frame received + first keyframe
+                if not hasattr(self, "_rx_video_count"):
+                    self._rx_video_count = 0
+                    self._rx_keyframe_count = 0
+                self._rx_video_count += 1
+                if flags & 0x01:  # KEYFRAME flag
+                    self._rx_keyframe_count += 1
+                if self._rx_video_count in (1, 30, 300) or \
+                   (self._rx_keyframe_count == 1 and flags & 0x01):
+                    logger.info("RX video frame #%d (keyframes=%d, codec=%d, "
+                                "chroma=%d, flags=%d, payload=%d bytes)",
+                                self._rx_video_count, self._rx_keyframe_count,
+                                int(codec), int(chroma), flags, len(payload))
                 self.on_video_frame(ft, codec, chroma, flags, ts, mon, payload)
         elif frame_type in (FrameType.VIDEO_FULL, FrameType.VIDEO_PARTIAL):
             if len(data) >= JPEG_HEADER_SIZE and self.on_jpeg_frame:

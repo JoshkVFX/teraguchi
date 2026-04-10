@@ -11,7 +11,7 @@ from typing import Optional, Callable
 from PySide6.QtCore import Qt, QPointF, QRectF, Signal, QSize
 from PySide6.QtGui import (
     QImage, QPixmap, QPainter, QMouseEvent, QKeyEvent,
-    QTabletEvent, QWheelEvent, QResizeEvent,
+    QTabletEvent, QWheelEvent, QResizeEvent, QCursor,
 )
 from PySide6.QtWidgets import QWidget
 
@@ -84,15 +84,13 @@ class RemoteViewer(QWidget):
         # Accept file drag-and-drop
         self.setAcceptDrops(True)
 
-        # Hide the local (Mac/Windows) cursor while it's over the remote
-        # canvas. The server composites the real remote cursor into the
-        # video stream via NvFBC's bWithCursor path, so Flame's actual
-        # cursor — which changes between crosshair, move, text, etc. —
-        # comes through as part of the pixels. If we ALSO drew the local
-        # OS cursor on top, you'd see two cursors and the local one
-        # wouldn't match what Flame is doing. Qt automatically restores
-        # the normal cursor when the pointer leaves the widget (onto
-        # menus, titlebars, other windows), which is what we want.
+        # Cursor state. We render Flame's real cursor LOCALLY using
+        # shape updates shipped out-of-band from the server (via
+        # XFixesGetCursorImage on the Linux side). That gives us
+        # zero-latency cursor motion — PCoIP/RDP/VNC/Parsec all do
+        # this. Start blank so we don't show the macOS arrow in the
+        # millisecond between connect and the first cursor_update.
+        self._remote_cursor_serial: int = -1
         self.setCursor(Qt.BlankCursor)
 
         logger.info("RemoteViewer initialized")
@@ -124,6 +122,38 @@ class RemoteViewer(QWidget):
         self._pixmap = None
         self._update_scaling()
         self.update()
+
+    def set_remote_cursor(self, serial: int, width: int, height: int,
+                          hot_x: int, hot_y: int, rgba_bytes: bytes):
+        """Replace the viewer's cursor with a new shape from the server.
+
+        ``rgba_bytes`` is RGBA8888 with premultiplied alpha (that's
+        what XFixes produces). Qt's ``Format_RGBA8888_Premultiplied``
+        handles the compositing correctly.
+        """
+        if serial == self._remote_cursor_serial:
+            return
+        if width <= 0 or height <= 0:
+            return
+        expected = width * height * 4
+        if len(rgba_bytes) != expected:
+            logger.warning("Cursor payload size mismatch: got %d, expected %d",
+                           len(rgba_bytes), expected)
+            return
+
+        img = QImage(rgba_bytes, width, height, width * 4,
+                     QImage.Format_RGBA8888_Premultiplied)
+        if img.isNull():
+            return
+        # Qt doesn't copy the backing bytes unless we ask it to — the
+        # rgba_bytes lifetime ends when this function returns, so we
+        # must detach a copy before handing it to QCursor.
+        pix = QPixmap.fromImage(img.copy())
+        if pix.isNull():
+            return
+        cursor = QCursor(pix, hot_x, hot_y)
+        self.setCursor(cursor)
+        self._remote_cursor_serial = serial
 
     def update_full_frame(self, jpeg_data: bytes):
         """Update the entire screen from JPEG data."""

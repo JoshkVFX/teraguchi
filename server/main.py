@@ -51,6 +51,7 @@ from common.messages import (
 )
 from common.keymap import qt_key_to_linux_scancode
 from server.screen_capture import ScreenCapture
+from server.cursor_tracker import CursorTracker
 from server.input_injector import InputInjector
 from server.xtest_injector import XTestInputInjector
 from server.video_encoder import VideoEncoder, JpegFallbackEncoder, check_ffmpeg_available, detect_encoders
@@ -88,7 +89,7 @@ class SessionRuntime:
                  no_audio: bool = False, no_clipboard: bool = False,
                  sw_only: bool = False, monitor_index: int = 1,
                  jpeg_quality: int = 60, uid: int = 0, gid: int = 0,
-                 home_dir: str = ""):
+                 home_dir: str = "", pen_tablet=None):
         self.display = display
         self.username = username
         self.quality = quality
@@ -110,7 +111,8 @@ class SessionRuntime:
                 try:
                     self.injector = XTestInputInjector(display,
                                                        screen_width=self.capture.width,
-                                                       screen_height=self.capture.height)
+                                                       screen_height=self.capture.height,
+                                                       pen_tablet=pen_tablet)
                 except Exception as xinj_err:
                     logger.warning("XTest unavailable: %s, using uinput", xinj_err)
                     self.injector = InputInjector(screen_width=self.capture.width,
@@ -165,6 +167,19 @@ class SessionRuntime:
         if not no_clipboard:
             self.clipboard = ClipboardSync(display=display)
 
+        # Local-cursor tracker — polls XFixes for cursor shape changes
+        # so the client can draw the real Flame cursor locally at zero
+        # latency. Falls back gracefully if XFixes is unavailable (we
+        # just won't send cursor_update messages and the client will
+        # keep using its placeholder cursor).
+        self.cursor_tracker: Optional[CursorTracker] = None
+        try:
+            self.cursor_tracker = CursorTracker(display_name=display,
+                                                poll_hz=30.0)
+        except Exception as e:
+            logger.warning("[%s] Cursor tracker unavailable: %s",
+                           username, e)
+
         # File transfer
         ft_home = home_dir or os.path.expanduser("~")
         self.file_receiver = FileReceiver(ft_home, uid=uid, gid=gid)
@@ -196,6 +211,23 @@ class SessionRuntime:
             self.injector.reset_modifiers()
         if not self._streaming:
             self._start_streaming()
+        elif self.encoder:
+            # Reused session: force an IDR so the new client can start decoding
+            # immediately instead of waiting for the next natural GOP boundary
+            # (or staying black forever if nvenc doesn't emit one).
+            self.capture.invalidate()
+            self.encoder.request_keyframe()
+
+        # Push current cursor shape so late-joining clients don't stare
+        # at their placeholder until Flame next changes the cursor.
+        if self.cursor_tracker is not None and self._event_loop:
+            latest = self.cursor_tracker.latest()
+            if latest is not None:
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        session.enqueue(json.dumps(latest)), self._event_loop)
+                except Exception:
+                    pass
 
     def remove_client(self, ws: WebSocketServerProtocol):
         with self._lock:
@@ -229,6 +261,9 @@ class SessionRuntime:
 
         if self.clipboard and self.clipboard.available:
             self.clipboard.start_monitoring(self._on_clipboard_change)
+
+        if self.cursor_tracker is not None:
+            self.cursor_tracker.start(self._on_cursor_shape_change)
 
         logger.info("[%s] Streaming started (%d fps)", self.username, fps)
 
@@ -351,6 +386,18 @@ class SessionRuntime:
         for ws, cs in list(self.clients.items()):
             if cs.authenticated and self._event_loop:
                 asyncio.run_coroutine_threadsafe(cs.enqueue(msg_json), self._event_loop)
+
+    def _on_cursor_shape_change(self, update: dict):
+        """Called from the CursorTracker polling thread whenever Flame
+        swaps cursor shapes. Broadcast to every authenticated client so
+        they can swap their local QCursor with zero latency."""
+        if not self._event_loop:
+            return
+        msg_json = json.dumps(update)
+        for ws, cs in list(self.clients.items()):
+            if cs.authenticated:
+                asyncio.run_coroutine_threadsafe(
+                    cs.enqueue(msg_json), self._event_loop)
 
     # ── Quality / encoder management ─────────────────────────
 
@@ -539,6 +586,8 @@ class SessionRuntime:
             self.audio.stop()
         if self.clipboard:
             self.clipboard.stop()
+        if self.cursor_tracker:
+            self.cursor_tracker.stop()
         if self.usb_manager:
             self.usb_manager.cleanup()
         if self.injector:
@@ -740,6 +789,7 @@ async def handle_client(websocket: WebSocketServerProtocol):
                     uid=user_info["uid"],
                     gid=user_info["gid"],
                     home_dir=user_info["home"],
+                    pen_tablet=user_session.pen_tablet,
                 )
                 runtime.set_event_loop(asyncio.get_event_loop())
                 runtimes[session.username] = runtime

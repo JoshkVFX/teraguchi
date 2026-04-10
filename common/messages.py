@@ -458,6 +458,36 @@ class PenEventMsg:
 
 
 # ============================================================
+# Cursor Shape (local-cursor rendering)
+# ============================================================
+
+@dataclass
+class CursorUpdateMsg:
+    """Server → Client: cursor shape update.
+
+    Sent whenever the X cursor serial changes (i.e. Flame swaps from
+    arrow to crosshair, move, text, wait, etc.). The client caches
+    the shape locally and renders the cursor at its own mouse
+    position with zero latency, so cursor motion never round-trips
+    through the video pipeline.
+
+    ``rgba_b64`` is base64-encoded RGBA8888 with premultiplied alpha
+    (XFixes returns pixels pre-multiplied). Render with Qt's
+    ``QImage.Format_RGBA8888_Premultiplied``.
+    """
+    type: str = MsgType.CURSOR_UPDATE
+    serial: int = 0
+    width: int = 0
+    height: int = 0
+    hot_x: int = 0
+    hot_y: int = 0
+    rgba_b64: str = ""
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self))
+
+
+# ============================================================
 # Bookmark / Connection Profile
 # ============================================================
 

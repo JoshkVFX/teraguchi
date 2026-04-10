@@ -47,6 +47,7 @@ class _Bridge(QObject):
     file_response = Signal(dict)
     usb_response = Signal(dict)
     broker_machine_needed = Signal(list)
+    cursor_update = Signal(dict)
 
 
 class Session(QObject):
@@ -226,6 +227,7 @@ class Session(QObject):
         p.on_file_response = b.file_response.emit
         p.on_usb_response = b.usb_response.emit
         p.on_broker_machine_needed = b.broker_machine_needed.emit
+        p.on_cursor_update = b.cursor_update.emit
 
         b.server_hello.connect(self._on_server_hello)
         b.jpeg_frame.connect(self._on_jpeg_frame)
@@ -246,6 +248,7 @@ class Session(QObject):
 
         b.usb_response.connect(self._on_usb_response)
         b.broker_machine_needed.connect(self.broker_machine_needed.emit)
+        b.cursor_update.connect(self._on_cursor_update)
 
     def _wire_viewer(self):
         v = self.viewer
@@ -376,6 +379,29 @@ class Session(QObject):
     def _on_file_response(self, msg):
         """Route file transfer responses to FileSender."""
         self.file_sender.handle_response(msg)
+
+    def _on_cursor_update(self, msg: dict):
+        """Apply a server-sent cursor shape to the viewer widget.
+
+        The RGBA bytes are base64-encoded on the wire so they fit
+        cleanly into the JSON control channel. Decoding and cursor
+        construction happen on the GUI thread — we're delivered
+        here via a queued Qt signal from the protocol bridge.
+        """
+        import base64
+        try:
+            rgba = base64.b64decode(msg.get("rgba_b64", ""))
+        except Exception as e:
+            logger.warning("Bad cursor payload: %s", e)
+            return
+        self.viewer.set_remote_cursor(
+            serial=int(msg.get("serial", 0)),
+            width=int(msg.get("width", 0)),
+            height=int(msg.get("height", 0)),
+            hot_x=int(msg.get("hot_x", 0)),
+            hot_y=int(msg.get("hot_y", 0)),
+            rgba_bytes=rgba,
+        )
 
     # ── File Transfer ─────────────────────────────
 
