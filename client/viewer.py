@@ -64,6 +64,14 @@ class RemoteViewer(QWidget):
         # Track whether we're using pen or mouse to avoid duplicate events
         self._pen_active = False
 
+        # macOS transforms Control+LeftClick into a RightButton event at
+        # the OS level BEFORE Qt sees it. When the user is doing a
+        # Ctrl+drag gesture (common in Flame navigation), we need to
+        # translate that back to a LeftButton click so Flame sees
+        # Ctrl+LeftClick instead of a right-click. We track this across
+        # the press→move→release sequence so the release also swaps.
+        self._mac_ctrl_click_swap = False
+
         # Enable tablet tracking for hover events
         self.setTabletTracking(True)
         self.setMouseTracking(True)
@@ -360,6 +368,19 @@ class RemoteViewer(QWidget):
         pos = event.position()
         nx, ny = self._widget_to_remote(pos.x(), pos.y())
         button = self._qt_button_to_int(event.button())
+
+        # macOS Control+click hijack: macOS converts Ctrl+LeftClick into
+        # a RightButton event before Qt sees it. Detect that and swap
+        # it back to LeftButton so Flame's Ctrl+drag gestures work.
+        # The Control keydown itself was already sent by keyPressEvent,
+        # so the Linux server has Ctrl held when this click arrives.
+        import sys
+        if (sys.platform == "darwin"
+                and event.button() == Qt.RightButton
+                and (event.modifiers() & Qt.ControlModifier)):
+            button = 1  # LeftButton on the wire
+            self._mac_ctrl_click_swap = True
+
         self.mouse_button_changed.emit(button, True, nx, ny)
 
     def mouseReleaseEvent(self, event: QMouseEvent):
@@ -368,6 +389,15 @@ class RemoteViewer(QWidget):
         pos = event.position()
         nx, ny = self._widget_to_remote(pos.x(), pos.y())
         button = self._qt_button_to_int(event.button())
+
+        # Mirror the press-time swap: if the active drag was a macOS
+        # Control-click that we rewrote to LeftButton, the matching
+        # release must also be LeftButton or the server will be left
+        # thinking a phantom button is still held.
+        if self._mac_ctrl_click_swap and event.button() == Qt.RightButton:
+            button = 1
+            self._mac_ctrl_click_swap = False
+
         self.mouse_button_changed.emit(button, False, nx, ny)
 
     def wheelEvent(self, event: QWheelEvent):
