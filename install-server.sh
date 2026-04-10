@@ -119,12 +119,30 @@ case "$DISTRO" in
             python3 python3-pip \
             xorg-x11-server-Xorg xorg-x11-server-Xvfb \
             xorg-x11-utils xorg-x11-xauth \
-            xorg-x11-drv-nvidia \
             ffmpeg \
             pulseaudio-utils \
             xclip \
             2>/dev/null
         ok "DNF packages installed"
+
+        # DO NOT install xorg-x11-drv-nvidia. Most DXS Flame hosts get
+        # their NVIDIA driver from a DKU (DKMS kernel update) or a
+        # manual .run installer, and re-running this installer would
+        # pull in the RPM-packaged driver on top of the existing one —
+        # RPMFusion akmod + xorg-x11-drv-nvidia-libs + the DKU'd driver
+        # stomp on each other's .so files and leave the userspace libs
+        # (libnvidia-fbc, libGLX_nvidia, libEGL_nvidia, ...) physically
+        # missing. Happened on dxs-flame-02 on 2026-04-10. Leave the
+        # driver alone.
+        if ! command -v nvidia-smi &>/dev/null; then
+            warn "nvidia-smi not found — NVIDIA driver appears to be missing."
+            warn "Teragucci will run on Xvfb (software rendering) which is"
+            warn "unusable for Flame. Install the NVIDIA driver out-of-band"
+            warn "(DKU, .run installer, or your normal provisioning) BEFORE"
+            warn "starting the server."
+        else
+            ok "NVIDIA driver present: $(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)"
+        fi
         ;;
     arch|manjaro|endeavouros)
         pacman -Sy --noconfirm --needed \
