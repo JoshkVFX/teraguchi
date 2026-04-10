@@ -10,7 +10,6 @@ import base64
 import json
 import logging
 import os
-import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -53,19 +52,14 @@ class AdminServer:
         except Exception:
             return None
 
-        # Check auth cache to avoid PAM rate limiting
+        # Check auth cache to avoid repeated LDAP binds
         cache_key = hashlib.sha256(f"{username}:{password}".encode()).hexdigest()
         cached = self._auth_cache.get(cache_key)
         if cached and cached > time.time():
             return username
 
-        try:
-            from server.pam_auth import PAMAuthenticator
-            pam = PAMAuthenticator()
-            if not pam.authenticate(username, password):
-                return None
-        except Exception as e:
-            logger.error("PAM auth error: %s", e)
+        # Authenticate via LDAP simple bind against FreeIPA
+        if not self._ldap_bind_auth(username, password):
             return None
 
         # Check admin group
@@ -77,6 +71,36 @@ class AdminServer:
         # Cache successful auth
         self._auth_cache[cache_key] = time.time() + AUTH_CACHE_TTL
         return username
+
+    def _ldap_bind_auth(self, username: str, password: str) -> bool:
+        """Authenticate by LDAP simple bind to FreeIPA."""
+        try:
+            import ldap
+        except ImportError:
+            logger.error("python-ldap not installed — cannot authenticate")
+            return False
+
+        base_dn = self._ipa._base_dn
+        user_dn = f"uid={username},cn=users,cn=accounts,{base_dn}"
+
+        for uri in self._ipa._servers:
+            try:
+                conn = ldap.initialize(uri)
+                conn.set_option(ldap.OPT_PROTOCOL_VERSION, 3)
+                conn.set_option(ldap.OPT_REFERRALS, 0)
+                conn.set_option(ldap.OPT_NETWORK_TIMEOUT, 5)
+                conn.simple_bind_s(user_dn, password)
+                conn.unbind_s()
+                return True
+            except ldap.INVALID_CREDENTIALS:
+                logger.warning("LDAP auth failed for %s: invalid credentials", username)
+                return False
+            except Exception as e:
+                logger.warning("LDAP bind failed (%s): %s", uri, e)
+                continue
+
+        logger.error("LDAP auth: cannot reach any FreeIPA server")
+        return False
 
     @web.middleware
     async def auth_middleware(self, request: web.Request, handler):
