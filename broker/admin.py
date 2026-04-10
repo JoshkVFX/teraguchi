@@ -153,9 +153,11 @@ class AdminServer:
             return make_response(500, [("Content-Type", "text/plain")], b"Internal server error")
 
     async def _route(self, path: str, headers, username: Optional[str]):
-        """Route admin HTTP requests. Mutations go through the admin WebSocket."""
-        # Strip query string from path for routing
-        route_path = path.split("?", 1)[0]
+        """Route admin HTTP requests. All endpoints use GET; mutations take query params."""
+        from urllib.parse import urlparse, parse_qs
+        parsed = urlparse(path)
+        route_path = parsed.path
+        query = parse_qs(parsed.query)
 
         if route_path == "/" or route_path == "/admin" or route_path == "/admin/":
             return self._serve_index()
@@ -164,10 +166,12 @@ class AdminServer:
         elif route_path == "/api/assignments":
             result = {u: sorted(names) for u, names in self._pool._user_machines.items()}
             return self._json_response(result)
-        elif route_path == "/api/ws-token":
-            # Issue a short-lived token for the admin WebSocket connection
-            token = self._issue_ws_token(username)
-            return self._json_response({"token": token})
+        elif route_path == "/api/users":
+            return self._json_response(self._list_users())
+        elif route_path == "/api/set-user":
+            return await self._handle_set_user(query, username)
+        elif route_path == "/api/delete-user":
+            return await self._handle_delete_user(query, username)
         elif route_path.startswith("/static/"):
             return self._serve_static(route_path)
         elif route_path == "/api/ping":
@@ -175,33 +179,65 @@ class AdminServer:
         else:
             return (404, [("Content-Type", "text/plain")], b"Not found")
 
-    def _issue_ws_token(self, username: str) -> str:
-        """Issue a short-lived token that the browser can use to open /admin-ws."""
-        import secrets
-        token = secrets.token_urlsafe(32)
-        expires = time.time() + 60  # 60 seconds
-        if not hasattr(self, "_ws_tokens"):
-            self._ws_tokens = {}
-        # Clean up expired tokens
-        now = time.time()
-        self._ws_tokens = {t: (u, e) for t, (u, e) in self._ws_tokens.items() if e > now}
-        self._ws_tokens[token] = (username, expires)
-        return token
+    async def _handle_set_user(self, query: dict, username: str):
+        user = (query.get("user") or [""])[0]
+        machines_raw = (query.get("machines") or [""])[0]
+        machines = [m for m in machines_raw.split(",") if m] if machines_raw else []
+        if not user:
+            return self._json_response({"error": "user is required"}, status=400)
+        for m in machines:
+            if m not in self._pool.machines:
+                return self._json_response({"error": f"Unknown machine: {m}"}, status=400)
 
-    def verify_ws_token(self, token: str) -> Optional[str]:
-        """Verify a WebSocket token and return the associated username."""
-        if not hasattr(self, "_ws_tokens"):
-            return None
-        entry = self._ws_tokens.get(token)
-        if not entry:
-            return None
-        username, expires = entry
-        if expires < time.time():
-            self._ws_tokens.pop(token, None)
-            return None
-        # Token is single-use
-        self._ws_tokens.pop(token, None)
-        return username
+        async with self._lock:
+            current = {u: sorted(names) for u, names in self._pool._user_machines.items()}
+            if machines:
+                current[user] = machines
+            else:
+                current.pop(user, None)
+            self._save_assignments(current)
+            self._pool.update_assignments(current)
+
+        action_str = "assigned" if machines else "removed"
+        logger.info("User %s %s by %s: %s", user, action_str, username, machines)
+        return self._json_response({"ok": True})
+
+    async def _handle_delete_user(self, query: dict, username: str):
+        user = (query.get("user") or [""])[0]
+        if not user:
+            return self._json_response({"error": "user is required"}, status=400)
+
+        async with self._lock:
+            current = {u: sorted(names) for u, names in self._pool._user_machines.items()}
+            if user not in current:
+                return self._json_response({"error": f"User {user} has no assignment"}, status=404)
+            del current[user]
+            self._save_assignments(current)
+            self._pool.update_assignments(current)
+
+        logger.info("Assignment removed for %s by %s", user, username)
+        return self._json_response({"ok": True})
+
+    def _list_users(self) -> list:
+        """List FreeIPA users in teragucci-users and teragucci-admins groups."""
+        import subprocess
+        users = set()
+        for group in ("teragucci-users", "teragucci-admins"):
+            try:
+                result = subprocess.run(
+                    ["getent", "group", group],
+                    capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    # Format: groupname:*:gid:user1,user2,user3
+                    parts = result.stdout.strip().split(":")
+                    if len(parts) >= 4 and parts[3]:
+                        for u in parts[3].split(","):
+                            u = u.strip()
+                            if u:
+                                users.add(u)
+            except Exception as e:
+                logger.warning("getent group %s failed: %s", group, e)
+        return sorted(users)
 
     def _json_response(self, data, status: int = 200):
         body = json.dumps(data).encode()
@@ -232,100 +268,6 @@ class AdminServer:
                 ct = "text/html"
             return (200, [("Content-Type", ct)], fpath.read_bytes())
         return (404, [("Content-Type", "text/plain")], b"Not found")
-
-    # ── Admin WebSocket handler ──────────────────────
-
-    async def handle_admin_ws(self, ws, username: str):
-        """Handle admin mutations via WebSocket messages."""
-        logger.info("Admin WS connected: %s", username)
-        try:
-            async for raw in ws:
-                msg_id = None
-                try:
-                    msg = json.loads(raw)
-                    msg_id = msg.get("_id")
-                    action = msg.get("action")
-                    resp = await self._handle_admin_action(action, msg, username)
-                    if msg_id is not None:
-                        resp["_id"] = msg_id
-                    await ws.send(json.dumps(resp))
-                except json.JSONDecodeError:
-                    r = {"error": "Invalid JSON"}
-                    if msg_id is not None:
-                        r["_id"] = msg_id
-                    await ws.send(json.dumps(r))
-                except Exception as e:
-                    logger.error("Admin WS error: %s", e, exc_info=True)
-                    r = {"error": str(e)}
-                    if msg_id is not None:
-                        r["_id"] = msg_id
-                    await ws.send(json.dumps(r))
-        except Exception:
-            pass
-        logger.info("Admin WS disconnected: %s", username)
-
-    async def _handle_admin_action(self, action: str, msg: dict, username: str) -> dict:
-        """Process an admin WebSocket action."""
-        if action == "set_user":
-            user = msg.get("user", "")
-            machines = msg.get("machines", [])
-            if not user:
-                return {"error": "user is required"}
-            if not isinstance(machines, list):
-                return {"error": "machines must be a list"}
-            for m in machines:
-                if m not in self._pool.machines:
-                    return {"error": f"Unknown machine: {m}"}
-
-            async with self._lock:
-                current = {u: sorted(names) for u, names in self._pool._user_machines.items()}
-                if machines:
-                    current[user] = machines
-                else:
-                    current.pop(user, None)
-                self._save_assignments(current)
-                self._pool.update_assignments(current)
-
-            action_str = "assigned" if machines else "removed"
-            logger.info("User %s %s by %s: %s", user, action_str, username, machines)
-            return {"ok": True}
-
-        elif action == "delete_user":
-            user = msg.get("user", "")
-            if not user:
-                return {"error": "user is required"}
-
-            async with self._lock:
-                current = {u: sorted(names) for u, names in self._pool._user_machines.items()}
-                if user not in current:
-                    return {"error": f"User {user} has no assignment"}
-                del current[user]
-                self._save_assignments(current)
-                self._pool.update_assignments(current)
-
-            logger.info("Assignment removed for %s by %s", user, username)
-            return {"ok": True}
-
-        elif action == "put_assignments":
-            data = msg.get("assignments", {})
-            if not isinstance(data, dict):
-                return {"error": "Expected object"}
-            for user, machines in data.items():
-                if not isinstance(machines, list):
-                    return {"error": f"Value for {user} must be a list"}
-                for m in machines:
-                    if m not in self._pool.machines:
-                        return {"error": f"Unknown machine: {m}"}
-
-            async with self._lock:
-                self._save_assignments(data)
-                self._pool.update_assignments(data)
-
-            logger.info("Assignments updated by %s: %s", username, data)
-            return {"ok": True}
-
-        else:
-            return {"error": f"Unknown action: {action}"}
 
     # ── Persistence ─────────────────────────────────
 

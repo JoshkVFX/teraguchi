@@ -189,17 +189,42 @@ h2 {
   align-items: center;
   margin-top: 12px;
 }
-.add-user-row input {
+.add-user-row input,
+.add-user-row select {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 8px 12px;
   color: var(--text);
   font-size: 13px;
-  width: 200px;
+  width: 240px;
 }
 .add-user-row input::placeholder { color: var(--text2); }
-.add-user-row input:focus { outline: none; border-color: var(--accent); }
+.add-user-row input:focus,
+.add-user-row select:focus { outline: none; border-color: var(--accent); }
+
+/* Tag group header */
+.tag-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  margin-top: 6px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text2);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.tag-group-header:first-child { border-top: 0; margin-top: 0; }
+.tag-group-header a {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: none;
+  font-size: 11px;
+}
+.tag-group-header a:hover { text-decoration: underline; }
+.machine-picker-dropdown { max-height: 70vh; overflow-y: auto; }
 
 /* Machine Picker (dropdown) */
 .machine-picker {
@@ -269,7 +294,6 @@ h2 {
 <header>
   <h1><span>Teragucci</span> Broker Admin</h1>
   <div class="header-right">
-    <span><span class="ws-status" id="ws-status"></span> Admin WS</span>
     <span id="refresh-status">Loading...</span>
     <button class="btn small" onclick="refresh()">Refresh</button>
   </div>
@@ -297,7 +321,9 @@ h2 {
     </table>
 
     <div class="add-user-row">
-      <input type="text" id="new-user-input" placeholder="username (e.g. jane.doe)">
+      <select id="new-user-select">
+        <option value="">Select a user...</option>
+      </select>
       <button class="btn" onclick="addUser()">Add User</button>
     </div>
   </div>
@@ -308,89 +334,35 @@ h2 {
 <script>
 let machines = [];
 let assignments = {};
+let users = [];
 let openPicker = null;
-let adminWs = null;
-let pendingCallbacks = {};
-let msgId = 0;
 
-// ── WebSocket for mutations ─────────────────────────
-
-async function connectAdminWs() {
-  // Fetch a short-lived token via HTTP (browser sends cached Basic Auth).
-  // Browsers can't set custom headers on WebSocket connections, so we pass
-  // the token as a query parameter instead.
-  let token;
-  try {
-    const res = await fetch("/api/ws-token");
-    if (!res.ok) throw new Error(`token fetch HTTP ${res.status}`);
-    const data = await res.json();
-    token = data.token;
-  } catch (e) {
-    document.getElementById("ws-status").classList.remove("connected");
-    setTimeout(connectAdminWs, 5000);
-    return;
-  }
-
-  const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const url = `${proto}//${location.host}/admin-ws?token=${encodeURIComponent(token)}`;
-  adminWs = new WebSocket(url);
-
-  adminWs.onopen = () => {
-    document.getElementById("ws-status").classList.add("connected");
-  };
-
-  adminWs.onclose = () => {
-    document.getElementById("ws-status").classList.remove("connected");
-    // Reconnect after 3 seconds
-    setTimeout(connectAdminWs, 3000);
-  };
-
-  adminWs.onerror = () => {};
-
-  adminWs.onmessage = (ev) => {
-    try {
-      const data = JSON.parse(ev.data);
-      const id = data._id;
-      if (id && pendingCallbacks[id]) {
-        pendingCallbacks[id](data);
-        delete pendingCallbacks[id];
-      }
-    } catch (e) {}
-  };
-}
-
-function wsCommand(action, payload) {
-  return new Promise((resolve, reject) => {
-    if (!adminWs || adminWs.readyState !== WebSocket.OPEN) {
-      reject(new Error("Admin WebSocket not connected"));
-      return;
-    }
-    const id = ++msgId;
-    payload.action = action;
-    payload._id = id;
-    pendingCallbacks[id] = (resp) => {
-      if (resp.error) reject(new Error(resp.error));
-      else resolve(resp);
-    };
-    adminWs.send(JSON.stringify(payload));
-    // Timeout after 10s
-    setTimeout(() => {
-      if (pendingCallbacks[id]) {
-        delete pendingCallbacks[id];
-        reject(new Error("Timeout"));
-      }
-    }, 10000);
-  });
-}
-
-// ── HTTP for reads ──────────────────────────────────
+// ── HTTP API ─────────────────────────────────────────
 
 async function apiGet(path) {
   const res = await fetch(path);
   if (res.status === 401) throw new Error("Authentication required");
-  const data = await res.json();
+  const ct = res.headers.get("Content-Type") || "";
+  let data = null;
+  if (ct.includes("application/json")) {
+    data = await res.json();
+  } else {
+    const text = await res.text();
+    if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
+    return text;
+  }
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
+}
+
+async function setUser(user, machines) {
+  const q = new URLSearchParams({ user, machines: machines.join(",") });
+  return apiGet(`/api/set-user?${q}`);
+}
+
+async function deleteUser(user) {
+  const q = new URLSearchParams({ user });
+  return apiGet(`/api/delete-user?${q}`);
 }
 
 function toast(msg, isError) {
@@ -402,19 +374,32 @@ function toast(msg, isError) {
 
 async function refresh() {
   try {
-    const [m, a] = await Promise.all([
+    const [m, a, u] = await Promise.all([
       apiGet("/api/machines"),
       apiGet("/api/assignments"),
+      apiGet("/api/users"),
     ]);
     machines = m;
     assignments = a;
+    users = u;
     renderMachines();
     renderAssignments();
+    renderUserDropdown();
     document.getElementById("refresh-status").textContent =
       `Updated ${new Date().toLocaleTimeString()}`;
   } catch (e) {
     document.getElementById("refresh-status").textContent = "Error: " + e.message;
   }
+}
+
+function renderUserDropdown() {
+  const sel = document.getElementById("new-user-select");
+  const assigned = new Set(Object.keys(assignments));
+  const available = users.filter(u => !assigned.has(u));
+  const current = sel.value;
+  sel.innerHTML = '<option value="">Select a user...</option>' +
+    available.map(u => `<option value="${esc(u)}">${esc(u)}</option>`).join("");
+  if (available.includes(current)) sel.value = current;
 }
 
 function renderMachines() {
@@ -489,7 +474,20 @@ function editUser(user) {
 
   const cell = row.children[1];
   const currentMachines = new Set(assignments[user] || []);
-  const allMachines = machines.map(m => m.name);
+
+  // Group machines by tag. Machines with multiple tags appear in each.
+  // Untagged machines go into "other".
+  const tagGroups = {};
+  const allTags = new Set();
+  machines.forEach(m => {
+    const tags = (m.tags && m.tags.length) ? m.tags : ["other"];
+    tags.forEach(t => {
+      allTags.add(t);
+      if (!tagGroups[t]) tagGroups[t] = [];
+      tagGroups[t].push(m);
+    });
+  });
+  const sortedTags = [...allTags].sort();
 
   const picker = document.createElement("div");
   picker.className = "machine-picker-dropdown";
@@ -499,31 +497,88 @@ function editUser(user) {
   picker.style.top = rect.bottom + 4 + "px";
   picker.style.left = rect.left + "px";
 
-  picker.innerHTML = allMachines.map(name => {
-    const checked = currentMachines.has(name) ? "checked" : "";
-    const m = machines.find(x => x.name === name);
-    const health = m?.healthy ? "\uD83D\uDFE2" : "\uD83D\uDD34";
-    return `<label>
-      <input type="checkbox" value="${esc(name)}" ${checked}>
-      ${health} ${esc(name)}
-    </label>`;
-  }).join("") + `<div style="margin-top:8px;text-align:right">
+  let html = "";
+  sortedTags.forEach(tag => {
+    const groupMachines = tagGroups[tag];
+    html += `<div class="tag-group-header">
+      <span>${esc(tag)} (${groupMachines.length})</span>
+      <a data-select-tag="${esc(tag)}" data-select="all">select all</a>
+      <a data-select-tag="${esc(tag)}" data-select="none">none</a>
+    </div>`;
+    groupMachines.forEach(m => {
+      const checked = currentMachines.has(m.name) ? "checked" : "";
+      const health = m.healthy ? "\uD83D\uDFE2" : "\uD83D\uDD34";
+      html += `<label>
+        <input type="checkbox" value="${esc(m.name)}" data-tag="${esc(tag)}" ${checked}>
+        ${health} ${esc(m.name)}
+      </label>`;
+    });
+  });
+  html += `<div class="tag-group-header">
+    <a data-select-all="true">select all machines</a>
+    <a data-select-none="true">clear</a>
+  </div>`;
+  html += `<div style="margin-top:8px;text-align:right;padding:8px">
     <button class="btn small" id="picker-save">Save</button>
     <button class="btn small" onclick="closePicker()">Cancel</button>
   </div>`;
 
+  picker.innerHTML = html;
   document.body.appendChild(picker);
   openPicker = picker;
 
+  // Wire up "select all" links. Use unique checkboxes for de-dup.
+  picker.addEventListener("click", (ev) => {
+    const link = ev.target.closest("a[data-select-tag], a[data-select-all], a[data-select-none]");
+    if (!link) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (link.dataset.selectAll) {
+      setAllChecked(picker, true);
+    } else if (link.dataset.selectNone) {
+      setAllChecked(picker, false);
+    } else {
+      const tag = link.dataset.selectTag;
+      const state = link.dataset.select === "all";
+      // Toggle all checkboxes for this tag (and sync duplicates by name)
+      const names = new Set();
+      picker.querySelectorAll(`input[data-tag="${CSS.escape(tag)}"]`).forEach(cb => {
+        names.add(cb.value);
+      });
+      // Apply to ALL checkboxes with those names (machines may appear in multiple tag groups)
+      picker.querySelectorAll("input[type=checkbox]").forEach(cb => {
+        if (names.has(cb.value)) cb.checked = state;
+      });
+    }
+  });
+
+  // Sync checkbox state across duplicate entries (machine in multiple tag groups)
+  picker.addEventListener("change", (ev) => {
+    if (ev.target.matches("input[type=checkbox]")) {
+      const name = ev.target.value;
+      const state = ev.target.checked;
+      picker.querySelectorAll(`input[type=checkbox][value="${CSS.escape(name)}"]`).forEach(cb => {
+        cb.checked = state;
+      });
+    }
+  });
+
   picker.querySelector("#picker-save").onclick = async () => {
-    const selected = [...picker.querySelectorAll("input:checked")].map(cb => cb.value);
+    // Deduplicate: a machine may appear in multiple tag groups
+    const selected = [...new Set(
+      [...picker.querySelectorAll("input:checked")].map(cb => cb.value)
+    )];
     closePicker();
     try {
-      await wsCommand("set_user", { user, machines: selected });
+      await setUser(user, selected);
       toast(`Updated ${user}`);
       await refresh();
     } catch (e) { toast(e.message, true); }
   };
+}
+
+function setAllChecked(picker, state) {
+  picker.querySelectorAll("input[type=checkbox]").forEach(cb => cb.checked = state);
 }
 
 function closePicker() {
@@ -539,20 +594,22 @@ document.addEventListener("click", (e) => {
 async function removeUser(user) {
   if (!confirm(`Remove all assignments for ${user}?\nThey will use the floating pool instead.`)) return;
   try {
-    await wsCommand("delete_user", { user });
+    await deleteUser(user);
     toast(`Removed ${user}`);
     await refresh();
   } catch (e) { toast(e.message, true); }
 }
 
 async function addUser() {
-  const input = document.getElementById("new-user-input");
-  const user = input.value.trim();
-  if (!user) { toast("Enter a username", true); return; }
+  const sel = document.getElementById("new-user-select");
+  const user = sel.value;
+  if (!user) { toast("Select a user", true); return; }
 
+  // Optimistically add to assignments so editUser() can find the row
   assignments[user] = [];
   renderAssignments();
-  input.value = "";
+  renderUserDropdown();
+  sel.value = "";
 
   setTimeout(() => editUser(user), 50);
 }
@@ -564,7 +621,6 @@ function esc(s) {
 }
 
 // ── Init ────────────────────────────────────────────
-connectAdminWs();
 refresh();
 setInterval(refresh, 10000);
 </script>
