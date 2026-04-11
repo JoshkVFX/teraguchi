@@ -980,13 +980,16 @@ async def run_server(host: str, port: int, tls_context: Optional[ssl.SSLContext]
 def check_system_dependencies():
     """Check required system dependencies and warn about missing ones."""
     import shutil
-    deps = {
-        "ffmpeg": ("FFmpeg", "Video encoding will not work"),
-        "pactl": ("PulseAudio", "Audio capture will not work"),
-    }
-    for cmd, (name, impact) in deps.items():
-        if not shutil.which(cmd):
-            logger.warning("Missing system dependency: %s (%s) — %s", cmd, name, impact)
+    if not shutil.which("ffmpeg"):
+        logger.warning("Missing system dependency: ffmpeg — Video encoding will not work")
+
+    if IS_MACOS:
+        # Audio / clipboard / input are all supplied by native Cocoa
+        # frameworks on macOS; none of the Linux CLI deps apply.
+        return
+
+    if not shutil.which("pactl"):
+        logger.warning("Missing system dependency: pactl (PulseAudio) — Audio capture will not work")
 
     # Check clipboard tool
     if not shutil.which("xclip") and not shutil.which("xsel"):
@@ -1125,9 +1128,12 @@ def main():
         logger.info("Session manager ready (per-user Xvfb sessions)")
         # Runtimes are created on-demand when users authenticate
     else:
-        # Legacy mode: single runtime on current DISPLAY
+        # Legacy mode: single runtime on the host's display.
         display = os.environ.get("DISPLAY", ":0")
-        logger.info("Legacy mode: using DISPLAY=%s", display)
+        if IS_MACOS:
+            logger.info("Legacy mode: capturing host desktop via ScreenCaptureKit")
+        else:
+            logger.info("Legacy mode: using DISPLAY=%s", display)
         try:
             default_runtime = SessionRuntime(
                 display=display,
@@ -1143,7 +1149,16 @@ def main():
             )
         except Exception as e:
             logger.error("Failed to initialize: %s", e)
-            logger.error("Make sure DISPLAY is set and accessible.")
+            if IS_MACOS:
+                logger.error(
+                    "On macOS this usually means Screen Recording permission "
+                    "has not been granted. Open System Settings → Privacy & "
+                    "Security → Screen & System Audio Recording and enable "
+                    "the Python interpreter at %s, then re-run.",
+                    sys.executable,
+                )
+            else:
+                logger.error("Make sure DISPLAY is set and accessible.")
             sys.exit(1)
 
     # TLS
