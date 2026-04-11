@@ -51,6 +51,10 @@ ENCODER_DEFS = [
     HWEncoder("h264_nvenc",  "h264", "nvenc", supports_444=True,  supports_lossless=True,  priority=10),
     HWEncoder("hevc_nvenc",  "h265", "nvenc", supports_444=True,  supports_lossless=True,  priority=10),
     HWEncoder("av1_nvenc",   "av1",  "nvenc", supports_444=False, supports_lossless=False, priority=10),
+    # VideoToolbox (macOS / Apple Silicon). No 4:4:4, no lossless.
+    HWEncoder("h264_videotoolbox", "h264", "videotoolbox", supports_444=False, supports_lossless=False, priority=15),
+    HWEncoder("hevc_videotoolbox", "h265", "videotoolbox", supports_444=False, supports_lossless=False, priority=15),
+    HWEncoder("av1_videotoolbox",  "av1",  "videotoolbox", supports_444=False, supports_lossless=False, priority=15),
     # VAAPI (Intel/AMD on Linux)
     HWEncoder("h264_vaapi",  "h264", "vaapi", supports_444=False, supports_lossless=False, priority=20),
     HWEncoder("hevc_vaapi",  "h265", "vaapi", supports_444=False, supports_lossless=False, priority=20),
@@ -248,6 +252,8 @@ class VideoEncoder:
             cmd.extend(self._vaapi_args(enc, fps))
         elif enc.backend == "amf":
             cmd.extend(self._amf_args(enc, fps, pix_fmt_out))
+        elif enc.backend == "videotoolbox":
+            cmd.extend(self._videotoolbox_args(enc, fps, pix_fmt_out))
         elif enc.codec == "av1":
             cmd.extend(self._svtav1_args(fps, pix_fmt_out))
         elif enc.codec == "h265":
@@ -378,6 +384,57 @@ class VideoEncoder:
 
         max_bitrate = int(s.max_bandwidth_mbps * 1000)
         args.extend(["-maxrate", f"{max_bitrate}k", "-bufsize", f"{max_bitrate}k"])
+
+        return args
+
+    # ---- VideoToolbox (macOS / Apple Silicon) ----
+
+    def _videotoolbox_args(self, enc: HWEncoder, fps: int,
+                           pix_fmt: Optional[str]) -> list:
+        """VideoToolbox encoder args.
+
+        VT is quality-indexed rather than CRF: -q:v 0..100, higher =
+        better. We map our quality_bias slider to a VT quality value.
+        VT does NOT support 4:4:4 or true lossless; pix_fmt is always
+        forced to yuv420p (HEVC can also do yuv422p on newer systems
+        but we don't rely on that).
+        """
+        s = self.settings
+        args = ["-c:v", enc.name]
+
+        # VT only does 4:2:0 reliably across macOS versions.
+        if pix_fmt != "yuv420p":
+            pix_fmt = "yuv420p"
+        args.extend(["-pix_fmt", pix_fmt])
+
+        # Real-time, force hardware.
+        args.extend([
+            "-realtime", "1",
+            "-allow_sw", "0",
+        ])
+
+        # Map CRF (lower=better, ~18-28 range) to VT quality (0-100,
+        # higher=better). Our effective_crf() returns roughly 18..30
+        # after the bias slider; invert and scale.
+        crf = s.effective_crf()
+        # crf=18 -> vt_q≈85, crf=28 -> vt_q≈55
+        vt_quality = max(20, min(95, 100 - (crf * 2)))
+        args.extend(["-q:v", str(vt_quality)])
+
+        if enc.codec == "h264":
+            args.extend(["-profile:v", "high"])
+        elif enc.codec == "h265":
+            args.extend(["-profile:v", "main"])
+
+        args.extend([
+            "-g", str(fps * 2),   # keyframe every 2 s
+            "-bf", "0",           # no B-frames
+        ])
+
+        # Bitrate cap — VT honors -maxrate as a soft ceiling.
+        max_bitrate = int(s.max_bandwidth_mbps * 1000)
+        args.extend(["-maxrate", f"{max_bitrate}k",
+                     "-bufsize", f"{max_bitrate}k"])
 
         return args
 

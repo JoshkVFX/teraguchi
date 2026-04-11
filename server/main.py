@@ -50,15 +50,18 @@ from common.messages import (
     AudioCodec, parse_message, generate_challenge,
 )
 from common.keymap import qt_key_to_linux_scancode
-from server.screen_capture import ScreenCapture
+from server.platform_backends import (
+    ScreenCapture,
+    InputInjector,
+    XTestInputInjector,
+    ClipboardSync,
+    IS_MACOS,
+)
 from server.cursor_tracker import CursorTracker
-from server.input_injector import InputInjector
-from server.xtest_injector import XTestInputInjector
 from server.video_encoder import VideoEncoder, JpegFallbackEncoder, check_ffmpeg_available, detect_encoders
 from server.audio_capture import AudioCapture, check_audio_available
 from server.health import HealthMonitor
 from server.auth import Authenticator
-from server.clipboard import ClipboardSync
 from server.file_transfer import FileReceiver
 from common.udp_transport import UDPMediaServer, BandwidthEstimator, CHANNEL_VIDEO, CHANNEL_AUDIO
 from common.hybrid_transport import HybridServerTransport, TransportMsg, TransportMode
@@ -106,8 +109,15 @@ class SessionRuntime:
         try:
             self.capture = ScreenCapture(monitor_index=monitor_index,
                                          jpeg_quality=jpeg_quality)
+            if IS_MACOS:
+                # On macOS there's no Xvfb / uinput — CoreGraphics posts
+                # events directly into the logged-in user's event stream.
+                self.injector = InputInjector(
+                    screen_width=self.capture.width,
+                    screen_height=self.capture.height,
+                )
             # Use XTest for virtual displays (Xvfb), uinput for physical
-            if display.startswith(":") and int(display[1:]) >= 10:
+            elif display.startswith(":") and int(display[1:]) >= 10:
                 try:
                     self.injector = XTestInputInjector(display,
                                                        screen_width=self.capture.width,
@@ -173,19 +183,23 @@ class SessionRuntime:
         # just won't send cursor_update messages and the client will
         # keep using its placeholder cursor).
         self.cursor_tracker: Optional[CursorTracker] = None
-        try:
-            self.cursor_tracker = CursorTracker(display_name=display,
-                                                poll_hz=30.0)
-        except Exception as e:
-            logger.warning("[%s] Cursor tracker unavailable: %s",
-                           username, e)
+        if not IS_MACOS:
+            # CursorTracker uses XFixes on Linux; on macOS we bake the
+            # cursor into the video frame via SCK's showsCursor=True.
+            try:
+                self.cursor_tracker = CursorTracker(display_name=display,
+                                                    poll_hz=30.0)
+            except Exception as e:
+                logger.warning("[%s] Cursor tracker unavailable: %s",
+                               username, e)
 
         # File transfer
         ft_home = home_dir or os.path.expanduser("~")
         self.file_receiver = FileReceiver(ft_home, uid=uid, gid=gid)
 
-        # USB passthrough
-        self.usb_manager = USBForwardingManager()
+        # USB passthrough — Linux-only (uses usbip / vhci kernel modules).
+        # Stubbed out on macOS; a Mac-native IOKit forwarder is future work.
+        self.usb_manager = None if IS_MACOS else USBForwardingManager()
 
         # Streaming state
         self._streaming = False
@@ -557,9 +571,10 @@ class SessionRuntime:
 
         elif msg_type in (MsgType.USB_DEVICE_LIST, MsgType.USB_ATTACH,
                           MsgType.USB_DETACH):
-            response = self.usb_manager.handle_message(msg, session.client_host)
-            if response:
-                self._send_to_client(session, response)
+            if self.usb_manager is not None:
+                response = self.usb_manager.handle_message(msg, session.client_host)
+                if response:
+                    self._send_to_client(session, response)
 
         elif msg_type == MsgType.CLIENT_HELLO:
             session.supports_h264 = msg.get("supports_h264", True)
@@ -1044,6 +1059,14 @@ def main():
     )
 
     if args.no_auth:
+        args.auth_mode = "none"
+
+    # macOS can't do the PAM / Xvfb / per-user session flow — it only
+    # has the host's single logged-in user, captured directly by SCK.
+    # Force legacy single-display mode with no-auth or local-file auth.
+    if IS_MACOS and args.auth_mode == "pam":
+        logger.warning("PAM auth mode is Linux-only; forcing --auth-mode none "
+                       "on macOS. Use --auth-mode local for username/password.")
         args.auth_mode = "none"
 
     # Handle --add-user (local mode only)
