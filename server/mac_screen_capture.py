@@ -88,6 +88,10 @@ try:
         CVPixelBufferGetHeight,
         CVPixelBufferGetBytesPerRow,
         kCVPixelBufferLock_ReadOnly,
+    )
+    # CMSampleBufferGetImageBuffer + CMTimeMake live in the CoreMedia
+    # framework binding, not Quartz.
+    from CoreMedia import (
         CMSampleBufferGetImageBuffer,
         CMTimeMake,
     )
