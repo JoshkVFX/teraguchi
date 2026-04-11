@@ -621,8 +621,7 @@ class MainWindow(QMainWindow):
         # ── Fullscreen toolbar ──
         self._fs_toolbar = FullscreenToolbar()
         self._fs_toolbar.exit_fullscreen.connect(self._toggle_fullscreen)
-        self._fs_toolbar.disconnect_requested.connect(
-            lambda: self._active_session and self._active_session.disconnect())
+        self._fs_toolbar.disconnect_requested.connect(self._disconnect_active)
         self._fs_toolbar.settings_requested.connect(
             lambda: self._quality_dock.setVisible(not self._quality_dock.isVisible()))
         self._fs_toolbar.monitor_selector.selection_changed.connect(self._on_monitors_changed)
@@ -905,9 +904,21 @@ class MainWindow(QMainWindow):
             bookmark_id=bookmark_id, mode=mode)
 
     def _disconnect_active(self):
-        s = self._active_session
-        if s:
-            s.disconnect()
+        """Disconnect the active session and close its tab.
+
+        session.disconnect() by itself only tears down the protocol layer —
+        it leaves the tab open with a frozen last frame and a still-running
+        decoder/audio pipeline, which looks to the user like nothing
+        happened. Closing the tab runs the full cleanup path.
+        """
+        idx = self._tabs.currentIndex()
+        if idx < 0 or idx not in self._sessions:
+            return
+        # If we're in fullscreen, drop back to windowed first so the user
+        # isn't stranded on a blank fullscreen viewer after the tab closes.
+        if self.isFullScreen():
+            self._toggle_fullscreen()
+        self._close_tab(idx)
 
     def _send_file_dialog(self):
         s = self._active_session
