@@ -1,0 +1,699 @@
+"""
+Screen capture module for macOS using ScreenCaptureKit.
+
+ScreenCaptureKit (SCK) is Apple's modern (macOS 12.3+) framework for
+screen capture. It replaces the deprecated CGDisplayStream / legacy
+CGWindowList* APIs and is the same pipeline Apple's own screen-sharing
+stack uses.
+
+Design notes
+------------
+* SCK is push-based: you create an ``SCStream`` with a filter + config,
+  attach an ``SCStreamOutput`` delegate, and frames arrive asynchronously
+  on an SCK dispatch queue. Our existing server encoder pipeline is
+  pull-based (``capture_raw_bgra()`` blocks until a fresh frame), so this
+  module wraps the push stream behind a ``threading.Lock``-guarded
+  latest-frame buffer. The encoder always gets the most recent frame,
+  which matches the Linux ``mss``/NvFBC behavior.
+
+* Pixel format is forced to ``kCVPixelFormatType_32BGRA`` (FourCC
+  ``'BGRA'`` = ``0x42475241``) so the downstream FFmpeg rawvideo path
+  sees the same layout as the Linux capture.
+
+* IOSurface-backed CVPixelBuffers often have a ``bytes_per_row`` that
+  is larger than ``width * 4`` (page-aligned stride). We strip the
+  padding row-by-row before handing the bytes to the encoder; the
+  encoder expects tight ``width * height * 4`` buffers.
+
+* SCK frame delivery uses the main thread for the completion handlers,
+  so we drive SCShareableContent + startCapture via ``NSCondition`` to
+  turn their async callbacks into blocking calls during ``__init__`` and
+  ``close()``. The steady-state capture path does NOT block on SCK —
+  it just reads the last-captured frame out of the buffer under a lock.
+
+* Local cursor rendering via XFixes (as on Linux) is not portable to
+  macOS — there is no clean cross-process shape API. The cursor is left
+  baked into the captured frame by setting ``showsCursor=True`` on the
+  stream config. The Mac server therefore ships cursor pixels inside
+  the video like a classic VNC/PCoIP server. This is a known limitation
+  vs. the Linux server and is documented in the Mac port design doc.
+
+* Permissions: SCK requires "Screen & System Audio Recording" TCC
+  authorization. The first time this module is instantiated the OS
+  will pop a permission prompt; until the user grants it, SCShareable
+  Content will return an empty display list and we raise
+  ``MacScreenCaptureError`` with a pointer to System Settings.
+"""
+
+import ctypes
+import io
+import logging
+import struct
+import threading
+import time
+from typing import Optional, List
+
+import numpy as np
+from PIL import Image
+
+from common.messages import MonitorInfo
+
+logger = logging.getLogger(__name__)
+
+# PyObjC imports are deferred to import-time but guarded so that simply
+# importing server modules on a non-Mac host does not blow up. The
+# dispatcher in screen_capture.py checks ``IS_MACOS`` before pulling this
+# module in.
+try:
+    import objc  # noqa: F401
+    from Foundation import (
+        NSObject,
+        NSCondition,
+        NSRunLoop,
+        NSDefaultRunLoopMode,
+        NSDate,
+    )
+    import ScreenCaptureKit as SCK  # noqa: F401
+    from ScreenCaptureKit import (
+        SCShareableContent,
+        SCContentFilter,
+        SCStreamConfiguration,
+        SCStream,
+    )
+    from Quartz import (
+        CVPixelBufferLockBaseAddress,
+        CVPixelBufferUnlockBaseAddress,
+        CVPixelBufferGetBaseAddress,
+        CVPixelBufferGetWidth,
+        CVPixelBufferGetHeight,
+        CVPixelBufferGetBytesPerRow,
+        kCVPixelBufferLock_ReadOnly,
+        CMSampleBufferGetImageBuffer,
+        CMTimeMake,
+    )
+    _HAS_SCK = True
+except Exception as _e:
+    _HAS_SCK = False
+    _import_error = _e
+
+# kCVPixelFormatType_32BGRA FourCC = 'BGRA' = 0x42475241
+_BGRA_FOURCC = 0x42475241
+
+# SCStreamOutputType: we only care about .screen (= 0), not .audio (= 1)
+# or .microphone (= 2).
+_SC_STREAM_OUTPUT_TYPE_SCREEN = 0
+
+DEFAULT_JPEG_QUALITY = 60
+CHANGE_THRESHOLD = 10
+BLOCK_SIZE = 32
+
+
+class MacScreenCaptureError(RuntimeError):
+    """Raised when ScreenCaptureKit is unavailable or unauthorized."""
+
+
+def _check_sck_available():
+    if not _HAS_SCK:
+        raise MacScreenCaptureError(
+            f"ScreenCaptureKit / PyObjC not available: {_import_error}. "
+            "Run: pip install pyobjc-framework-ScreenCaptureKit "
+            "pyobjc-framework-Quartz pyobjc-framework-Cocoa"
+        )
+
+
+if _HAS_SCK:
+
+    class _StreamOutputHandler(NSObject):
+        """SCStreamOutput delegate.
+
+        SCK calls ``stream:didOutputSampleBuffer:ofType:`` on every frame.
+        We latch the most recent frame's BGRA bytes into ``_latest_bgra``
+        under ``_lock``. The capture class reads this buffer on demand.
+        """
+
+        def initWithCapture_(self, capture):
+            self = objc.super(_StreamOutputHandler, self).init()
+            if self is None:
+                return None
+            self._capture = capture
+            return self
+
+        # objc selector: stream:didOutputSampleBuffer:ofType:
+        def stream_didOutputSampleBuffer_ofType_(
+            self, stream, sample_buffer, output_type
+        ):
+            if output_type != _SC_STREAM_OUTPUT_TYPE_SCREEN:
+                return
+            try:
+                pixel_buffer = CMSampleBufferGetImageBuffer(sample_buffer)
+                if pixel_buffer is None:
+                    return
+
+                # Lock read-only so SCK can keep the surface mapped on
+                # another buffer for the next frame.
+                lock_result = CVPixelBufferLockBaseAddress(
+                    pixel_buffer, kCVPixelBufferLock_ReadOnly
+                )
+                if lock_result != 0:
+                    return
+                try:
+                    width = CVPixelBufferGetWidth(pixel_buffer)
+                    height = CVPixelBufferGetHeight(pixel_buffer)
+                    bpr = CVPixelBufferGetBytesPerRow(pixel_buffer)
+                    base = CVPixelBufferGetBaseAddress(pixel_buffer)
+                    if base is None or width == 0 or height == 0:
+                        return
+
+                    # PyObjC returns an int-castable pointer for the
+                    # base address. ctypes.string_at lets us pull the
+                    # raw bytes out without an extra numpy copy.
+                    base_int = int(base)
+                    row_stride = width * 4
+                    if bpr == row_stride:
+                        raw = ctypes.string_at(base_int, height * bpr)
+                    else:
+                        # Strip row padding. Build a tight buffer the
+                        # encoder can consume directly.
+                        out = bytearray(height * row_stride)
+                        for y in range(height):
+                            src = base_int + y * bpr
+                            out[y * row_stride: (y + 1) * row_stride] = (
+                                ctypes.string_at(src, row_stride)
+                            )
+                        raw = bytes(out)
+
+                    with self._capture._lock:
+                        self._capture._latest_bgra = raw
+                        self._capture._latest_size = (width, height)
+                        self._capture._frame_count += 1
+                        self._capture._last_frame_time = time.monotonic()
+                finally:
+                    CVPixelBufferUnlockBaseAddress(
+                        pixel_buffer, kCVPixelBufferLock_ReadOnly
+                    )
+            except Exception as e:
+                # Never let an exception cross back into Objective-C —
+                # it will crash the SCK dispatch queue.
+                logger.error("SCK frame handler error: %s", e, exc_info=True)
+
+
+class MacScreenCapture:
+    """macOS screen capture using ScreenCaptureKit.
+
+    Implements the same interface as the Linux ``ScreenCapture`` class so
+    the rest of the server pipeline (video_encoder, session_manager) can
+    treat Mac and Linux capture identically.
+    """
+
+    def __init__(
+        self,
+        monitor_index: int = 1,
+        jpeg_quality: int = DEFAULT_JPEG_QUALITY,
+        fps: int = 60,
+    ):
+        _check_sck_available()
+
+        self.monitor_index = monitor_index
+        self.jpeg_quality = jpeg_quality
+        self._fps = fps
+
+        self._lock = threading.Lock()
+        self._latest_bgra: Optional[bytes] = None
+        self._latest_size: tuple = (0, 0)
+        self._last_frame: Optional[np.ndarray] = None
+        self._frame_count = 0
+        self._last_frame_time = 0.0
+
+        self._displays: list = []  # list of SCDisplay handles
+        self._selected_display = None
+        self._stream: Optional[SCStream] = None
+        self._handler: Optional[_StreamOutputHandler] = None
+
+        # Width/height are set by _select_display once we know the
+        # target display's pixel size.
+        self.width = 0
+        self.height = 0
+
+        self._enumerate_displays()
+        self._select_display(monitor_index)
+        self._start_stream()
+
+        logger.info(
+            "MacScreenCapture initialized: %dx%d via SCK (display %d, %d fps)",
+            self.width, self.height, monitor_index, fps,
+        )
+
+    # ------------------------------------------------------------------
+    # Async → sync helpers
+    # ------------------------------------------------------------------
+
+    def _run_sync(self, starter, timeout: float = 5.0):
+        """Turn an SCK async-with-completion-handler call into a blocking call.
+
+        ``starter`` is a callable that takes a single-arg ``completion``
+        callback. We drive the run loop until the completion callback
+        fires or timeout elapses. This is how we block in ``__init__``
+        on SCShareableContent and ``startCaptureWithCompletionHandler_``
+        without deadlocking the main thread.
+        """
+        condition = NSCondition.alloc().init()
+        result = {"done": False, "value": None, "error": None}
+
+        def completion(value, error):
+            condition.lock()
+            try:
+                result["value"] = value
+                result["error"] = error
+                result["done"] = True
+                condition.signal()
+            finally:
+                condition.unlock()
+
+        starter(completion)
+
+        # Spin the run loop so the SCK completion handler (which is
+        # delivered on the main thread) actually runs.
+        deadline = time.monotonic() + timeout
+        run_loop = NSRunLoop.currentRunLoop()
+        while not result["done"] and time.monotonic() < deadline:
+            run_loop.runMode_beforeDate_(
+                NSDefaultRunLoopMode,
+                NSDate.dateWithTimeIntervalSinceNow_(0.05),
+            )
+        if not result["done"]:
+            raise MacScreenCaptureError(
+                f"SCK async call timed out after {timeout:.1f}s"
+            )
+        if result["error"] is not None:
+            raise MacScreenCaptureError(
+                f"SCK async call failed: {result['error']}"
+            )
+        return result["value"]
+
+    # ------------------------------------------------------------------
+    # Display enumeration
+    # ------------------------------------------------------------------
+
+    def _enumerate_displays(self):
+        def starter(completion):
+            SCShareableContent.getShareableContentWithCompletionHandler_(
+                completion
+            )
+        content = self._run_sync(starter, timeout=5.0)
+        if content is None:
+            raise MacScreenCaptureError(
+                "SCShareableContent returned None — likely missing Screen "
+                "Recording permission. Grant it in System Settings → "
+                "Privacy & Security → Screen & System Audio Recording."
+            )
+        displays = list(content.displays())
+        if not displays:
+            raise MacScreenCaptureError(
+                "No displays reported by SCShareableContent. Either no "
+                "monitors attached or Screen Recording permission has "
+                "not been granted."
+            )
+        self._displays = displays
+        logger.info("SCK enumerated %d display(s)", len(displays))
+
+    def _select_display(self, index: int):
+        """Select which display to capture (1-indexed to match Linux)."""
+        if not self._displays:
+            raise MacScreenCaptureError("No displays to select")
+        # monitor_index=0 (virtual desktop / all monitors) isn't a
+        # native SCK concept — fall through to display 1.
+        if index <= 0 or index > len(self._displays):
+            logger.warning(
+                "Requested display %d out of range (1..%d), using display 1",
+                index, len(self._displays),
+            )
+            index = 1
+        self.monitor_index = index
+        self._selected_display = self._displays[index - 1]
+        self.width = int(self._selected_display.width())
+        self.height = int(self._selected_display.height())
+
+    # ------------------------------------------------------------------
+    # Stream lifecycle
+    # ------------------------------------------------------------------
+
+    def _start_stream(self):
+        if self._selected_display is None:
+            raise MacScreenCaptureError("No display selected")
+
+        content_filter = SCContentFilter.alloc().initWithDisplay_excludingWindows_(
+            self._selected_display, []
+        )
+
+        config = SCStreamConfiguration.alloc().init()
+        config.setWidth_(self.width)
+        config.setHeight_(self.height)
+        config.setPixelFormat_(_BGRA_FOURCC)
+        config.setMinimumFrameInterval_(CMTimeMake(1, self._fps))
+        config.setQueueDepth_(6)  # SCK requires >= 3; 6 gives headroom
+        config.setShowsCursor_(True)
+        # Disable audio — we have a separate CoreAudio capture path.
+        try:
+            config.setCapturesAudio_(False)
+        except Exception:
+            # Older SCK versions may not expose capturesAudio; fine.
+            pass
+
+        stream = SCStream.alloc().initWithFilter_configuration_delegate_(
+            content_filter, config, None
+        )
+
+        handler = _StreamOutputHandler.alloc().initWithCapture_(self)
+        ok, err = stream.addStreamOutput_type_sampleHandlerQueue_error_(
+            handler, _SC_STREAM_OUTPUT_TYPE_SCREEN, None, None
+        )
+        if not ok:
+            raise MacScreenCaptureError(
+                f"SCStream.addStreamOutput failed: {err}"
+            )
+
+        self._stream = stream
+        self._handler = handler
+
+        def starter(completion):
+            stream.startCaptureWithCompletionHandler_(completion)
+
+        # startCapture's completion callback is (error) only — our
+        # _run_sync expects (value, error). Wrap it.
+        condition = NSCondition.alloc().init()
+        state = {"done": False, "error": None}
+
+        def start_done(error):
+            condition.lock()
+            try:
+                state["error"] = error
+                state["done"] = True
+                condition.signal()
+            finally:
+                condition.unlock()
+
+        stream.startCaptureWithCompletionHandler_(start_done)
+
+        deadline = time.monotonic() + 5.0
+        run_loop = NSRunLoop.currentRunLoop()
+        while not state["done"] and time.monotonic() < deadline:
+            run_loop.runMode_beforeDate_(
+                NSDefaultRunLoopMode,
+                NSDate.dateWithTimeIntervalSinceNow_(0.05),
+            )
+        if not state["done"]:
+            raise MacScreenCaptureError("SCStream.startCapture timed out")
+        if state["error"] is not None:
+            raise MacScreenCaptureError(
+                f"SCStream.startCapture failed: {state['error']}"
+            )
+
+    def _stop_stream(self):
+        if self._stream is None:
+            return
+        condition = NSCondition.alloc().init()
+        state = {"done": False}
+
+        def stop_done(error):
+            condition.lock()
+            try:
+                state["done"] = True
+                condition.signal()
+            finally:
+                condition.unlock()
+
+        try:
+            self._stream.stopCaptureWithCompletionHandler_(stop_done)
+        except Exception as e:
+            logger.warning("SCStream.stopCapture raised: %s", e)
+            self._stream = None
+            self._handler = None
+            return
+
+        deadline = time.monotonic() + 2.0
+        run_loop = NSRunLoop.currentRunLoop()
+        while not state["done"] and time.monotonic() < deadline:
+            run_loop.runMode_beforeDate_(
+                NSDefaultRunLoopMode,
+                NSDate.dateWithTimeIntervalSinceNow_(0.05),
+            )
+        self._stream = None
+        self._handler = None
+
+    # ------------------------------------------------------------------
+    # Public interface — matches ScreenCapture
+    # ------------------------------------------------------------------
+
+    def reinit(self, width: int = 0, height: int = 0):
+        """Reinitialize after a resolution change / display reconfig."""
+        logger.info("MacScreenCapture reinit requested")
+        self._stop_stream()
+        self._enumerate_displays()
+        self._select_display(self.monitor_index)
+        self._start_stream()
+        with self._lock:
+            self._last_frame = None
+            self._latest_bgra = None
+        logger.info("MacScreenCapture reinit: %dx%d", self.width, self.height)
+
+    def switch_monitor(self, index: int):
+        """Switch to a different display."""
+        logger.info("Switching to display %d", index)
+        self._stop_stream()
+        self._enumerate_displays()
+        self._select_display(index)
+        self._start_stream()
+        with self._lock:
+            self._last_frame = None
+            self._latest_bgra = None
+
+    def list_monitors(self) -> List[MonitorInfo]:
+        """Enumerate all displays reported by SCK."""
+        out: List[MonitorInfo] = []
+        for i, disp in enumerate(self._displays, start=1):
+            try:
+                w = int(disp.width())
+                h = int(disp.height())
+                # SCDisplay exposes a frame rect via frame() on newer
+                # SCK versions; fall back to (0,0) if missing.
+                try:
+                    frame = disp.frame()
+                    x = int(frame.origin.x)
+                    y = int(frame.origin.y)
+                except Exception:
+                    x, y = 0, 0
+                try:
+                    disp_id = int(disp.displayID())
+                except Exception:
+                    disp_id = i
+                out.append(MonitorInfo(
+                    id=i,
+                    name=f"Display {disp_id}",
+                    width=w,
+                    height=h,
+                    x=x,
+                    y=y,
+                    primary=(i == 1),
+                    scale=1.0,
+                ))
+            except Exception as e:
+                logger.warning("Failed to describe display %d: %s", i, e)
+        return out
+
+    def detect_hotplug(self) -> bool:
+        """Check if SCK reports a different number/size of displays."""
+        try:
+            old_sig = [(int(d.width()), int(d.height())) for d in self._displays]
+            self._enumerate_displays()
+            new_sig = [(int(d.width()), int(d.height())) for d in self._displays]
+            if old_sig != new_sig:
+                logger.info("Display hotplug detected: %s -> %s",
+                            old_sig, new_sig)
+                return True
+        except Exception as e:
+            logger.warning("detect_hotplug failed: %s", e)
+        return False
+
+    @property
+    def screen_size(self) -> tuple:
+        return (self.width, self.height)
+
+    @property
+    def monitor_count(self) -> int:
+        return len(self._displays)
+
+    # --- Raw BGRA capture (for H.264/H.265/AV1 encoder pipeline) ---
+
+    def _wait_for_first_frame(self, timeout: float = 2.0):
+        """Block until the first SCK frame arrives.
+
+        Called lazily by ``capture_raw_bgra`` because SCK start is
+        asynchronous and the first frame may not be in the buffer yet
+        when the encoder kicks off.
+        """
+        deadline = time.monotonic() + timeout
+        run_loop = NSRunLoop.currentRunLoop()
+        while time.monotonic() < deadline:
+            with self._lock:
+                if self._latest_bgra is not None:
+                    return
+            run_loop.runMode_beforeDate_(
+                NSDefaultRunLoopMode,
+                NSDate.dateWithTimeIntervalSinceNow_(0.01),
+            )
+
+    def capture_raw_bgra(self) -> bytes:
+        """Return the most recent frame as raw BGRA bytes.
+
+        If no frame has arrived yet, waits briefly for one. If the wait
+        still times out (permission denied, stream stalled), returns a
+        black frame of the expected size so the encoder pipeline doesn't
+        crash — the session_manager's health monitor will notice the
+        frame stall separately.
+        """
+        with self._lock:
+            if self._latest_bgra is not None:
+                return self._latest_bgra
+
+        self._wait_for_first_frame(timeout=1.0)
+
+        with self._lock:
+            if self._latest_bgra is not None:
+                return self._latest_bgra
+
+        logger.warning(
+            "No SCK frame available — returning black frame (%dx%d)",
+            self.width, self.height,
+        )
+        return b"\x00" * (self.width * self.height * 4)
+
+    def capture_raw_frame(self) -> np.ndarray:
+        """Return the most recent frame as a numpy BGRA array."""
+        raw = self.capture_raw_bgra()
+        w, h = self.width, self.height
+        expected = w * h * 4
+        if len(raw) != expected:
+            # Stream resized mid-session — fall back to the actual
+            # latched dimensions.
+            with self._lock:
+                lw, lh = self._latest_size
+            if lw and lh and len(raw) == lw * lh * 4:
+                w, h = lw, lh
+            else:
+                logger.warning(
+                    "BGRA buffer size mismatch: got %d, expected %d",
+                    len(raw), expected,
+                )
+                return np.zeros((h, w, 4), dtype=np.uint8)
+        arr = np.frombuffer(raw, dtype=np.uint8).reshape((h, w, 4))
+        return arr
+
+    # --- JPEG capture (fallback mode) ---
+
+    def capture_full_frame(self) -> bytes:
+        """Capture the entire screen and return JPEG bytes."""
+        arr = self.capture_raw_frame()
+        # BGRA -> RGB for PIL
+        frame = arr[:, :, :3][:, :, ::-1]
+        self._last_frame = frame.copy()
+        return self._encode_jpeg(frame)
+
+    def capture_dirty_regions(self) -> list:
+        """Capture screen and detect dirty rectangles."""
+        arr = self.capture_raw_frame()
+        frame = arr[:, :, :3][:, :, ::-1]
+
+        if self._last_frame is None:
+            self._last_frame = frame.copy()
+            jpeg_data = self._encode_jpeg(frame)
+            return [(0, 0, self.width, self.height, jpeg_data)]
+
+        if frame.shape != self._last_frame.shape:
+            self._last_frame = frame.copy()
+            jpeg_data = self._encode_jpeg(frame)
+            return [(0, 0, frame.shape[1], frame.shape[0], jpeg_data)]
+
+        diff = np.abs(frame.astype(np.int16) - self._last_frame.astype(np.int16))
+        changed = np.max(diff, axis=2) > CHANGE_THRESHOLD
+
+        dirty_regions = self._find_dirty_blocks(changed)
+        if not dirty_regions:
+            return []
+
+        merged = self._merge_regions(dirty_regions)
+        results = []
+        for x, y, w, h in merged:
+            x2 = min(x + w, self.width)
+            y2 = min(y + h, self.height)
+            region = frame[y:y2, x:x2]
+            jpeg_data = self._encode_jpeg(region)
+            results.append((x, y, x2 - x, y2 - y, jpeg_data))
+
+        self._last_frame = frame.copy()
+        return results
+
+    def _find_dirty_blocks(self, changed: np.ndarray) -> list:
+        blocks = []
+        h, w = changed.shape
+        for by in range(0, h, BLOCK_SIZE):
+            for bx in range(0, w, BLOCK_SIZE):
+                block = changed[by:by + BLOCK_SIZE, bx:bx + BLOCK_SIZE]
+                if np.any(block):
+                    blocks.append((bx, by, BLOCK_SIZE, BLOCK_SIZE))
+        return blocks
+
+    def _merge_regions(self, blocks: list) -> list:
+        if not blocks:
+            return []
+        rows = {}
+        for x, y, w, h in blocks:
+            if y not in rows:
+                rows[y] = []
+            rows[y].append((x, w))
+
+        merged = []
+        for y, spans in rows.items():
+            spans.sort()
+            current_x, current_w = spans[0]
+            for x, w in spans[1:]:
+                if x <= current_x + current_w:
+                    current_w = max(current_w, x + w - current_x)
+                else:
+                    merged.append((current_x, y, current_w, BLOCK_SIZE))
+                    current_x, current_w = x, w
+            merged.append((current_x, y, current_w, BLOCK_SIZE))
+
+        if not merged:
+            return merged
+
+        merged.sort(key=lambda r: (r[0], r[1]))
+        final = [merged[0]]
+        for x, y, w, h in merged[1:]:
+            px, py, pw, ph = final[-1]
+            if x == px and w == pw and y == py + ph:
+                final[-1] = (px, py, pw, ph + h)
+            else:
+                final.append((x, y, w, h))
+
+        return final
+
+    def _encode_jpeg(self, frame: np.ndarray) -> bytes:
+        img = Image.fromarray(frame)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=self.jpeg_quality, optimize=False)
+        return buf.getvalue()
+
+    def invalidate(self):
+        """Force next dirty-regions capture to be a full frame."""
+        self._last_frame = None
+
+    def close(self):
+        logger.info(
+            "MacScreenCapture.close (frames delivered: %d)", self._frame_count
+        )
+        self._stop_stream()
+        self._displays = []
+        self._selected_display = None
+        with self._lock:
+            self._latest_bgra = None
+            self._last_frame = None
