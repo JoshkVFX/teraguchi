@@ -373,12 +373,12 @@ class SessionRuntime:
         for ws, cs in list(self.clients.items()):
             if cs.authenticated and self._event_loop:
                 asyncio.run_coroutine_threadsafe(
-                    self._enqueue_frame(cs, tcp_data), self._event_loop)
+                    self._enqueue_frame(cs, tcp_data, is_keyframe), self._event_loop)
 
         self.health.record_frame_sent(len(frame_data))
 
-    async def _enqueue_frame(self, cs: "ClientSession", data: bytes):
-        if not await cs.enqueue(data):
+    async def _enqueue_frame(self, cs: "ClientSession", data: bytes, is_keyframe: bool = False):
+        if not await cs.enqueue(data, is_keyframe=is_keyframe):
             self.health.record_frame_dropped()
 
     def _on_audio_frame(self, audio_data: bytes, timestamp_ms: int):
@@ -636,7 +636,10 @@ class ClientSession:
         self.client_screen_width = 0
         self.client_screen_height = 0
         self.runtime: Optional[SessionRuntime] = None
-        self.send_queue: asyncio.Queue = asyncio.Queue(maxsize=30)
+        # STAB-04: maxsize=4 (was 30) — a bigger queue just delays the stall.
+        # IDR-on-drop recovery in .enqueue() bounds any stall to ~100 ms.
+        self.send_queue: asyncio.Queue = asyncio.Queue(maxsize=4)
+        self._drops_since_keyframe = 0
         self._send_task: Optional[asyncio.Task] = None
 
     def start_sender(self):
@@ -654,11 +657,48 @@ class ClientSession:
         except Exception as e:
             logger.debug("Send error: %s", e)
 
-    async def enqueue(self, data):
+    async def enqueue(self, data, is_keyframe: bool = False):
+        """Enqueue a frame for send.
+
+        STAB-04 / VIDEO-06: on overflow, drop OLDEST (favor freshness) and on
+        the FIRST drop of a streak call self.runtime.encoder.request_keyframe()
+        so an IDR arrives within ~100 ms (bounded stall, not the ~2s GOP stall
+        the old large-queue + return-False policy produced).
+
+        On keyframe enqueue, clear the queue — the new IDR supersedes any
+        pending P-frames that would reference a frame the decoder will skip.
+        """
+        if is_keyframe:
+            # New IDR supersedes pending P-frames
+            while not self.send_queue.empty():
+                try:
+                    self.send_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            self._drops_since_keyframe = 0
         try:
             self.send_queue.put_nowait(data)
             return True
         except asyncio.QueueFull:
+            # Drop OLDEST (favor freshness), then enqueue the new item.
+            try:
+                self.send_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                self.send_queue.put_nowait(data)
+            except asyncio.QueueFull:
+                pass   # Shouldn't happen after get_nowait, but be defensive
+            self._drops_since_keyframe += 1
+            # Request IDR on the FIRST drop of a streak only.
+            if self._drops_since_keyframe == 1 and self.runtime and self.runtime.encoder:
+                try:
+                    self.runtime.encoder.request_keyframe()
+                    logger.warning(
+                        "broadcaster.idr_requested client=%s drops=%d",
+                        self.client_id, self._drops_since_keyframe)
+                except Exception as e:
+                    logger.debug("request_keyframe failed: %s", e)
             return False
 
     def stop(self):

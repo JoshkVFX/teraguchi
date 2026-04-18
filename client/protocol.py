@@ -66,6 +66,10 @@ class ClientProtocol:
 
         # TLS
         self._use_tls = False
+        # SEC-01: dev escape hatch. Double-gated with TERAGUCHI_ACCEPT_INSECURE=1.
+        # Do not enable in production.
+        self._insecure_skip_verify: bool = False
+        self._ca_bundle: Optional[str] = None  # optional custom CA bundle path
 
         # Broker redirect
         self._broker_mode = False
@@ -107,6 +111,18 @@ class ClientProtocol:
     @property
     def connected(self) -> bool:
         return self._connected
+
+    def set_insecure_skip_verify(self, enable: bool, ca_bundle: Optional[str] = None):
+        """SEC-01: dev-only escape hatch. Double-gated with TERAGUCHI_ACCEPT_INSECURE=1.
+
+        Setting this flag alone is NOT sufficient to disable TLS verification;
+        the operating environment must also export TERAGUCHI_ACCEPT_INSECURE=1.
+        Every use emits an ERROR-level log event (transport.insecure_mode_active).
+
+        Do not call this from production code paths.
+        """
+        self._insecure_skip_verify = bool(enable)
+        self._ca_bundle = ca_bundle
 
     def connect(self, host: str, port: int, username: str = "", password: str = "",
                 use_tls: bool = False, auto_reconnect: bool = True):
@@ -290,10 +306,12 @@ class ClientProtocol:
 
         ssl_context = None
         if self._use_tls:
-            import ssl
-            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE
+            from common.tls_opt_out import build_client_ssl_context
+            ssl_context = build_client_ssl_context(
+                insecure_cli_flag=getattr(self, "_insecure_skip_verify", False),
+                ca_bundle=getattr(self, "_ca_bundle", None),
+                site_label="server_wss",
+            )
 
         try:
             async with websockets.connect(
@@ -359,10 +377,12 @@ class ClientProtocol:
 
         ssl_context = None
         if self._use_tls:
-            import ssl
-            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE
+            from common.tls_opt_out import build_client_ssl_context
+            ssl_context = build_client_ssl_context(
+                insecure_cli_flag=getattr(self, "_insecure_skip_verify", False),
+                ca_bundle=getattr(self, "_ca_bundle", None),
+                site_label="broker_wss",
+            )
 
         async with websockets.connect(
             uri, max_size=1024 * 1024,
