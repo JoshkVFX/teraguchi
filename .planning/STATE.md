@@ -4,7 +4,7 @@
 
 **Maintainer:** Randy McEntee (solo, single committer; second-committer invite is a Phase 7 success criterion)
 
-**Last updated:** 2026-04-18 (initialization)
+**Last updated:** 2026-04-18 (Phase 1 context gathered)
 
 ---
 
@@ -25,11 +25,12 @@
 | Field | Value |
 |-------|-------|
 | Milestone | v1.0 |
-| Current phase | — (none started) |
-| Current plan | — |
-| Status | Roadmap initialized; ready to plan Phase 1 |
+| Current phase | Phase 1 — Stability + CI + Test Baseline (context gathered) |
+| Current plan | — (run `/gsd-plan-phase 1` next) |
+| Status | Phase 1 CONTEXT.md ready; awaiting plan-phase invocation |
 | Phases complete | 0 / 7 |
 | Requirements mapped | 108 / 108 (100% coverage) |
+| Resume file | `.planning/phases/01-stability-ci-test-baseline/01-CONTEXT.md` |
 
 **Progress bar:** [▱▱▱▱▱▱▱] 0 / 7 phases complete
 
@@ -111,13 +112,25 @@ None at roadmap-lock time. All five PROJECT.md / SUMMARY.md open questions were 
 
 ## Session Continuity
 
-**Files written this session:**
-- `.planning/ROADMAP.md` — primary artifact, 7 phases × 108 reqs
-- `.planning/STATE.md` — this file
-- `.planning/REQUIREMENTS.md` — Traceability section populated with REQ-ID → phase mapping
+**Files written most recent session:**
+- `.planning/phases/01-stability-ci-test-baseline/01-CONTEXT.md` — 18 implementation decisions across 4 gray areas
+- `.planning/phases/01-stability-ci-test-baseline/01-DISCUSSION-LOG.md` — full Q&A audit trail
 
-**Next action:** `/gsd-plan-phase 1` to decompose Phase 1 (Stability + CI + Test Baseline) into executable plans. Phase 1 must complete before any other phase has trustworthy measurements.
+**Phase 1 decisions locked (see 01-CONTEXT.md for full detail):**
+- Coverage = critical path only (`common/`, auth, tokens, bookmarks, SessionFSM)
+- HW mocking = mock at FFmpeg subprocess boundary
+- Integration tests = in-process loopback in CI
+- TDD = tests-with-code (no strict ceremony)
+- CI = GitHub-hosted only (macos-14 + rockylinux:9)
+- Branch protection = required from day one; all four CI gates hard
+- Refactor = incremental, test-gated; aggressive split for both monoliths
+- FSM library = python-statemachine
+- Order = critical bugs first (send_queue → CERT_NONE → tests/CI → refactor)
+- Smoke harness = synthetic loop, GitHub Actions nightly cron, 1-hour in Phase 1, full 8h by Phase 4
+
+**Next action:** `/gsd-plan-phase 1` to decompose Phase 1 into executable plans.
 
 ---
 
 *Initialized 2026-04-18 by gsd-roadmapper.*
+*Phase 1 context gathered 2026-04-18 by gsd-discuss-phase.*
