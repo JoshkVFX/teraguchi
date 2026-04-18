@@ -8,8 +8,8 @@ progress:
   total_phases: 7
   completed_phases: 0
   total_plans: 17
-  completed_plans: 0
-  percent: 0
+  completed_plans: 2
+  percent: 12
 ---
 
 # Teraguchi — Project State
@@ -37,13 +37,13 @@ progress:
 ## Current Position
 
 Phase: 1 (stability-ci-test-baseline) — EXECUTING
-Plan: 1 of 17
+Plan: 2 of 17 complete; Wave 1 done
 | Field | Value |
 |-------|-------|
 | Milestone | v1.0 |
-| Current phase | Phase 1 — Stability + CI + Test Baseline (context gathered) |
-| Current plan | — (run `/gsd-plan-phase 1` next) |
-| Status | Phase 1 CONTEXT.md ready; awaiting plan-phase invocation |
+| Current phase | Phase 1 — Stability + CI + Test Baseline (Wave 1 complete) |
+| Current plan | 01-03 next (pyproject toolchain) — Wave 2 |
+| Status | Wave 1 merged to dev (4a2a987); 9/9 tests pass; awaiting Wave 2 go-ahead |
 | Phases complete | 0 / 7 |
 | Requirements mapped | 108 / 108 (100% coverage) |
 | Resume file | `.planning/phases/01-stability-ci-test-baseline/01-CONTEXT.md` |

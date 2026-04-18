@@ -42,8 +42,8 @@ This is brownfield. A working vibe-coded prototype already covers the happy path
   4. Per-stage latency breakdown is visible in the client health overlay (capture / encode / transmit / decode / display) using structlog JSON traces — measurable, not anecdotal
   5. TLS certificate verification is ON by default in client/broker/QUIC/aiohttp probes (full Tailscale-cert + TOFU + corporate-CA story lands in Phase 6, but `CERT_NONE` is removed here)
 **Plans**: 17 plans
-  - [ ] 01-01-PLAN.md — STAB-04 send_queue fix (maxsize=4 + IDR-on-drop) + regression tests
-  - [ ] 01-02-PLAN.md — SEC-01 remove ssl.CERT_NONE at all 4 sites + real-CA integration tests
+  - [x] 01-01-PLAN.md — STAB-04 send_queue fix (maxsize=4 + IDR-on-drop) + regression tests
+  - [x] 01-02-PLAN.md — SEC-01 remove ssl.CERT_NONE at all 4 sites + real-CA integration tests
   - [ ] 01-03-PLAN.md — pyproject.toml + requirements-dev.txt toolchain (pytest, ruff, mypy, Python 3.12 floor, Apache-2.0 fix)
   - [ ] 01-04-PLAN.md — STAB-01 critical-path unit tests (common/, auth, tokens, bookmarks + T-1-02/T-1-03 guards)
   - [ ] 01-05-PLAN.md — STAB-02/STAB-03 GitHub Actions CI (ci.yml + build-artifacts.yml + RPM spec dry-run)
@@ -238,7 +238,7 @@ For scope discipline (single maintainer):
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Stability + CI + Test Baseline | 0/17 | Planned | — |
+| 1. Stability + CI + Test Baseline | 2/17 | In progress | — |
 | 2. Input + Color Fidelity | 0/0 | Not started | — |
 | 3. Display + Multi-Monitor + Clipboard | 0/0 | Not started | — |
 | 4. Audio | 0/0 | Not started | — |
