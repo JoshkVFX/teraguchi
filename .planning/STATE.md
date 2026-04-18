@@ -1,3 +1,17 @@
+---
+gsd_state_version: 1.0
+milestone: v1.0
+milestone_name: milestone
+status: unknown
+last_updated: "2026-04-18T23:34:02.466Z"
+progress:
+  total_phases: 7
+  completed_phases: 0
+  total_plans: 17
+  completed_plans: 0
+  percent: 0
+---
+
 # Teraguchi — Project State
 
 **Project:** Teraguchi — Open-source remote-workstation replacement for HP Anyware / PCoIP, targeting small VFX studios running Autodesk Flame, Nuke, Resolve, and Houdini.
@@ -12,7 +26,7 @@
 
 **Core value:** A Flame artist can work an 8-hour client session remotely and not notice they're remote — input latency, color accuracy, and reliability all match sitting in front of the machine. If that holds, everything else matters. If it doesn't, the project has failed regardless of feature count.
 
-**Current focus:** Roadmap initialized. Awaiting kickoff of Phase 1 (Stability + CI + Test Baseline).
+**Current focus:** Phase 1 — stability-ci-test-baseline
 
 **Why now:** HP Anyware (PCoIP) end-of-life announced; new sales end May 7 2026, existing customers migrate by Oct 31 2029. Every small independent VFX studio (1-10 person shops) running Flame / Nuke / Resolve over PCoIP is now on a clock. NICE DCV is AWS-only and expensive; Parsec is SaaS-only / 8-bit / Windows-server; Sunshine has no pen tablet support. The gap (self-hosted, OSS, 10-bit, Wacom-first, macOS server) is uncontested.
 
@@ -22,6 +36,8 @@
 
 ## Current Position
 
+Phase: 1 (stability-ci-test-baseline) — EXECUTING
+Plan: 1 of 17
 | Field | Value |
 |-------|-------|
 | Milestone | v1.0 |
@@ -113,10 +129,12 @@ None at roadmap-lock time. All five PROJECT.md / SUMMARY.md open questions were 
 ## Session Continuity
 
 **Files written most recent session:**
+
 - `.planning/phases/01-stability-ci-test-baseline/01-CONTEXT.md` — 18 implementation decisions across 4 gray areas
 - `.planning/phases/01-stability-ci-test-baseline/01-DISCUSSION-LOG.md` — full Q&A audit trail
 
 **Phase 1 decisions locked (see 01-CONTEXT.md for full detail):**
+
 - Coverage = critical path only (`common/`, auth, tokens, bookmarks, SessionFSM)
 - HW mocking = mock at FFmpeg subprocess boundary
 - Integration tests = in-process loopback in CI
