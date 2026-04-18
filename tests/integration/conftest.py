@@ -28,6 +28,10 @@ def _build_ca(common_name: str):
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     now = datetime.datetime.now(datetime.timezone.utc)
     subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
+    # SubjectKeyIdentifier + AuthorityKeyIdentifier required by OpenSSL
+    # strict verification in recent Python (3.14+) — without them the
+    # handshake fails with "Missing Authority Key Identifier".
+    ski = x509.SubjectKeyIdentifier.from_public_key(key.public_key())
     cert = (
         x509.CertificateBuilder()
         .subject_name(subject)
@@ -37,6 +41,25 @@ def _build_ca(common_name: str):
         .not_valid_before(now - datetime.timedelta(minutes=5))
         .not_valid_after(now + datetime.timedelta(hours=1))
         .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=False,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=True,
+                crl_sign=True,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(ski, critical=False)
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(key.public_key()),
+            critical=False,
+        )
         .sign(key, hashes.SHA256())
     )
     return key, cert
@@ -51,6 +74,8 @@ def _sign_server_cert(ca_key, ca_cert, host: str):
         san.append(x509.IPAddress(ipaddress.ip_address(host)))
     except ValueError:
         pass
+    ski = x509.SubjectKeyIdentifier.from_public_key(key.public_key())
+    aki = x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key())
     cert = (
         x509.CertificateBuilder()
         .subject_name(subject)
@@ -60,6 +85,26 @@ def _sign_server_cert(ca_key, ca_cert, host: str):
         .not_valid_before(now - datetime.timedelta(minutes=5))
         .not_valid_after(now + datetime.timedelta(hours=1))
         .add_extension(x509.SubjectAlternativeName(san), critical=False)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=True,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=False,
+                crl_sign=False,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(
+            x509.ExtendedKeyUsage([x509.ExtendedKeyUsageOID.SERVER_AUTH]),
+            critical=False,
+        )
+        .add_extension(ski, critical=False)
+        .add_extension(aki, critical=False)
         .sign(ca_key, hashes.SHA256())
     )
     return key, cert
