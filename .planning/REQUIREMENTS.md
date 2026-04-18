@@ -195,7 +195,131 @@
 
 ## Traceability
 
-<!-- Filled by roadmapper — maps each REQ-ID to exactly one phase -->
+Every v1 requirement is mapped to exactly one phase. Coverage: 108/108 (100%).
+
+| REQ-ID | Phase | Status |
+|--------|-------|--------|
+| STAB-01 | Phase 1 | Pending |
+| STAB-02 | Phase 1 | Pending |
+| STAB-03 | Phase 1 | Pending |
+| STAB-04 | Phase 1 | Pending |
+| STAB-05 | Phase 1 | Pending |
+| STAB-06 | Phase 1 | Pending |
+| STAB-07 | Phase 1 | Pending |
+| STAB-08 | Phase 1 | Pending |
+| STAB-09 | Phase 1 | Pending |
+| INPUT-01 | Phase 2 | Pending |
+| INPUT-02 | Phase 2 | Pending |
+| INPUT-03 | Phase 2 | Pending |
+| INPUT-04 | Phase 2 | Pending |
+| INPUT-05 | Phase 2 | Pending |
+| INPUT-06 | Phase 2 | Pending |
+| INPUT-07 | Phase 2 | Pending |
+| INPUT-08 | Phase 2 | Pending |
+| INPUT-09 | Phase 2 | Pending |
+| INPUT-10 | Phase 2 | Pending |
+| INPUT-11 | Phase 2 | Pending |
+| INPUT-12 | Phase 2 | Pending |
+| VIDEO-01 | Phase 2 | Pending |
+| VIDEO-02 | Phase 2 | Pending |
+| VIDEO-03 | Phase 2 | Pending |
+| VIDEO-04 | Phase 2 | Pending |
+| VIDEO-05 | Phase 2 | Pending |
+| VIDEO-06 | Phase 2 | Pending |
+| VIDEO-07 | Phase 2 | Pending |
+| VIDEO-08 | Phase 2 | Pending |
+| VIDEO-09 | Phase 2 | Pending |
+| VIDEO-10 | Phase 2 | Pending |
+| VIDEO-11 | Phase 2 | Pending |
+| VIDEO-12 | Phase 2 | Pending |
+| DISP-01 | Phase 3 | Pending |
+| DISP-02 | Phase 3 | Pending |
+| DISP-03 | Phase 3 | Pending |
+| DISP-04 | Phase 3 | Pending |
+| DISP-05 | Phase 3 | Pending |
+| DISP-06 | Phase 3 | Pending |
+| DISP-07 | Phase 3 | Pending |
+| CLIP-01 | Phase 3 | Pending |
+| CLIP-02 | Phase 3 | Pending |
+| CLIP-03 | Phase 3 | Pending |
+| AUDIO-01 | Phase 4 | Pending |
+| AUDIO-02 | Phase 4 | Pending |
+| AUDIO-03 | Phase 4 | Pending |
+| AUDIO-04 | Phase 4 | Pending |
+| AUDIO-05 | Phase 4 | Pending |
+| AUDIO-06 | Phase 4 | Pending |
+| AUDIO-07 | Phase 4 | Pending |
+| AUDIO-08 | Phase 4 | Pending |
+| AUDIO-09 | Phase 4 | Pending |
+| NET-01 | Phase 5 | Pending |
+| NET-02 | Phase 5 | Pending |
+| NET-03 | Phase 5 | Pending |
+| NET-04 | Phase 5 | Pending |
+| NET-05 | Phase 5 | Pending |
+| NET-06 | Phase 5 | Pending |
+| NET-07 | Phase 5 | Pending |
+| NET-08 | Phase 5 | Pending |
+| NET-09 | Phase 5 | Pending |
+| NET-10 | Phase 5 | Pending |
+| NET-11 | Phase 5 | Pending |
+| FILE-01 | Phase 5 | Pending |
+| FILE-02 | Phase 5 | Pending |
+| FILE-03 | Phase 5 | Pending |
+| FILE-04 | Phase 5 | Pending |
+| FILE-05 | Phase 5 | Pending |
+| USB-01 | Phase 5 | Pending |
+| USB-02 | Phase 5 | Pending (spike-gated) |
+| USB-03 | Phase 5 | Pending |
+| OBS-04 | Phase 5 | Pending |
+| SEC-01 | Phase 1 | Pending (critical-path blocker) |
+| SEC-02 | Phase 6 | Pending |
+| SEC-03 | Phase 6 | Pending |
+| SEC-04 | Phase 6 | Pending |
+| SEC-05 | Phase 6 | Pending |
+| SEC-06 | Phase 6 | Pending |
+| SEC-07 | Phase 6 | Pending |
+| SEC-08 | Phase 6 | Pending |
+| SEC-09 | Phase 6 | Pending |
+| DIST-01 | Phase 6 | Pending |
+| DIST-02 | Phase 6 | Pending |
+| DIST-03 | Phase 6 | Pending |
+| DIST-04 | Phase 6 | Pending |
+| DIST-05 | Phase 6 | Pending |
+| DIST-06 | Phase 6 | Pending |
+| DIST-07 | Phase 6 | Pending |
+| DIST-08 | Phase 6 | Pending |
+| DIST-09 | Phase 6 | Pending |
+| OBS-01 | Phase 1 | Pending |
+| OBS-02 | Phase 1 | Pending |
+| OBS-03 | Phase 1 | Pending |
+| OBS-05 | Phase 1 | Pending |
+| DOCS-01 | Phase 7 | Pending |
+| DOCS-02 | Phase 7 | Pending |
+| DOCS-03 | Phase 7 | Pending |
+| DOCS-04 | Phase 7 | Pending |
+| DOCS-05 | Phase 7 | Pending |
+| DOCS-06 | Phase 7 | Pending |
+| DOCS-07 | Phase 7 | Pending |
+| GOV-01 | Phase 7 | Pending |
+| GOV-02 | Phase 7 | Pending |
+| GOV-03 | Phase 7 | Pending |
+| GOV-04 | Phase 7 | Pending |
+| GOV-05 | Phase 7 | Pending |
+| GOV-06 | Phase 7 | Pending |
+| GOV-07 | Phase 7 | Pending |
+
+### Coverage Summary by Phase
+
+| Phase | Requirement Count | Categories |
+|-------|-------------------|------------|
+| Phase 1: Stability + CI + Test Baseline | 14 | STAB (9), SEC-01, OBS-01/-02/-03/-05 (4) |
+| Phase 2: Input + Color Fidelity | 24 | INPUT (12), VIDEO (12) |
+| Phase 3: Display + Multi-Monitor + Clipboard | 10 | DISP (7), CLIP (3) |
+| Phase 4: Audio | 9 | AUDIO (9) |
+| Phase 5: Network, Transport, Side-Channels | 20 | NET (11), FILE (5), USB (3), OBS-04 (1) |
+| Phase 6: Distribution + Security Hardening | 17 | SEC (8 of 9; SEC-01 in Phase 1), DIST (9) |
+| Phase 7: OSS Polish + Governance | 14 | DOCS (7), GOV (7) |
+| **Total** | **108 / 108** | **All categories covered** |
 
 ---
-*Generated 2026-04-18 from research/SUMMARY.md + PROJECT.md after user locked license/fps/audio/OS decisions.*
+*Generated 2026-04-18 from research/SUMMARY.md + PROJECT.md after user locked license/fps/audio/OS decisions. Traceability populated 2026-04-18 by gsd-roadmapper.*
