@@ -41,7 +41,24 @@ This is brownfield. A working vibe-coded prototype already covers the happy path
   3. A single dropped video frame triggers an IDR within one frame interval (fixes the 2-second GOP-stall bug); `send_queue` depth is bounded at 4 and instrumented
   4. Per-stage latency breakdown is visible in the client health overlay (capture / encode / transmit / decode / display) using structlog JSON traces — measurable, not anecdotal
   5. TLS certificate verification is ON by default in client/broker/QUIC/aiohttp probes (full Tailscale-cert + TOFU + corporate-CA story lands in Phase 6, but `CERT_NONE` is removed here)
-**Plans**: TBD
+**Plans**: 17 plans
+  - [ ] 01-01-PLAN.md — STAB-04 send_queue fix (maxsize=4 + IDR-on-drop) + regression tests
+  - [ ] 01-02-PLAN.md — SEC-01 remove ssl.CERT_NONE at all 4 sites + real-CA integration tests
+  - [ ] 01-03-PLAN.md — pyproject.toml + requirements-dev.txt toolchain (pytest, ruff, mypy, Python 3.12 floor, Apache-2.0 fix)
+  - [ ] 01-04-PLAN.md — STAB-01 critical-path unit tests (common/, auth, tokens, bookmarks + T-1-02/T-1-03 guards)
+  - [ ] 01-05-PLAN.md — STAB-02/STAB-03 GitHub Actions CI (ci.yml + build-artifacts.yml + RPM spec dry-run)
+  - [ ] 01-06-PLAN.md — OBS-01 structlog + error taxonomy + ProtocolErrorMsg + redaction (T-1-04)
+  - [ ] 01-07-PLAN.md — STAB-06 ClientFSM + ServerFSM + ALLOWED_PAIRS in common/session_fsm.py
+  - [ ] 01-08-PLAN.md — STAB-06 HealthPing/HealthPong state serialization + FSM wiring into server + client
+  - [ ] 01-09-PLAN.md — STAB-05 prep: characterization tests (server bootstrap + VideoEncoder mock)
+  - [ ] 01-10-PLAN.md — STAB-05 server decomp 1/2: StreamLoop + HealthLoop + EncoderLifecycle + MonitorHotplug
+  - [ ] 01-11-PLAN.md — STAB-05 server decomp 2/2: SessionRuntime + ClientSession + thin __main__.py
+  - [ ] 01-12-PLAN.md — STAB-05 client decomp + STAB-08 ConnectionSupervisor + reconnect integration
+  - [ ] 01-13-PLAN.md — STAB-07 bounded pipeline queues (CaptureQueue, EncoderQueue, InputQueue audit)
+  - [ ] 01-14-PLAN.md — OBS-02/OBS-03 per-stage latency + keyframe telemetry + clock-offset helper
+  - [ ] 01-15-PLAN.md — OBS-05 diagnostic bundle (T-1-05 redaction regression guard)
+  - [ ] 01-16-PLAN.md — D-08/D-09 synthetic latency benchmark (p99 < 25 ms gate) + CI job
+  - [ ] 01-17-PLAN.md — STAB-09 1-hour synthetic smoke harness + nightly GHA workflow (D-15/D-16/D-17/D-18)
 **Size**: L
 **UI hint**: no
 
@@ -221,7 +238,7 @@ For scope discipline (single maintainer):
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Stability + CI + Test Baseline | 0/0 | Not started | — |
+| 1. Stability + CI + Test Baseline | 0/17 | Planned | — |
 | 2. Input + Color Fidelity | 0/0 | Not started | — |
 | 3. Display + Multi-Monitor + Clipboard | 0/0 | Not started | — |
 | 4. Audio | 0/0 | Not started | — |
