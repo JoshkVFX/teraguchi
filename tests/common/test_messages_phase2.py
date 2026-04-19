@@ -61,37 +61,83 @@ def test_pen_proximity_roundtrip():
     assert parsed["pen_type"] == "eraser"
 
 
-@pytest.mark.xfail(reason="Wave 1 - 02-02 extended KeyEvent bits", strict=False)
 def test_key_event_extended_with_caps_num_scroll_lock_bits():
-    from common.messages import KeyEventMsg, parse_message  # noqa: F401
-    pytest.fail(
-        "Wave 1 (02-02) promotes KeyEvent to a @dataclass and asserts "
-        "caps_lock_on / num_lock_on / scroll_lock_on bits round-trip"
+    """D-14 — Caps / Num / Scroll Lock state bits on every KeyEvent.
+
+    Client sends lock-state with every keystroke; server auto-corrects
+    its virtual display's lock state on mismatch. Zero round-trip cost;
+    state re-converges on the next keystroke. Phase 2 promotes KEY_EVENT
+    from a raw dict to a ``@dataclass`` with the three lock-state bits
+    as new fields (default False = Phase 1 wire compat).
+    """
+    from common.messages import KeyEventMsg, MsgType, parse_message
+    msg = KeyEventMsg(
+        scan_code=30, pressed=True,
+        caps_lock_on=True, num_lock_on=False, scroll_lock_on=False,
     )
+    parsed = parse_message(msg.to_json())
+    assert parsed["type"] == MsgType.KEY_EVENT
+    assert parsed["scan_code"] == 30
+    assert parsed["pressed"] is True
+    assert parsed["caps_lock_on"] is True
+    assert parsed["num_lock_on"] is False
+    assert parsed["scroll_lock_on"] is False
 
 
-@pytest.mark.xfail(reason="Wave 1 - 02-02 extended ServerHello color caps", strict=False)
 def test_server_hello_extended_with_color_caps():
-    from common.messages import ServerHelloMsg, parse_message  # noqa: F401
-    pytest.fail(
-        "Wave 1 (02-02) asserts ServerHelloMsg exposes supports_main10, "
-        "supports_422, supports_444 and color_negotiated_state"
+    """D-03 — ServerHelloMsg advertises a nested ServerColorCaps block.
+
+    Server capability-probe writes main10 / chroma_422 / chroma_444 +
+    a negotiated_state badge. ``asdict`` recurses into the nested
+    dataclass so the wire format is ``color_caps: {main10, chroma_422,
+    chroma_444, advertised_pix_fmt, negotiated_state}``.
+
+    Per threat T-02-06 (info-disclosure), ServerHelloMsg is sent POST-auth,
+    so the capability fingerprint is not emitted on pre-auth endpoints.
+    """
+    from common.messages import (
+        MsgType, ServerColorCaps, ServerHelloMsg, parse_message,
     )
+    caps = ServerColorCaps(
+        main10=True, chroma_422=False, chroma_444=False,
+        negotiated_state="confirmed",
+    )
+    hello = ServerHelloMsg(server_name="teraguchi-srv", color_caps=caps)
+    parsed = parse_message(hello.to_json())
+    assert parsed["type"] == MsgType.SERVER_HELLO
+    assert parsed["server_name"] == "teraguchi-srv"
+    assert parsed["color_caps"]["main10"] is True
+    assert parsed["color_caps"]["chroma_422"] is False
+    assert parsed["color_caps"]["chroma_444"] is False
+    assert parsed["color_caps"]["negotiated_state"] == "confirmed"
 
 
-@pytest.mark.xfail(reason="Wave 1 - 02-02 ColorCaps dataclass defaults", strict=False)
 def test_color_caps_dataclass_defaults_false():
-    from common.messages import ColorCaps  # noqa: F401
-    pytest.fail(
-        "Wave 1 (02-02) asserts ColorCaps() defaults all booleans to False "
-        "so capability-probe failure surfaces as 'not_supported'"
-    )
+    """D-03 — ServerColorCaps() default instance surfaces as 'not_supported'.
+
+    Capability-probe failure path — the server refuses to advertise
+    10-bit / 4:2:2 / 4:4:4 when hardware can't honestly deliver, and the
+    client health overlay renders the ``negotiated_state`` badge so
+    artists see state at a glance (no silent fallback).
+    """
+    from common.messages import ServerColorCaps
+    caps = ServerColorCaps()
+    assert caps.main10 is False
+    assert caps.chroma_422 is False
+    assert caps.chroma_444 is False
+    assert caps.advertised_pix_fmt == "p010le"
+    assert caps.negotiated_state == "not_supported"
 
 
-@pytest.mark.xfail(reason="Wave 1 - 02-02 parser invariant preserved", strict=False)
 def test_unknown_msgtype_still_rejected_like_phase1():
-    from common.messages import parse_message  # noqa: F401
-    pytest.fail(
-        "Wave 1 (02-02) asserts parse_message preserves the Phase 1 "
-        "pass-through contract for unknown msg types (no KeyError)"
-    )
+    """Phase 1 parse_message contract preserved.
+
+    tests/common/test_messages.py::test_parse_message_unknown_type_passes_through
+    establishes that parse_message is a thin ``json.loads`` — unknown
+    type values flow through as plain dicts with no KeyError. Phase 2
+    additions MUST not tighten this contract (upstream dispatcher is
+    responsible for unknown-type handling, not the parser).
+    """
+    from common.messages import parse_message
+    result = parse_message('{"type": "phase2_bogus_type_xyz"}')
+    assert result["type"] == "phase2_bogus_type_xyz"
