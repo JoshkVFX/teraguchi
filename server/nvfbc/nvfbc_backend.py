@@ -77,7 +77,18 @@ class NvFBCBackend:
                  with_cursor: bool = False,
                  push_model: bool = True,
                  direct_capture: bool = False,
+                 want_10bit: bool = False,
                  startup_timeout: float = 5.0):
+        """Spawn the nvfbc_capture helper.
+
+        Phase 2 VIDEO-09: ``want_10bit=True`` requests a YUV420P10LE
+        capture surface. The helper compiles the 10-bit path under
+        ``#ifdef NVFBC_BUFFER_FORMAT_YUV420P10LE`` so older NvFBC SDKs
+        silently fall through to BGRA + emit a warning to stderr; the
+        Python side logs the warning but otherwise treats the helper as
+        successful (the parent ``ScreenCapture`` carries the degraded
+        capability state separately).
+        """
         if not helper_available():
             raise RuntimeError(
                 f"nvfbc_capture helper not found at {_HELPER_BIN} — "
@@ -102,9 +113,14 @@ class NvFBCBackend:
             "--with-cursor", "1" if with_cursor else "0",
             "--push", "1" if push_model else "0",
             "--direct-capture", "1" if direct_capture else "0",
+            "--want-10bit", "1" if want_10bit else "0",
         ]
         if display:
             args.extend(["--display", display])
+        # Stash for the parent ScreenCapture to surface the actual
+        # surface format we asked for (the runtime SDK guard may have
+        # overridden it back to BGRA, which is reported via stderr).
+        self._want_10bit = bool(want_10bit)
 
         env = os.environ.copy()
         if display:

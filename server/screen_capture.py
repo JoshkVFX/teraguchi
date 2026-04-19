@@ -139,15 +139,28 @@ def detect_monitors_xrandr() -> List[dict]:
 class ScreenCapture:
     """Captures the Linux screen with enhanced multi-monitor support."""
 
-    def __init__(self, monitor_index: int = 1, jpeg_quality: int = DEFAULT_JPEG_QUALITY):
+    def __init__(self, monitor_index: int = 1,
+                 jpeg_quality: int = DEFAULT_JPEG_QUALITY,
+                 want_10bit: bool = False):
         """
         Args:
             monitor_index: 0 = all monitors (virtual desktop),
                           1+ = specific monitor
             jpeg_quality: JPEG quality for fallback mode
+            want_10bit: Phase 2 VIDEO-09 — request a YUV420P10LE NvFBC
+                surface for the Main10 path. mss has no 10-bit capture
+                so when we fall back to mss the runtime capability state
+                is forced to ``"degraded"`` (the client health overlay
+                renders the explicit badge — no silent downgrade per
+                D-03).
         """
         self.monitor_index = monitor_index
         self.jpeg_quality = jpeg_quality
+        # Phase 2 D-03 / VIDEO-09 state surface — read by the bootstrap
+        # ``build_color_caps()`` helper to override negotiated_state
+        # when the live capture path can't honor the advertised cap.
+        self._want_10bit: bool = bool(want_10bit)
+        self._using_mss_fallback: bool = False
         self._sct = mss.mss()
         self._last_frame: Optional[np.ndarray] = None
         self._xrandr_info: List[dict] = []
@@ -179,6 +192,11 @@ class ScreenCapture:
                     # heavy compositor activity (Flame playback) and
                     # contributed to mid-stream frame layout drift.
                     direct_capture=False,
+                    # Phase 2 VIDEO-09: request 10-bit YUV420P10LE
+                    # surface when caller asked. Helper SDK guard may
+                    # silently fall through to BGRA on older drivers;
+                    # runtime_capability_state surfaces that.
+                    want_10bit=self._want_10bit,
                 )
                 # NvFBC captures the whole screen — override width/height
                 # so downstream encoders see the real framebuffer size
@@ -189,6 +207,16 @@ class ScreenCapture:
                 logger.warning("NvFBC backend unavailable (%s) — "
                                "falling back to mss/XShmGetImage", e)
                 self._nvfbc = None
+                # Phase 2 VIDEO-09 + D-03: mss has no 10-bit path. If
+                # the caller wanted Main10 capture and we fell back to
+                # mss, the negotiated capability state must drop to
+                # "degraded" so the client badge tells the artist
+                # honestly.
+                self._using_mss_fallback = True
+        elif self._want_10bit:
+            # No NvFBC even attempted (no driver / no helper) — also a
+            # degraded path for the 10-bit advertisement.
+            self._using_mss_fallback = True
 
         # Tearing mitigation for the mss fallback path: gate captures
         # on XDamage events so we only read the framebuffer after the
@@ -423,6 +451,26 @@ class ScreenCapture:
     def monitor_count(self) -> int:
         return len(self._sct.monitors) - 1  # Subtract virtual desktop
 
+    @property
+    def runtime_capability_state(self) -> str:
+        """Phase 2 VIDEO-09 / D-03: live ServerColorCaps.negotiated_state
+        contribution from the capture path.
+
+        Truth table:
+          want_10bit + NvFBC alive          -> "confirmed"
+          want_10bit + mss fallback / no GPU -> "degraded"
+          NOT want_10bit                    -> "not_supported"
+
+        Consumed by ``server.bootstrap.build_color_caps`` after the
+        live capture is initialized — that helper combines this with
+        the encoder probe to decide the final badge value.
+        """
+        if not self._want_10bit:
+            return "not_supported"
+        if self._using_mss_fallback or self._nvfbc is None:
+            return "degraded"
+        return "confirmed"
+
     # --- Raw BGRA capture (for H.264/H.265/AV1 encoder pipeline) ---
 
     def capture_raw_bgra(self) -> bytes:
@@ -444,6 +492,10 @@ class ScreenCapture:
                 except Exception:
                     pass
                 self._nvfbc = None
+                # Phase 2 VIDEO-09: a mid-stream NvFBC failure on the
+                # 10-bit path drops us to mss → flip to "degraded".
+                if self._want_10bit:
+                    self._using_mss_fallback = True
                 self._init_damage_tracker()
         self._sync_before_capture()
         sct_img = self._sct.grab(self._monitor)
@@ -462,6 +514,8 @@ class ScreenCapture:
                 except Exception:
                     pass
                 self._nvfbc = None
+                if self._want_10bit:
+                    self._using_mss_fallback = True
                 self._init_damage_tracker()
         self._sync_before_capture()
         sct_img = self._sct.grab(self._monitor)
