@@ -149,11 +149,28 @@ class BookmarkManager:
         return destination_kind != "mac"
 
     def _save(self):
-        """Save bookmarks to disk."""
+        """Save bookmarks to disk atomically.
+
+        Phase 2 WR-01: a crash mid-write previously left a truncated
+        ``bookmarks.json`` which `_load()` then silently tossed (the bare
+        ``except Exception`` returns empty), wiping every saved bookmark
+        with no warning. Use the standard write-tmp + fsync + os.replace
+        pattern so the readable file is always fully-written.
+
+        Note: this does not address multi-process write coordination
+        (two simultaneous client instances on the same home directory
+        would still last-writer-wins). Per-bookmark file or fcntl.flock
+        is the next step if that surfaces; for now the single-client
+        case is the documented v1 path.
+        """
         try:
             data = {bid: p.to_dict() for bid, p in self._profiles.items()}
-            with open(self._bookmarks_file, "w") as f:
+            tmp = self._bookmarks_file.with_suffix(".json.tmp")
+            with open(tmp, "w") as f:
                 json.dump(data, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self._bookmarks_file)
         except Exception as e:
             logger.error("Failed to save bookmarks: %s", e)
 
