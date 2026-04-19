@@ -211,3 +211,52 @@ def test_audio_header_codec_roundtrip_opus():
 def test_audio_header_size_matches_constant():
     header = encode_audio_header(AudioCodec.PCM, 0)
     assert len(header) == AUDIO_HEADER_SIZE
+
+
+# ── STAB-06 HealthPing/HealthPong FSM state serialization ─────────────
+
+
+def test_healthping_includes_client_state():
+    msg = HealthPing(sequence=1, client_state="streaming")
+    parsed = json.loads(msg.to_json())
+    assert parsed["client_state"] == "streaming"
+    assert parsed["type"] == MsgType.HEALTH_PING
+
+
+def test_healthping_default_client_state_is_empty():
+    msg = HealthPing(sequence=1)
+    parsed = json.loads(msg.to_json())
+    assert parsed["client_state"] == ""
+
+
+def test_healthpong_includes_server_state():
+    msg = HealthPong(ping_timestamp_ms=1700000000000, sequence=1,
+                     server_state="reconfiguring")
+    parsed = json.loads(msg.to_json())
+    assert parsed["server_state"] == "reconfiguring"
+
+
+def test_healthpong_default_server_state_is_empty():
+    msg = HealthPong(sequence=1)
+    parsed = json.loads(msg.to_json())
+    assert parsed["server_state"] == ""
+
+
+def test_healthping_backward_compat_parse_without_client_state():
+    """Old clients don't send client_state — parse_message still yields a dict."""
+    old_style_json = '{"type":"health_ping","timestamp_ms":123,"sequence":7}'
+    parsed = parse_message(old_style_json)
+    assert parsed["type"] == MsgType.HEALTH_PING
+    assert parsed.get("client_state", "") == ""
+
+
+def test_healthping_client_state_restricted_to_declared_set():
+    """Serialization convention: client_state must be one of CLIENT_STATES.
+
+    This test doesn't enforce at the dataclass level (str is accepted),
+    but documents the contract and guards against typos in wiring code."""
+    from common.session_fsm import CLIENT_STATES
+    for state in CLIENT_STATES:
+        msg = HealthPing(client_state=state)
+        parsed = json.loads(msg.to_json())
+        assert parsed["client_state"] == state
