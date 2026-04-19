@@ -240,6 +240,12 @@ class MacScreenCapture:
         # capability_probe (separate plan); for now the kwarg is here so
         # Task 2 can wire it without surgery later.
         self._want_10bit = bool(want_10bit)
+        # Phase 2 WR-06: tracks whether the SCStream's HDR dynamic-range
+        # tag was successfully set on the active stream config. Without
+        # the tag, SCK can silently tone-map P010 frames down to 8-bit
+        # on XDR displays even though the surface format is P010 — see
+        # the runtime_capability_state property below.
+        self._hdr_set_ok: bool = False
 
         self._lock = threading.Lock()
         self._latest_bgra: Optional[bytes] = None
@@ -380,6 +386,11 @@ class MacScreenCapture:
         # to 8-bit even when the surface format is P010.
         if self._want_10bit:
             config.setPixelFormat_(_CV_P010)
+            # Phase 2 WR-06: re-arm the HDR-set flag for this start
+            # attempt; only flip True after the setter succeeds. reinit()
+            # / switch_monitor() reuse this code path, so resetting here
+            # keeps runtime_capability_state honest after reconfigure.
+            self._hdr_set_ok = False
             try:
                 # SCK 14.0+: SCCaptureDynamicRangeHDRLocalDisplay (= 1).
                 # Older bundles raise AttributeError; we log + degrade.
@@ -392,6 +403,7 @@ class MacScreenCapture:
                     # Selector: setCaptureDynamicRange:
                     if hasattr(config, "setCaptureDynamicRange_"):
                         config.setCaptureDynamicRange_(hdr_const)
+                        self._hdr_set_ok = True
                 else:
                     logger.warning(
                         "mac_screen_capture.hdrLocalDisplay_missing_sdk_too_old"
@@ -574,6 +586,34 @@ class MacScreenCapture:
     @property
     def monitor_count(self) -> int:
         return len(self._displays)
+
+    @property
+    def runtime_capability_state(self) -> str:
+        """Phase 2 WR-06 — symmetry with server.screen_capture's
+        ScreenCapture.runtime_capability_state. Reports whether the SCK
+        capture is delivering honest 10-bit. Truth table:
+
+          NOT want_10bit                          -> "not_supported"
+          want_10bit + HDR dynamic-range tag set  -> "confirmed"
+          want_10bit + HDR tag setter unavailable -> "degraded"
+
+        ``degraded`` covers SCK older than 14.0 (no
+        SCCaptureDynamicRangeHDRLocalDisplay constant), older bundles
+        missing setCaptureDynamicRange_, or runtime exceptions while
+        configuring it. In those cases the surface format is still P010,
+        but SCK can silently tone-map to 8-bit on XDR displays — which
+        is exactly what the badge needs to communicate.
+
+        Consumed by the server-side build_color_caps helper that
+        combines this with the encoder probe to decide the final badge
+        value (mirrors the Phase 2 D-03 / VIDEO-09 honest-capability
+        reporting on the Linux side).
+        """
+        if not self._want_10bit:
+            return "not_supported"
+        if not self._hdr_set_ok:
+            return "degraded"
+        return "confirmed"
 
     # --- Raw BGRA capture (for H.264/H.265/AV1 encoder pipeline) ---
 
