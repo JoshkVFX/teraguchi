@@ -42,6 +42,7 @@ timeout = 30
 # CI job.
 markers = [
     "latency_bench: synthetic-stage-time latency benchmark (D-08 gate; slow, excluded from PR test suite)",
+    "smoke_1h: STAB-09 1-hour synthetic smoke harness (D-17; nightly-only via .github/workflows/smoke-nightly.yml)",
 ]
 # filterwarnings ratchet — see RESEARCH Pitfall 6 + Pitfall 9.
 # Start permissive; tighten dep-bump-by-dep-bump.
