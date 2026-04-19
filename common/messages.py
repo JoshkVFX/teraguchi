@@ -176,6 +176,9 @@ class MsgType:
     BROKER_STATUS = "broker_status"            # Client → Broker: request status refresh
     BROKER_RELEASE = "broker_release"          # Client → Broker: release machine assignment
 
+    # --- Structured protocol errors (OBS-01 + error taxonomy) ---
+    ERROR = "error"                            # Either direction: carries a ProtocolErrorMsg
+
 
 # ============================================================
 # Quality Control
@@ -279,6 +282,33 @@ class AuthResult:
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
+
+
+@dataclass
+class ProtocolErrorMsg:
+    """Structured protocol-level error envelope (OBS-01 + error taxonomy).
+
+    Wire format for reporting :class:`common.errors.TeraguchiError` subclasses to
+    the peer. The ``code`` field is stable across versions; the client FSM can
+    use it to decide deterministic reactions (e.g. ``TERA_AUTH_FAILED`` → do NOT
+    reconnect; ``TERA_TRANSPORT`` → exponential back-off + retry).
+
+    Threat T-1-05 rule: callers MUST NOT put raw secrets into ``message`` —
+    the field is free-form human text. The `_redact_secrets` structlog
+    processor does not run on wire payloads.
+    """
+    type: str = MsgType.ERROR
+    code: str = "TERA_UNKNOWN"
+    message: str = ""
+    session_id: str = ""
+    recoverable: bool = False
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self))
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ProtocolErrorMsg":
+        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
 
 def hash_password(password: str, challenge: str) -> str:
