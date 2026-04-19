@@ -68,3 +68,54 @@ era code; 5 unused Quartz imports flagged by ruff. Not introduced by
 02-10's docstring + WARNING-log update.
 
 Fix in a follow-up `style(server/mac_input_injector)` commit.
+
+## From 02 code review (2026-04-19)
+
+**7. CR-01 — `server/mac_video_encoder.py::feed_frame` P010 plane copy
+not implemented.** The direct VTCompressionSession path constructs an
+empty `CVPixelBuffer` via `CV.CVPixelBufferCreate(...)` and explicitly
+discards the captured P010 plane bytes (`del p010_bytes` with a TODO at
+the marker). VT then encodes uninitialized heap memory; the resulting
+HEVC Main10 NAL units are wire-valid but display as banded garbage on
+the client.
+
+**Interim mitigation (landed in REVIEW-FIX iteration 1):**
+`server/platform_backends.py::_MAC_VIDEO_ENC_AVAILABLE` is hard-pinned
+to `False` (see the CR-01 GATE comment block in that file) so the
+FFmpeg `hevc_videotoolbox` subprocess fallback is the production
+Mac-server video path. The direct-VT module remains tested and
+import-clean — only its production dispatch is gated off.
+
+**Deferred work to re-enable the direct-VT path:**
+
+1. Implement the plane copy in `feed_frame`:
+   - `CV.CVPixelBufferLockBaseAddress(pb, 0)`
+   - Compute Y plane size = `width * height * 2` (P010 = 2 bytes/sample)
+   - Compute UV plane size = `(width // 2) * (height // 2) * 4` (half-res RG16)
+   - `ctypes.memmove` Y bytes into `CVPixelBufferGetBaseAddressOfPlane(pb, 0)`
+   - `ctypes.memmove` UV bytes into `CVPixelBufferGetBaseAddressOfPlane(pb, 1)`
+   - `CV.CVPixelBufferUnlockBaseAddress(pb, 0)` in a `finally:`
+   - Length-validate `len(p010_bytes) >= y_size + uv_size` and
+     warn-and-return on short buffer (do NOT memmove past end).
+
+2. Add a regression test that feeds a known-pattern frame (e.g. all
+   0x3FFF luma) and asserts the encoded NAL output is non-trivial
+   (not just SPS/PPS + empty slice). Decode + spot-check a few luma
+   samples to prove the bytes round-trip.
+
+3. Remove the `_MAC_VIDEO_ENC_AVAILABLE = False` override at the bottom
+   of the `if IS_MACOS:` block in `server/platform_backends.py`. Restore
+   the prior probe-driven assignment.
+
+4. Update the `feed_frame` docstring's "INCOMPLETE IMPLEMENTATION"
+   warning + remove the "production dispatch is gated off" sentence
+   from the TODO comment.
+
+5. Re-run the VIDEO-01/VIDEO-02 10-bit fixture test (from the Phase 2
+   ten-bit pipeline smoke test) on a real Mac with PyObjC VideoToolbox
+   installed.
+
+Hold for: a Mac dev workstation with PyObjC + a real HEVC Main10
+fixture decoder available for the round-trip assertion. PyObjC + ctypes
+lifetime details are subtle — the safer path until then is the FFmpeg
+fallback, which is correct end-to-end.

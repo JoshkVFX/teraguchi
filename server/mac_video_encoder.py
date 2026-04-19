@@ -228,10 +228,24 @@ class MacVideoEncoder:
         callback asynchronously on its own thread when the encoded
         sample is ready.
 
-        For the wave-2 implementation we leave the byte-level plane
-        copy as a TODO and rely on CVPixelBufferCreate's empty-buffer
-        path; the real plane copy lands when SCK is configured to hand
-        us P010 directly (Task 2 / D-01 cp.1).
+        WARNING (Phase 2 CR-01) — INCOMPLETE IMPLEMENTATION
+        ---------------------------------------------------
+        The byte-level plane copy from ``p010_bytes`` into the
+        CVPixelBuffer's Y + UV planes is a TODO (see line marker below).
+        Until it lands, every encoded frame wraps uninitialized
+        ``CVPixelBuffer`` heap memory — the resulting HEVC Main10 NAL
+        units are wire-valid but display as banded garbage on the client.
+
+        For this reason ``server.platform_backends._MAC_VIDEO_ENC_AVAILABLE``
+        is hard-pinned to False (see the CR-01 GATE block in
+        ``server/platform_backends.py``) so the FFmpeg
+        ``hevc_videotoolbox`` subprocess fallback is the production
+        Mac-server path. This module is reachable only via tests that
+        monkey-patch the gate flag.
+
+        Re-enable the production dispatch ONLY after the plane copy
+        lands here AND a regression test asserts the encoded NAL output
+        is non-trivial for a known input pattern.
         """
         if self._stopped or self._session is None:
             return
@@ -247,10 +261,13 @@ class MacVideoEncoder:
             )
             return
 
-        # TODO: lock base address and memcpy the Y + UV planes from
-        # ``p010_bytes`` into the buffer once SCK delivers P010 directly
-        # (Task 2 plumbs the negotiation flag). Until then we submit an
-        # empty allocation so the encoder pipeline shape is exercised.
+        # TODO (Phase 2 CR-01 / Phase 3 follow-up): lock base address and
+        # memcpy the Y + UV planes from ``p010_bytes`` into the buffer
+        # once SCK delivers P010 directly (Task 2 plumbs the negotiation
+        # flag). Until then we submit an empty allocation so the encoder
+        # pipeline shape is exercised; production dispatch is gated off
+        # in server/platform_backends.py to keep this code unreachable
+        # outside of tests.
         del p010_bytes  # unused until plane-copy lands
 
         # PTS in CMTime: 90 kHz timebase matches the standard MPEG clock.
