@@ -95,6 +95,17 @@ try:
         CMSampleBufferGetImageBuffer,
         CMTimeMake,
     )
+    # CoreVideo P010 pixel format constant — Phase 2 D-01 cp.1 / VIDEO-08.
+    # macOS 10-bit 4:2:0 capture surface; required for end-to-end 10-bit.
+    # Older PyObjC bundles expose this via Quartz; newer ones via CoreVideo.
+    try:
+        from CoreVideo import (
+            kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange as _CV_P010,
+        )
+    except ImportError:
+        from Quartz import (  # type: ignore[no-redef]
+            kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange as _CV_P010,
+        )
     _HAS_SCK = True
 except Exception as _e:
     _HAS_SCK = False
@@ -214,12 +225,21 @@ class MacScreenCapture:
         monitor_index: int = 1,
         jpeg_quality: int = DEFAULT_JPEG_QUALITY,
         fps: int = 60,
+        want_10bit: bool = False,
     ):
         _check_sck_available()
 
         self.monitor_index = monitor_index
         self.jpeg_quality = jpeg_quality
         self._fps = fps
+        # Phase 2 D-01 cp.1 / VIDEO-08: 10-bit P010 capture surface.
+        # When True, configure SCK with kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+        # + .hdrLocalDisplay so the capture boundary is honest about bit
+        # depth. When False (default), keep the Phase 1 BGRA fast path.
+        # The plumbing into ServerHelloMsg / negotiation lands in D-03's
+        # capability_probe (separate plan); for now the kwarg is here so
+        # Task 2 can wire it without surgery later.
+        self._want_10bit = bool(want_10bit)
 
         self._lock = threading.Lock()
         self._latest_bgra: Optional[bytes] = None
@@ -352,7 +372,36 @@ class MacScreenCapture:
         config = SCStreamConfiguration.alloc().init()
         config.setWidth_(self.width)
         config.setHeight_(self.height)
-        config.setPixelFormat_(_BGRA_FOURCC)
+        # Phase 2 D-01 cp.1 / VIDEO-08: 10-bit capture when negotiated.
+        # Falls back to 32-bit BGRA when 10-bit was not negotiated by the
+        # client (Phase 1 baseline path). The .hdrLocalDisplay dynamic
+        # range is required to keep the upper 2 bits honest on
+        # MBP XDR / Pro Display XDR — without it SCK silently tone-maps
+        # to 8-bit even when the surface format is P010.
+        if self._want_10bit:
+            config.setPixelFormat_(_CV_P010)
+            try:
+                # SCK 14.0+: SCCaptureDynamicRangeHDRLocalDisplay (= 1).
+                # Older bundles raise AttributeError; we log + degrade.
+                hdr_const = getattr(
+                    SCK, "SCCaptureDynamicRangeHDRLocalDisplay", None
+                ) or getattr(
+                    SCK, "SCCaptureDynamicRangeHdrLocalDisplay", None
+                )
+                if hdr_const is not None:
+                    # Selector: setCaptureDynamicRange:
+                    if hasattr(config, "setCaptureDynamicRange_"):
+                        config.setCaptureDynamicRange_(hdr_const)
+                else:
+                    logger.warning(
+                        "mac_screen_capture.hdrLocalDisplay_missing_sdk_too_old"
+                    )
+            except (AttributeError, Exception) as e:
+                logger.warning(
+                    "mac_screen_capture.hdrLocalDisplay_set_failed: %s", e
+                )
+        else:
+            config.setPixelFormat_(_BGRA_FOURCC)
         config.setMinimumFrameInterval_(CMTimeMake(1, self._fps))
         config.setQueueDepth_(6)  # SCK requires >= 3; 6 gives headroom
         config.setShowsCursor_(True)
