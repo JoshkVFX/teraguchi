@@ -360,6 +360,37 @@ class SessionManager:
             del self._sessions[username]
         return None
 
+    def _disable_x_key_repeat(self, display: str, xauthority: str = "") -> None:
+        """Phase 2 D-13 — turn off X server's auto key repeat.
+
+        Teraguchi uses client-driven repeats: the client sends explicit
+        N press events when the user holds a key, and a network stall
+        causes the repeat sequence to STOP mid-air rather than runaway
+        on the server side. Matches PCoIP behavior. Failure is logged
+        and tolerated — best-effort only.
+        """
+        env = {"DISPLAY": display, "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+        if xauthority:
+            env["XAUTHORITY"] = xauthority
+        try:
+            subprocess.run(
+                ["xset", "-display", display, "r", "off"],
+                check=False, timeout=2, env=env,
+                capture_output=True,
+            )
+            logger.info(
+                "session_manager.xset_repeat_off display=%s", display
+            )
+        except FileNotFoundError:
+            logger.warning(
+                "session_manager.xset_not_installed — install xorg-x11-server-utils"
+            )
+        except Exception as e:
+            logger.warning(
+                "session_manager.xset_repeat_off_failed display=%s err=%s",
+                display, e,
+            )
+
     def create_session(self, username: str, uid: int, gid: int, home: str,
                        width: int = 0, height: int = 0) -> UserSession:
         """Create a new X session for a user, or return existing one."""
@@ -420,6 +451,13 @@ class SessionManager:
             xorg_proc=xorg_proc, gpu_display=gpu_display,
             xauthority=xauthority,
             pen_tablet=pen_tablet, pen_tablet_event=pen_tablet_event)
+
+        # Phase 2 D-13 — turn off X auto-key-repeat right after the X
+        # server is up. Teraguchi drives repeats from the client; leaving
+        # X server-side repeat on causes runaway when a packet stalls.
+        # Run BEFORE the WM / D-Bus boot so the very first key event the
+        # WM sees already lives in the no-repeat regime.
+        self._disable_x_key_repeat(display, xauthority)
 
         # Start D-Bus session for the user
         self._start_dbus(session)
