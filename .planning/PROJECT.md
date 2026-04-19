@@ -153,4 +153,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-18 after initialization*
+*Last updated: 2026-04-19 after Phase 1 (Stability + CI + Test Baseline) completion — 17/17 plans verified. All v1 Active requirements remain ACTIVE; Phase 1 delivered the measurement + regression-gate infrastructure each Active item now depends on (pytest, GHA CI on macos-14 + rockylinux:9 with 4 hard gates, SessionFSM with state-sync, bounded pipeline queues, ConnectionSupervisor, structlog + per-stage telemetry + diagnostic bundle, 1-hour synthetic smoke harness nightly).*
