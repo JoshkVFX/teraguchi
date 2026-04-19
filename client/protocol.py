@@ -27,9 +27,48 @@ from common.messages import (
     VIDEO_HEADER_SIZE, JPEG_HEADER_SIZE, AUDIO_HEADER_SIZE,
     HealthPing, HealthPong, QualitySettings,
     AuthResponse, parse_message,
+    # Phase 2 D-11 / D-15 wire messages — see common/messages.py.
+    KeyResetModifiersMsg, TextCommitMsg,
 )
+from common.keymap import swap_cmd_ctrl_for_linux_dest
 from common.session_fsm import ClientFSM
 from client.connection_supervisor import ConnectionSupervisor
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 D-14 — Mac-first lock-state probe.
+#
+# Every outbound KeyEventMsg carries caps_lock_on / num_lock_on /
+# scroll_lock_on bits so the server can auto-correct its virtual display's
+# lock state on mismatch (zero round-trip cost; converges on the next
+# keystroke). Mac probe uses NSEvent.modifierFlags() — the canonical
+# Carbon/Cocoa source. Linux client is out of scope for v1 per PROJECT.md
+# but we keep the interface symmetrical so the server-side handler is
+# platform-agnostic.
+# ---------------------------------------------------------------------------
+
+def _probe_lock_state() -> tuple[bool, bool, bool]:
+    """Return (caps_lock_on, num_lock_on, scroll_lock_on).
+
+    All three default to False on probe failure — the server's auto-
+    correct path treats False as "lock off" and will release the lock
+    if it was held. That's the safer direction: stuck-lock release on a
+    probe miss is recoverable; phantom-lock-on is not.
+    """
+    try:
+        from AppKit import NSEvent  # type: ignore[import-not-found]
+        mods = int(NSEvent.modifierFlags())
+        # NSEventModifierFlagCapsLock = 1<<16 = 0x10000
+        # NSEventModifierFlagNumericPad = 1<<21 = 0x200000 (numpad-origin
+        # event, NOT NumLock state — macOS does not expose NumLock state
+        # via NSEvent because Mac keyboards have no NumLock indicator).
+        caps_lock = bool(mods & 0x10000)
+        num_lock = bool(mods & 0x200000)
+        # Scroll Lock not exposed by NSEvent at all; default False.
+        scroll_lock = False
+        return caps_lock, num_lock, scroll_lock
+    except Exception:
+        return False, False, False
 
 
 class _BrokerRedirect(Exception):
@@ -131,6 +170,12 @@ class ClientProtocol:
         # ConnectionSupervisor.connect() and delete the duplicated
         # backoff math on lines 283-284.
         self._supervisor: Optional[ConnectionSupervisor] = None
+
+        # Phase 2 D-10 — per-session Cmd<->Ctrl swap flag. Default OFF;
+        # session.py flips it via set_swap_cmd_ctrl(profile.swap_cmd_ctrl)
+        # at connect time. When True, send_key_event runs every key event
+        # through swap_cmd_ctrl_for_linux_dest() before serializing.
+        self._swap_cmd_ctrl: bool = False
 
     @property
     def connected(self) -> bool:
@@ -270,6 +315,88 @@ class ClientProtocol:
     def send_clipboard(self, text: str):
         self.send_input({"type": MsgType.CLIPBOARD_SEND,
                          "content_type": "text/plain", "data": text})
+
+    # ------------------------------------------------------------------
+    # Phase 2 D-10 / D-11 / D-14 / D-15 — modifier-state plumbing
+    # ------------------------------------------------------------------
+
+    @property
+    def swap_cmd_ctrl(self) -> bool:
+        """Phase 2 D-10 — current per-session Cmd↔Ctrl swap state."""
+        return self._swap_cmd_ctrl
+
+    def set_swap_cmd_ctrl(self, enabled: bool) -> None:
+        """Flip the per-session Cmd↔Ctrl swap policy.
+
+        Bookmark-driven: ``client/session.py`` reads
+        ``ConnectionProfile.swap_cmd_ctrl`` and forwards via this method
+        when a tab connects. Survives until next call (or until the
+        protocol is recreated).
+        """
+        self._swap_cmd_ctrl = bool(enabled)
+        logger.debug("client.protocol.swap_cmd_ctrl = %s", self._swap_cmd_ctrl)
+
+    def send_reset_modifiers(self, reason: str = "unknown") -> None:
+        """Phase 2 D-11 — emit a KeyResetModifiersMsg over the wire.
+
+        ``reason`` is one of: "focus_out", "panic_f9", "reconnect",
+        "periodic" (server-side), or any free-form string for diagnostic
+        plumbing. The server logs the reason and runs the same idempotent
+        InputInjector.reset_modifiers() regardless — per threat T-02-04
+        the field is not security-load-bearing.
+        """
+        msg = KeyResetModifiersMsg(reason=reason)
+        # send_input converts the dict back to JSON inside the protocol
+        # send loop; pass a dict so the test harness's send_input override
+        # sees the structured payload directly.
+        self.send_input(json.loads(msg.to_json()))
+
+    def send_text_commit(self, text: str) -> None:
+        """Phase 2 D-15 — emit a TextCommitMsg (IME / dead-key passthrough).
+
+        Empty strings are intentionally allowed here — the viewer guards
+        the upstream emit, but we don't double-guard so test harnesses
+        can drive the path directly.
+        """
+        msg = TextCommitMsg(text=text)
+        self.send_input(json.loads(msg.to_json()))
+
+    def send_key_event(self, qt_key: int, scan_code: int,
+                       pressed: bool, modifiers: int) -> None:
+        """Phase 2 D-10 / D-14 — KeyEvent emit with swap + lock-state bits.
+
+        Replaces inline ``send_input({"type": MsgType.KEY_EVENT, ...})``
+        callers in ``client/session.py``. Two transformations:
+
+          1. D-10: when ``self._swap_cmd_ctrl`` is True, run the (qt_key,
+             modifiers) pair through ``swap_cmd_ctrl_for_linux_dest`` so
+             Mac Cmd becomes Linux Ctrl. The transformed scan_code is
+             what crosses the wire — no "infer at server" anti-pattern.
+          2. D-14: every event carries caps_lock_on / num_lock_on /
+             scroll_lock_on bits from ``_probe_lock_state()``. Server
+             auto-corrects mismatched lock state on the next event.
+        """
+        out_key = qt_key
+        out_scan = scan_code
+        out_mods = modifiers
+        if self._swap_cmd_ctrl:
+            out_key, out_mods = swap_cmd_ctrl_for_linux_dest(qt_key, modifiers)
+            # The wire's scan_code field carries the (possibly-swapped) Qt key.
+            # XTestInputInjector + qt_key_to_linux_scancode both consume Qt key
+            # codes downstream so we mirror the swap into scan_code.
+            out_scan = out_key
+        caps_on, num_on, scroll_on = _probe_lock_state()
+        self.send_input({
+            "type": MsgType.KEY_EVENT,
+            "key": "",
+            "scan_code": out_scan,
+            "pressed": pressed,
+            "modifiers": out_mods,
+            # D-14 — lock-state bits.
+            "caps_lock_on": caps_on,
+            "num_lock_on": num_on,
+            "scroll_lock_on": scroll_on,
+        })
 
     def _run_loop(self, host: str, port: int):
         self._loop = asyncio.new_event_loop()

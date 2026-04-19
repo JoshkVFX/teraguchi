@@ -811,7 +811,8 @@ class MainWindow(QMainWindow):
 
     def _new_session_and_connect(self, host, port, username, password,
                                   use_tls=True, auto_reconnect=True,
-                                  bookmark_id="", mode="direct"):
+                                  bookmark_id="", mode="direct",
+                                  swap_cmd_ctrl: bool = True):
         session = Session(self)
         view = SessionView(session, self)
         idx = self._tab_manager.add_tab(view, session.display_name)
@@ -828,6 +829,15 @@ class MainWindow(QMainWindow):
         session.broker_machine_needed.connect(
             lambda machines, s=session: self._on_broker_machine_needed(s, machines))
 
+        # Phase 2 D-10 — when launching from a bookmark, the saved
+        # ConnectionProfile carries the per-server swap_cmd_ctrl preference.
+        # Override the default-True for the broker path (broker assigns
+        # downstream Linux Flames; default-on is correct).
+        if bookmark_id:
+            profile = self._bookmarks.get(bookmark_id)
+            if profile is not None:
+                swap_cmd_ctrl = bool(profile.swap_cmd_ctrl)
+
         if mode == "broker":
             logger.info("Connecting via broker to %s:%d", host, port)
             session.connect_broker(host, port, username, password,
@@ -835,7 +845,8 @@ class MainWindow(QMainWindow):
         else:
             session.connect(host, port, username, password,
                             use_tls=use_tls, auto_reconnect=auto_reconnect,
-                            bookmark_id=bookmark_id)
+                            bookmark_id=bookmark_id,
+                            swap_cmd_ctrl=swap_cmd_ctrl)
 
         session.apply_quality(self._quality_panel.settings)
 
@@ -907,13 +918,16 @@ class MainWindow(QMainWindow):
                 bid = self._bookmarks.add(
                     name=name, host=dialog.host, port=dialog.port,
                     username=dialog.username, password=dialog.password,
-                    use_tls=dialog.use_tls, mode=mode)
+                    use_tls=dialog.use_tls, mode=mode,
+                    # Phase 2 D-10 — persist the dialog's swap state.
+                    swap_cmd_ctrl=dialog.swap_cmd_ctrl)
                 self._bookmark_panel._refresh()
 
             self._new_session_and_connect(
                 dialog.host, dialog.port, dialog.username, dialog.password,
                 use_tls=dialog.use_tls, auto_reconnect=dialog.auto_reconnect,
-                bookmark_id=bid, mode=mode)
+                bookmark_id=bid, mode=mode,
+                swap_cmd_ctrl=dialog.swap_cmd_ctrl)
 
     def _connect_bookmark(self, bookmark_id):
         profile = self._bookmarks.get(bookmark_id)
