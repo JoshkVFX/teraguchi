@@ -83,6 +83,13 @@ jobs:
         run: |
           python3 -m pip install --upgrade pip
           python3 -m pip install -r requirements-dev.txt
+      - name: Verify shaders are up-to-date with sources
+        # Phase 2 D-02 / T-02-19 mitigation: regenerate the .qsb binaries
+        # from their GLSL sources and fail if anything drifts. Cheap drift
+        # guard against shader-source / committed-binary divergence.
+        run: |
+          ./scripts/build_shaders.sh
+          git diff --exit-code client/shaders/
       - name: Pytest
         # Offscreen Qt for macOS so client tests don't require a display.
         # `-m "not latency_bench"` excludes the D-08 synthetic-stage benchmark

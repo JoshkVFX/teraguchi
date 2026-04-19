@@ -46,6 +46,20 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Export a diagnostic bundle zip and exit (OBS-05). "
              "Default path: ~/teraguchi-diag-<timestamp>.zip",
     )
+    # Phase 2 D-02: QRhi/Metal video-blit escape hatch. When set, the
+    # VideoBlitWidget in client/viewer.py picks ``QRhiWidget.Api.OpenGL``
+    # instead of Metal. The same backed-shader pipeline applies (qsb
+    # baked GLSL/HLSL/MSL variants from the same source). Useful when
+    # Metal misbehaves on a given GPU; the env var
+    # ``TERAGUCHI_LEGACY_GL_BLIT=1`` does the same job for environments
+    # that pre-set CLI args.
+    parser.add_argument(
+        "--legacy-gl-blit",
+        action="store_true",
+        help="Use the OpenGL backend for the QRhi video-blit widget "
+             "instead of the platform default (Metal on macOS). "
+             "Equivalent to TERAGUCHI_LEGACY_GL_BLIT=1.",
+    )
     return parser.parse_args(argv)
 
 
@@ -61,6 +75,16 @@ def main() -> None:
         path = build_bundle(args.diag_bundle or "", tier="client")
         print(f"Diagnostic bundle: {path}")
         sys.exit(0)
+
+    # Phase 2 D-02: thread --legacy-gl-blit into the env var that the
+    # VideoBlitWidget reads at construction time. Setting the env var
+    # before any client.viewer import means the first VideoBlitWidget
+    # sees the override even though the parser ran inside main(). The
+    # widget also still honors sys.argv directly so subprocess launches
+    # that pass --legacy-gl-blit through still get the OpenGL backend.
+    import os
+    if getattr(args, "legacy_gl_blit", False):
+        os.environ["TERAGUCHI_LEGACY_GL_BLIT"] = "1"
 
     # OBS-01: route all logging (stdlib + structlog) through the canonical
     # processor chain. phase="client" is bound into contextvars so every

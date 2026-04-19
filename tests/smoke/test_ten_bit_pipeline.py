@@ -14,7 +14,7 @@ Checkpoint mapping (D-01, see CONTEXT.md):
   cp.4  on-wire H.265 general_profile_idc (Wave 3 — landed here, ref-JSON)
   cp.5  decoder AVFrame.format          (xfail — Wave 4 client decode)
   cp.6  decoder hwaccel == videotoolbox (xfail — Wave 4)
-  cp.7  QRhi texture format = R16/RG16  (xfail — Wave 4 Metal blit)
+  cp.7  QRhi texture format = R16/RG16  (Wave 4 02-07 — landed here, source-grep)
   cp.8  Metal final blit preserves bits (manual one-off — see VALIDATION.md)
   cp.9  macOS display state             (log-only per D-01 cp.9)
 """
@@ -151,9 +151,29 @@ def test_checkpoint_6_decoder_hwaccel_is_videotoolbox():
     pytest.fail("Wave 3 owner asserts decoder.hw_backend == 'videotoolbox' on macOS")
 
 
-@pytest.mark.xfail(reason="Wave 3 - QRhiWidget texture format assertion pending", strict=False)
 def test_checkpoint_7_qrhi_texture_formats_are_r16_rg16():
-    pytest.fail("Wave 3 owner asserts QRhiTexture format == R16 (Y) + RG16 (UV)")
+    """D-01 cp.7 — client/viewer.py video layer MUST allocate Y as
+    QRhiTexture.Format.R16 and UV as QRhiTexture.Format.RG16 (10-bit
+    fits into the top 10 bits of a 16-bit container; sampling those
+    formats preserves the bottom 2 bits through the BT.709 shader).
+
+    Source-level grep — cheap and runs on every host (no PySide6 needed).
+    The full live-widget assertion lives in
+    ``tests/client/test_viewer_qrhi_video_layer.py`` and runs whenever
+    PySide6 is installed (CI macos-14 runner).
+    """
+    import pathlib
+    src = pathlib.Path("client/viewer.py").read_text()
+    assert "QRhiTexture.Format.R16" in src or "Format.R16" in src, (
+        "D-01 cp.7: client/viewer.py must reference QRhiTexture.Format.R16 "
+        "(Y plane). 10-bit-in-16-bit storage is the only honest path to "
+        "preserving the bottom 2 bits through the Metal blit."
+    )
+    assert "QRhiTexture.Format.RG16" in src or "Format.RG16" in src, (
+        "D-01 cp.7: client/viewer.py must reference QRhiTexture.Format.RG16 "
+        "(UV plane). Interleaved 10-bit chroma at 4:2:0 fits into RG16 "
+        "and survives the BT.709 shader without quantization."
+    )
 
 
 @pytest.mark.gpu

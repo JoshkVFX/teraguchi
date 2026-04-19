@@ -3,19 +3,403 @@ Remote desktop viewer widget with full pen/tablet pressure support.
 
 Uses PySide6's QTabletEvent for Wacom pen pressure, tilt, and rotation
 on both macOS and Windows. Falls back to mouse events for standard mice.
+
+Phase 2 D-02 addition: ``VideoBlitWidget`` is a QRhiWidget subclass that
+uploads decoded P010 Y / UV planes as ``QRhiTexture.Format.R16`` and
+``QRhiTexture.Format.RG16`` and runs a BT.709 video-range fragment
+shader for 10-bit YUV->RGB conversion. The class lives in this file
+alongside RemoteViewer so the video layer + overlays compose cleanly:
+RemoteViewer's QPainter ``paintEvent`` continues to own cursor + health
+overlay rendering; the VideoBlitWidget owns ONLY the video layer. See
+``client/shaders/video_blit.{vert,frag}.qsb`` for the baked shaders and
+``scripts/build_shaders.sh`` for the bake pipeline.
+
+Escape hatch: if the QRhi/Metal path misbehaves on a given GPU, set
+the env var ``TERAGUCHI_LEGACY_GL_BLIT=1`` (or pass ``--legacy-gl-blit``
+on the CLI -- threaded through ``client/app.py``) to fall back to the
+OpenGL backend with the same shader pipeline.
 """
 
-import logging
-from typing import Optional, Callable
+from __future__ import annotations
 
-from PySide6.QtCore import Qt, QPointF, QRectF, Signal, QSize
+import logging
+import os
+import pathlib
+import struct
+import sys
+from typing import Optional
+
+from PySide6.QtCore import QByteArray, QRectF, QSize, Qt, Signal
+
+# QRhi types live in PySide6.QtGui (not QtWidgets). Imported eagerly so
+# the VideoBlitWidget class definition below is self-contained; PySide6
+# 6.10+ is the floor per Phase 1 STACK.md so these symbols are always
+# present in production environments.
 from PySide6.QtGui import (
-    QImage, QPixmap, QPainter, QMouseEvent, QKeyEvent,
-    QTabletEvent, QWheelEvent, QResizeEvent, QCursor,
+    QColor,
+    QCursor,
+    QImage,
+    QKeyEvent,
+    QMouseEvent,
+    QPainter,
+    QPixmap,
+    QResizeEvent,
+    QRhiBuffer,
+    QRhiGraphicsPipeline,
+    QRhiSampler,
+    QRhiShaderResourceBinding,
+    QRhiShaderResourceBindings,
+    QRhiShaderStage,
+    QRhiTexture,
+    QRhiTextureSubresourceUploadDescription,
+    QRhiTextureUploadDescription,
+    QRhiTextureUploadEntry,
+    QRhiVertexInputAttribute,
+    QRhiVertexInputBinding,
+    QRhiVertexInputLayout,
+    QShader,
+    QTabletEvent,
+    QWheelEvent,
 )
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QRhiWidget, QWidget
 
 logger = logging.getLogger(__name__)
+
+
+# --- Phase 2 D-02: VideoBlitWidget (QRhiWidget) ---
+#
+# Module-level constants for the BT.709 10-bit YUV->RGB shader pipeline.
+# Kept at module scope so they're trivially inspectable / unit-testable
+# without instantiating the widget.
+
+_SHADER_DIR = pathlib.Path(__file__).resolve().parent / "shaders"
+_VERT_QSB_NAME = "video_blit.vert.qsb"
+_FRAG_QSB_NAME = "video_blit.frag.qsb"
+
+# Full-screen quad: 4 vertices in a triangle-strip (bottom-left,
+# bottom-right, top-left, top-right). Each vertex is (x, y, u, v) so
+# 4 floats per vertex, 16 floats total. Y-flipped UV (v=1 at the
+# bottom, v=0 at the top) so the texture coordinate system matches the
+# Qt/image origin (top-left) on top of Metal's bottom-left NDC.
+_QUAD_VERTICES_BYTES = struct.pack(
+    "16f",
+    -1.0, -1.0, 0.0, 1.0,   # pos0, uv0
+     1.0, -1.0, 1.0, 1.0,   # pos1, uv1
+    -1.0,  1.0, 0.0, 0.0,   # pos2, uv2
+     1.0,  1.0, 1.0, 0.0,   # pos3, uv3
+)
+
+
+def _load_qsb(name: str) -> QShader:
+    """Load a baked .qsb shader binary from client/shaders/.
+
+    .qsb files are produced by ``scripts/build_shaders.sh`` (which calls
+    ``pyside6-qsb --qt6``) and committed alongside their GLSL sources.
+    The CI macos-14 job re-bakes and ``git diff --exit-code`` fails on
+    drift (T-02-19 mitigation in the threat register).
+    """
+    data = (_SHADER_DIR / name).read_bytes()
+    shader = QShader.fromSerialized(QByteArray(data))
+    return shader
+
+
+def _legacy_gl_blit_requested() -> bool:
+    """True when the user has opted into the OpenGL escape-hatch path.
+
+    Two trigger surfaces: (a) env var ``TERAGUCHI_LEGACY_GL_BLIT`` set
+    to a truthy value, or (b) ``--legacy-gl-blit`` present on the
+    process argv (threaded through from client/app.py argparse). Either
+    flips ``VideoBlitWidget`` from its default Metal/Vulkan/D3D backend
+    to the OpenGL backend with the same shader pipeline.
+    """
+    env = os.environ.get("TERAGUCHI_LEGACY_GL_BLIT", "").strip().lower()
+    if env in ("1", "true", "yes", "on"):
+        return True
+    if "--legacy-gl-blit" in sys.argv:
+        return True
+    return False
+
+
+class VideoBlitWidget(QRhiWidget):
+    """Phase 2 D-02: 10-bit P010 video blit with BT.709 YUV->RGB Metal shader.
+
+    This widget OWNS the video layer only. Cursor + health-overlay
+    rendering stays in ``RemoteViewer.paintEvent`` (QPainter on top of
+    QImage), per the plan's "do not put video + overlay + cursor all
+    through the Metal path" anti-pattern (RESEARCH.md Anti-Patterns).
+
+    Texture format choice:
+      * Y plane  -> ``QRhiTexture.Format.R16`` — 16-bit single-channel,
+        holds 10-bit value left-shifted into the top 10 bits of the
+        16-bit container (P010 layout). Sampling normalizes to [0,1]
+        and the BT.709 video-range constants in the shader expect that.
+      * UV plane -> ``QRhiTexture.Format.RG16`` — interleaved 4:2:0
+        chroma at half horizontal and vertical resolution.
+
+    Backend selection:
+      * Default:  Metal on macOS, OpenGL elsewhere (Qt 6.10 picks a
+        sensible platform default when ``setApi`` isn't called).
+      * Override: ``TERAGUCHI_LEGACY_GL_BLIT=1`` env var or
+        ``--legacy-gl-blit`` CLI arg forces ``Api.OpenGL`` everywhere.
+        Same shader pipeline applies — pyside6-qsb's ``--qt6`` mode
+        bakes GLSL/HLSL/MSL variants from the same source file.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        # Backend selection — flip to OpenGL when the escape hatch is on,
+        # otherwise pick Metal explicitly on macOS (the documented v1
+        # production path) and let Qt's platform-default kick in elsewhere.
+        if _legacy_gl_blit_requested():
+            self.setApi(QRhiWidget.Api.OpenGL)
+        elif sys.platform == "darwin":
+            self.setApi(QRhiWidget.Api.Metal)
+        # else: Qt picks the platform default (OpenGL on Linux, D3D11/12
+        # on Windows). Phase 2 ships Mac-only client; non-Mac is best-effort.
+
+        # Resource handles — created in initialize() once the QRhi
+        # backend is live. Keep them as attributes so the unit tests in
+        # tests/client/test_viewer_qrhi_video_layer.py can introspect
+        # the texture formats without touching the GPU.
+        self._tex_y: Optional[QRhiTexture] = None
+        self._tex_uv: Optional[QRhiTexture] = None
+        self._sampler: Optional[QRhiSampler] = None
+        self._pipeline: Optional[QRhiGraphicsPipeline] = None
+        self._srb: Optional[QRhiShaderResourceBindings] = None
+        self._vbuf: Optional[QRhiBuffer] = None
+        self._vbuf_uploaded = False
+
+        # Latched frame state. ``feed_frame`` latches the latest plane
+        # buffers under the GIL; render() consumes on the GUI thread.
+        # No additional locking needed because Qt's update() coalesces
+        # repaints onto the main thread.
+        self._latest_y: Optional[bytes] = None
+        self._latest_uv: Optional[bytes] = None
+        self._frame_size = QSize(1920, 1080)
+        self._frame_size_dirty = False
+
+    # ---- Public API ------------------------------------------------
+
+    def feed_frame(self, y_bytes: bytes, uv_bytes: bytes,
+                   width: int, height: int) -> None:
+        """Latch the latest decoded P010 planes for the next render().
+
+        Called from the decoder thread once the PyAV decode handoff is
+        wired (Phase 5+ networking work — this method exists today as
+        the documented interface). ``width`` and ``height`` are the Y
+        plane dimensions in pixels; UV plane is half-res in both
+        dimensions for 4:2:0.
+        """
+        self._latest_y = y_bytes
+        self._latest_uv = uv_bytes
+        new_size = QSize(width, height)
+        if new_size != self._frame_size:
+            self._frame_size = new_size
+            self._frame_size_dirty = True
+            # Force texture re-creation on the next render() pass
+            self._tex_y = None
+            self._tex_uv = None
+        self.update()  # schedules a render() on the GUI thread
+
+    # ---- QRhiWidget overrides -------------------------------------
+
+    def initialize(self, cb) -> None:  # noqa: N802 — Qt API name
+        """Create / re-create QRhi resources.
+
+        Called by Qt when the widget is first shown, when the surface
+        is recreated (e.g. backend switch), and when the widget is
+        resized in a way that invalidates the render target. Safe to
+        re-enter; we recreate resources only when the frame size has
+        changed or they were never created. Delegates to
+        ``_create_resources`` so unit tests can drive the same path
+        with an explicit Null-backend QRhi (no Qt platform plugin
+        needed).
+        """
+        rhi = self.rhi()
+        if rhi is None:
+            return
+        self._create_resources(rhi, with_pipeline=True)
+
+    def _create_resources(self, rhi, with_pipeline: bool = True) -> None:
+        """Idempotent resource setup driven by the supplied QRhi.
+
+        Extracted so tests can call the same code path with a directly
+        constructed ``QRhi.create(QRhi.Implementation.Null, ...)``
+        without standing up a real Qt platform/window. ``with_pipeline``
+        is False in tests that only need to assert texture-format
+        invariants — graphics-pipeline creation requires a render-pass
+        descriptor which the Null backend does not surface here.
+        """
+        # --- Y plane texture -- QRhiTexture.Format.R16 -- 10-bit-in-16
+        if self._tex_y is None:
+            self._tex_y = rhi.newTexture(
+                QRhiTexture.Format.R16, self._frame_size, 1
+            )
+            self._tex_y.create()
+
+        # --- UV plane texture -- QRhiTexture.Format.RG16 -- 4:2:0 half-res
+        if self._tex_uv is None:
+            uv_size = QSize(
+                max(1, self._frame_size.width() // 2),
+                max(1, self._frame_size.height() // 2),
+            )
+            self._tex_uv = rhi.newTexture(
+                QRhiTexture.Format.RG16, uv_size, 1
+            )
+            self._tex_uv.create()
+
+        # --- Sampler (linear filter, clamp-to-edge -- standard for video) ---
+        if self._sampler is None:
+            self._sampler = rhi.newSampler(
+                QRhiSampler.Filter.Linear,
+                QRhiSampler.Filter.Linear,
+                QRhiSampler.Filter.None_,
+                QRhiSampler.AddressMode.ClampToEdge,
+                QRhiSampler.AddressMode.ClampToEdge,
+            )
+            self._sampler.create()
+
+        # --- Shader Resource Bindings (textures bind at slots 1, 2;
+        #     matches the layout(binding = N) declarations in the shader) ---
+        if self._srb is None:
+            self._srb = rhi.newShaderResourceBindings()
+            self._srb.setBindings([
+                QRhiShaderResourceBinding.sampledTexture(
+                    1,
+                    QRhiShaderResourceBinding.StageFlag.FragmentStage,
+                    self._tex_y, self._sampler,
+                ),
+                QRhiShaderResourceBinding.sampledTexture(
+                    2,
+                    QRhiShaderResourceBinding.StageFlag.FragmentStage,
+                    self._tex_uv, self._sampler,
+                ),
+            ])
+            self._srb.create()
+
+        # --- Vertex buffer (immutable full-screen quad) ---
+        if self._vbuf is None:
+            self._vbuf = rhi.newBuffer(
+                QRhiBuffer.Type.Immutable,
+                QRhiBuffer.UsageFlag.VertexBuffer,
+                len(_QUAD_VERTICES_BYTES),
+            )
+            self._vbuf.create()
+            self._vbuf_uploaded = False  # uploaded on first render()
+
+        if not with_pipeline:
+            return
+
+        # --- Graphics pipeline (vertex + fragment + vertex layout) ---
+        if self._pipeline is None:
+            try:
+                vert = _load_qsb(_VERT_QSB_NAME)
+                frag = _load_qsb(_FRAG_QSB_NAME)
+            except FileNotFoundError as exc:
+                logger.error(
+                    "VideoBlitWidget: baked shaders missing (%s). "
+                    "Run scripts/build_shaders.sh.", exc,
+                )
+                return
+
+            self._pipeline = rhi.newGraphicsPipeline()
+            self._pipeline.setShaderStages([
+                QRhiShaderStage(QRhiShaderStage.Type.Vertex, vert),
+                QRhiShaderStage(QRhiShaderStage.Type.Fragment, frag),
+            ])
+            # Vertex input: one binding (the quad VB), two attributes
+            # (pos2 + uv2) packed as 4 floats per vertex.
+            stride = 4 * 4  # 4 floats * 4 bytes each
+            v_layout = QRhiVertexInputLayout()
+            v_layout.setBindings([QRhiVertexInputBinding(stride)])
+            v_layout.setAttributes([
+                # location 0: pos.xy at offset 0
+                QRhiVertexInputAttribute(
+                    0, 0, QRhiVertexInputAttribute.Format.Float2, 0,
+                ),
+                # The fragment shader derives UV from pos.xy itself
+                # (v_uv = position.xy * 0.5 + 0.5) so we don't need a
+                # separate UV attribute. Keeping a single Float2 input
+                # matches the layout(location = 0) declaration in the
+                # vertex shader and keeps the pipeline minimal.
+            ])
+            self._pipeline.setVertexInputLayout(v_layout)
+            self._pipeline.setShaderResourceBindings(self._srb)
+            # Use the widget's own render target's render-pass
+            # descriptor — required so the pipeline is compatible with
+            # the framebuffer Qt hands us each frame.
+            self._pipeline.setRenderPassDescriptor(
+                self.renderTarget().renderPassDescriptor()
+            )
+            # Triangle strip topology matches the 4-vertex quad above.
+            self._pipeline.setTopology(
+                QRhiGraphicsPipeline.Topology.TriangleStrip
+            )
+            self._pipeline.create()
+
+    def render(self, cb) -> None:  # noqa: N802 — Qt API name
+        """Upload the latest planes + draw the BT.709 blit pass.
+
+        Called by Qt every frame after ``update()`` is requested.
+        Short-circuits if no frame has been latched yet (initial render
+        before the decoder hand-off).
+        """
+        rhi = self.rhi()
+        if rhi is None or self._pipeline is None:
+            return
+
+        target = self.renderTarget()
+        if target is None:
+            return
+
+        # Re-create textures if the frame size changed (initialize()
+        # handles the create; we just need to call it again).
+        if self._tex_y is None or self._tex_uv is None or self._frame_size_dirty:
+            self.initialize(cb)
+            self._frame_size_dirty = False
+
+        # Build a resource update batch -- vertex buffer (one-shot) +
+        # texture plane uploads (every frame when a new frame has been
+        # latched).
+        batch = rhi.nextResourceUpdateBatch()
+
+        if not self._vbuf_uploaded and self._vbuf is not None:
+            batch.uploadStaticBuffer(self._vbuf, _QUAD_VERTICES_BYTES)
+            self._vbuf_uploaded = True
+
+        if self._latest_y is not None and self._tex_y is not None:
+            y_sub = QRhiTextureSubresourceUploadDescription(self._latest_y)
+            # P010: 2 bytes per sample on the Y plane.
+            y_sub.setDataStride(self._frame_size.width() * 2)
+            y_entry = QRhiTextureUploadEntry(0, 0, y_sub)
+            batch.uploadTexture(
+                self._tex_y, QRhiTextureUploadDescription([y_entry])
+            )
+
+        if self._latest_uv is not None and self._tex_uv is not None:
+            uv_sub = QRhiTextureSubresourceUploadDescription(self._latest_uv)
+            # UV plane (interleaved): 4 bytes per pixel-pair (RG16),
+            # half-width relative to Y.
+            uv_sub.setDataStride((self._frame_size.width() // 2) * 4)
+            uv_entry = QRhiTextureUploadEntry(0, 0, uv_sub)
+            batch.uploadTexture(
+                self._tex_uv, QRhiTextureUploadDescription([uv_entry])
+            )
+
+        # Begin the render pass against the widget's framebuffer. Clear
+        # to opaque black so the first frames before any video has
+        # arrived render as black rather than uninitialized memory.
+        cb.beginPass(target, QColor(0, 0, 0, 255), None, batch)
+        if self._vbuf is not None:
+            cb.setGraphicsPipeline(self._pipeline)
+            cb.setShaderResources(self._srb)
+            cb.setVertexInput(0, [(self._vbuf, 0)])
+            cb.draw(4)  # triangle-strip => 1 quad
+        cb.endPass()
+
+
+# --- RemoteViewer (existing widget, untouched video-layer behavior) ---
 
 
 class RemoteViewer(QWidget):
@@ -257,6 +641,15 @@ class RemoteViewer(QWidget):
         return max(0.0, min(1.0, rx)), max(0.0, min(1.0, ry))
 
     # --- Paint ---
+    #
+    # Phase 2 D-02 boundary: this paintEvent owns the LEGACY JPEG-frame
+    # update path (``update_full_frame`` / ``update_partial_frame``) and
+    # the cursor / overlay layers. The 10-bit HEVC P010 video path lives
+    # in ``VideoBlitWidget`` above and uses Metal/QRhi textures — those
+    # bytes never touch a QImage or QPainter.drawPixmap call. Any
+    # ``drawPixmap`` / ``drawImage`` use here is overlay-territory only;
+    # do NOT add HEVC frame painting to this method (it would silently
+    # downgrade 10-bit content to 8-bit per PITFALLS #2).
 
     def paintEvent(self, event):
         painter = QPainter(self)
