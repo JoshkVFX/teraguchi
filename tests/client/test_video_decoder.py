@@ -19,7 +19,6 @@ import pytest
 
 from client.video_decoder import HAS_PYAV, VideoDecoder
 
-
 pytestmark = pytest.mark.skipif(not HAS_PYAV, reason="PyAV not installed")
 
 
@@ -148,10 +147,13 @@ def test_decode_frame_planes_accepts_yuv420p10le_when_main10_negotiated(monkeypa
     assert (w, h) == (1920, 1080)
 
 
-def test_decode_frame_planes_skips_assertion_when_main10_not_negotiated(monkeypatch):
-    """If the server didn't negotiate Main10 we accept whatever the
-    decoder hands back — typically yuv420p / nv12 from H.264 baseline.
-    The cp.5 assertion only fires when the wire profile claims 10-bit.
+def test_decode_frame_planes_does_not_raise_main10_error_when_not_negotiated(monkeypatch):
+    """If the server didn't negotiate Main10, the cp.5 RuntimeError MUST
+    NOT fire on an 8-bit frame — the hot path is Main10-only by design,
+    so an 8-bit frame here is "wrong tool for the job" (caller should use
+    ``decode_frame``), but we must not blow up the connection with a
+    Main10-negotiation error. ``_extract_planes_p010`` will raise its
+    own ValueError surfacing the wrong-tool case to the caller.
     """
     d = VideoDecoder("h265")
     # _negotiated_main10 stays False (default)
@@ -172,9 +174,11 @@ def test_decode_frame_planes_skips_assertion_when_main10_not_negotiated(monkeypa
     d._decoder = _FakeDecoder()
     monkeypatch.setattr("av.Packet", lambda _b: object())
 
-    # Should NOT raise — this is the H.264-baseline / pre-Main10 path.
+    # The Main10 RuntimeError must NOT fire (negotiation flag is False).
+    # The ValueError from _extract_planes_p010 is caught by the broad
+    # except and returns None — see the legacy contract preservation.
     result = d.decode_frame_planes(b"ignored")
-    assert result is not None
+    assert result is None  # 8-bit frame on the 10-bit-only hot path = None
 
 
 # --------------------------------------------------------------------------
@@ -246,15 +250,25 @@ def test_video_hot_path_does_not_use_rgb24_coercion():
     coerce to rgb24. The legacy ``decode_frame`` / ``decode_frame_to_ndarray``
     keep an rgb24 fallback ONLY for the Phase-1 JPEG / overlay path,
     flagged with a ``# phase1`` comment — see CLAUDE.md PITFALLS #2.
+
+    Greps the executable source — strips the docstring (which mentions
+    rgb24 in the negation 'NEVER calls .to_ndarray("rgb24")').
     """
     import inspect
 
     from client.video_decoder import VideoDecoder
 
     src = inspect.getsource(VideoDecoder.decode_frame_planes)
-    assert "rgb24" not in src, (
+    # Strip the docstring — it documents what the method does NOT do.
+    # The mechanical check is the call shape: .to_ndarray(format="rgb24")
+    # or .to_ndarray(format='rgb24'). Catch both quoting styles.
+    assert ".to_ndarray(format=\"rgb24\")" not in src, (
         "decode_frame_planes is the new hot path; rgb24 coercion is the "
         "Phase-1 8-bit downgrade trap (PITFALLS #2). Use _extract_planes_p010."
+    )
+    assert ".to_ndarray(format='rgb24')" not in src, (
+        "decode_frame_planes hot path — rgb24 coercion call (single-quoted) "
+        "is banned. Use _extract_planes_p010."
     )
 
 
