@@ -9,6 +9,8 @@ Exports:
     - ``tls_ca_and_cert``: trusted CA + server cert signed under it
     - ``untrusted_ca_cert``: a DIFFERENT CA + cert, for negative-path tests
     - ``free_port``: a bound-then-released loopback TCP port
+    - ``fake_server_injector``: in-memory mock InputInjector that records
+      every call made against it (INPUT-04 mock-at-server-boundary)
 """
 from __future__ import annotations
 
@@ -16,6 +18,7 @@ import datetime
 import ipaddress
 import pathlib
 import socket
+from unittest import mock
 
 import pytest
 from cryptography import x509
@@ -26,7 +29,7 @@ from cryptography.x509.oid import NameOID
 
 def _build_ca(common_name: str):
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
     # SubjectKeyIdentifier + AuthorityKeyIdentifier required by OpenSSL
     # strict verification in recent Python (3.14+) — without them the
@@ -67,7 +70,7 @@ def _build_ca(common_name: str):
 
 def _sign_server_cert(ca_key, ca_cert, host: str):
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, host)])
     san = [x509.DNSName(host)]
     try:
@@ -162,3 +165,39 @@ def free_port():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+@pytest.fixture
+def fake_server_injector():
+    """In-memory mock InputInjector that records every call made against it.
+
+    INPUT-04 (Plan 02-11) loopback test fixture. Mirrors the Phase 1
+    mock-at-FFmpeg-subprocess-boundary pattern from
+    ``tests/server/test_video_encoder_mock.py`` — the test handler in a
+    ``websockets.serve`` loopback consumes parsed wire dicts and feeds
+    them into this in-memory injector instead of touching real
+    ``/dev/uinput`` or CGEventPost. The recorded ``events`` list lets
+    tests assert the exact dispatch tuples reached "the server side".
+
+    Schema of ``inj.events`` entries:
+      - ``("key_event", scan_code:int, pressed:bool, caps_lock_on:bool)``
+      - ``("text_commit", text:str)``
+      - ``("reset_modifiers",)``
+    """
+    inj = mock.MagicMock()
+    inj.events = []
+
+    def key_event(scan_code, pressed, caps_lock_on=False, num_lock_on=False,
+                  scroll_lock_on=False, **kw):
+        inj.events.append(("key_event", scan_code, pressed, caps_lock_on))
+
+    def text_commit(text):
+        inj.events.append(("text_commit", text))
+
+    def reset_modifiers(**kw):
+        inj.events.append(("reset_modifiers",))
+
+    inj.key_event = key_event
+    inj.text_commit = text_commit
+    inj.reset_modifiers = reset_modifiers
+    return inj

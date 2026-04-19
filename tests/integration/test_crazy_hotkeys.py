@@ -45,7 +45,6 @@ from common.messages import (
     parse_message,
 )
 
-
 pytestmark = pytest.mark.asyncio
 
 
