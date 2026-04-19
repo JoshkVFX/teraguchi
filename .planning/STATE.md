@@ -8,8 +8,8 @@ progress:
   total_phases: 7
   completed_phases: 0
   total_plans: 17
-  completed_plans: 8
-  percent: 47
+  completed_plans: 9
+  percent: 52
 ---
 
 # Teraguchi — Project State
@@ -37,13 +37,13 @@ progress:
 ## Current Position
 
 Phase: 1 (stability-ci-test-baseline) — EXECUTING
-Plan: 8 of 17 complete; Waves 1-4 done
+Plan: 9 of 17 complete; Waves 1-5 done
 | Field | Value |
 |-------|-------|
 | Milestone | v1.0 |
-| Current phase | Phase 1 — Stability + CI + Test Baseline (Waves 1-4 complete) |
-| Current plan | 01-09 next (server + client characterization tests — D-10 safety net) — Wave 5 |
-| Status | Wave 4 merged to dev (d4946bc); 158 pass + 1 xfail; SessionFSM wired into server+client w/ state in HealthPing/Pong |
+| Current phase | Phase 1 — Stability + CI + Test Baseline (Waves 1-5 complete) |
+| Current plan | 01-10 next (server decomp pt.1 — extract StreamLoop + HealthLoop + EncoderLifecycle + MonitorHotplug) — Wave 6 |
+| Status | Wave 5 merged to dev (a436a7d); 172 pass + 1 xfail; 4 characterization tests (D-10 safety net) green against monoliths |
 | Phases complete | 0 / 7 |
 | Requirements mapped | 108 / 108 (100% coverage) |
 | Resume file | `.planning/phases/01-stability-ci-test-baseline/01-CONTEXT.md` |
