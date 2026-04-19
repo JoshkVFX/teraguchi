@@ -19,31 +19,46 @@ from __future__ import annotations
 import pytest
 
 
-@pytest.mark.xfail(reason="Wave 1 - 02-02 KeyResetModifiersMsg wiring", strict=False)
 def test_key_reset_modifiers_roundtrip():
-    from common.messages import KeyResetModifiersMsg, MsgType, parse_message  # noqa: F401
-    pytest.fail(
-        "Wave 1 (02-02) asserts KeyResetModifiersMsg().to_json() parses back "
-        "with type == MsgType.KEY_RESET_MODIFIERS"
-    )
+    """D-11 — release-all-modifiers wire format.
+
+    Client dispatches this on four triggers: focusOut, reconnect, server-
+    periodic safety, F9 panic. Reason field is log-only (T-02-04 disposition
+    — server always dispatches the same idempotent reset regardless).
+    """
+    from common.messages import KeyResetModifiersMsg, MsgType, parse_message
+    msg = KeyResetModifiersMsg(reason="focus_out")
+    parsed = parse_message(msg.to_json())
+    assert parsed["type"] == MsgType.KEY_RESET_MODIFIERS
+    assert parsed["reason"] == "focus_out"
 
 
-@pytest.mark.xfail(reason="Wave 1 - 02-02 TextCommitMsg wiring", strict=False)
 def test_text_commit_roundtrip():
-    from common.messages import MsgType, TextCommitMsg, parse_message  # noqa: F401
-    pytest.fail(
-        "Wave 1 (02-02) asserts TextCommitMsg(text='abc').to_json() parses "
-        "back with text == 'abc' and type == MsgType.TEXT_COMMIT"
-    )
+    """D-15 — IME / dead-key commit string passthrough.
+
+    Layout-independent Unicode commit; server injects via xdotool type
+    (Linux) or CGEventKeyboardSetUnicodeString (macOS) — NOT as synthesized
+    keycodes which would mangle dead-key composition.
+    """
+    from common.messages import MsgType, TextCommitMsg, parse_message
+    # Japanese hiragana — exercises the Unicode passthrough contract
+    msg = TextCommitMsg(text="あ")
+    parsed = parse_message(msg.to_json())
+    assert parsed["type"] == MsgType.TEXT_COMMIT
+    assert parsed["text"] == "あ"
 
 
-@pytest.mark.xfail(reason="Wave 1 - 02-02 PenProximityMsg wiring", strict=False)
 def test_pen_proximity_roundtrip():
-    from common.messages import MsgType, PenProximityMsg, parse_message  # noqa: F401
-    pytest.fail(
-        "Wave 1 (02-02) asserts PenProximityMsg(in_proximity=True).to_json() "
-        "parses back with type == MsgType.PEN_PROXIMITY"
-    )
+    """D-19 — proximity-event recovery on focusIn / showEvent.
+
+    Idempotent on the server side (PenFSM tolerates duplicate enters).
+    """
+    from common.messages import MsgType, PenProximityMsg, parse_message
+    msg = PenProximityMsg(in_proximity=True, pen_type="eraser")
+    parsed = parse_message(msg.to_json())
+    assert parsed["type"] == MsgType.PEN_PROXIMITY
+    assert parsed["in_proximity"] is True
+    assert parsed["pen_type"] == "eraser"
 
 
 @pytest.mark.xfail(reason="Wave 1 - 02-02 extended KeyEvent bits", strict=False)
