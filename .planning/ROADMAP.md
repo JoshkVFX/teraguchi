@@ -90,7 +90,7 @@ This is brownfield. A working vibe-coded prototype already covers the happy path
   - [x] 02-05-PLAN.md — server/mac_video_encoder.py VTCompressionSession wrapper + SCK .hdrLocalDisplay config
   - [x] 02-06-PLAN.md — Linux hevc_nvenc Main10 command line + NvFBC 10-bit surface + 9-checkpoint cp.2-4
   - [x] 02-07-PLAN.md — client/viewer.py QRhiWidget Metal P010 blit + BT.709 shader (biggest client-side change)
-  - [ ] 02-08-PLAN.md — client/video_decoder.py P010 format assertion + hw_backend property + docs/build-pyav-macos.md
+  - [x] 02-08-PLAN.md — client/video_decoder.py P010 format assertion + hw_backend property + docs/build-pyav-macos.md
   - [ ] 02-09-PLAN.md — modifier discipline: 4 release-all triggers + bookmark swap UI + Caps/Num/Scroll + TextCommit + xset r off
   - [ ] 02-10-PLAN.md — INPUT-08 IOHIDUserDevice spike + mac_pen_injector (branches on D-07 outcome) + PenFSM + proximity re-synth
   - [ ] 02-11-PLAN.md — INPUT-04 crazy-hotkeys integration + Wacom setup tab with TCC detection (D-20)
