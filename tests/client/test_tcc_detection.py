@@ -20,8 +20,6 @@ from __future__ import annotations
 
 import sqlite3
 
-import pytest
-
 from client.tcc_detect import read_tcc_status
 
 
@@ -106,8 +104,12 @@ def test_tcc_read_uses_readonly_uri(monkeypatch, tmp_path):
     from client import tcc_detect
 
     captured: dict = {}
-    def spy(uri, **kw):
-        captured["uri"] = uri
+    def spy(database_uri, *args, **kw):
+        # ``database`` is the first positional arg of sqlite3.connect.
+        # We rename it ``database_uri`` here to dodge the kwarg collision
+        # with the ``uri=True`` flag (sqlite3's signature is
+        # ``connect(database, ..., uri=False)`` in py3 stdlib).
+        captured["database"] = database_uri
         captured["kw"] = kw
         # Abort: we only care about the call shape, not whether the
         # fake DB has rows.
@@ -119,8 +121,9 @@ def test_tcc_read_uses_readonly_uri(monkeypatch, tmp_path):
     monkeypatch.setattr(tcc_detect, "TCC_DB_PATH", db)
 
     r = read_tcc_status()  # must NOT raise
-    assert "mode=ro" in captured["uri"], (
-        f"sqlite3.connect called without mode=ro; uri={captured['uri']!r}"
+    assert "mode=ro" in captured["database"], (
+        f"sqlite3.connect called without mode=ro; "
+        f"database={captured['database']!r}"
     )
     assert captured["kw"].get("uri") is True, (
         "sqlite3.connect must pass uri=True to interpret the file:?mode=ro form"
