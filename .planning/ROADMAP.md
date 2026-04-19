@@ -88,7 +88,7 @@ This is brownfield. A working vibe-coded prototype already covers the happy path
   - [x] 02-03-PLAN.md — common/keymap.py Qt→Mac VK + Cmd↔Ctrl swap + FLAME_CRITICAL_CHORDS + ~2000-case exhaustive matrix
   - [x] 02-04-PLAN.md — server/capability_probe.py + ENCODER_DEFS main10/422/444 flags + client 10-bit badge
   - [x] 02-05-PLAN.md — server/mac_video_encoder.py VTCompressionSession wrapper + SCK .hdrLocalDisplay config
-  - [ ] 02-06-PLAN.md — Linux hevc_nvenc Main10 command line + NvFBC 10-bit surface + 9-checkpoint cp.2-4
+  - [x] 02-06-PLAN.md — Linux hevc_nvenc Main10 command line + NvFBC 10-bit surface + 9-checkpoint cp.2-4
   - [ ] 02-07-PLAN.md — client/viewer.py QRhiWidget Metal P010 blit + BT.709 shader (biggest client-side change)
   - [ ] 02-08-PLAN.md — client/video_decoder.py P010 format assertion + hw_backend property + docs/build-pyav-macos.md
   - [ ] 02-09-PLAN.md — modifier discipline: 4 release-all triggers + bookmark swap UI + Caps/Num/Scroll + TextCommit + xset r off
