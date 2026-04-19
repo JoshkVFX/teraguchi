@@ -8,8 +8,8 @@ progress:
   total_phases: 7
   completed_phases: 0
   total_plans: 17
-  completed_plans: 5
-  percent: 29
+  completed_plans: 6
+  percent: 35
 ---
 
 # Teraguchi — Project State
@@ -37,13 +37,13 @@ progress:
 ## Current Position
 
 Phase: 1 (stability-ci-test-baseline) — EXECUTING
-Plan: 5 of 17 complete; Waves 1-2 done
+Plan: 6 of 17 complete; Waves 1-3 done
 | Field | Value |
 |-------|-------|
 | Milestone | v1.0 |
-| Current phase | Phase 1 — Stability + CI + Test Baseline (Waves 1-2 complete) |
-| Current plan | 01-06 next (structlog + error taxonomy) — Wave 3 |
-| Status | Wave 2 merged to dev (9987c37); 97 pass + 1 xfail; pyproject/ruff/mypy/CI/RPM installed |
+| Current phase | Phase 1 — Stability + CI + Test Baseline (Waves 1-3 complete) |
+| Current plan | 01-07 + 01-08 next (SessionFSM module + health-ping wiring) — Wave 4 |
+| Status | Wave 3 merged to dev (dc56d8b); 113 pass + 1 xfail; structlog baseline + error taxonomy installed |
 | Phases complete | 0 / 7 |
 | Requirements mapped | 108 / 108 (100% coverage) |
 | Resume file | `.planning/phases/01-stability-ci-test-baseline/01-CONTEXT.md` |
