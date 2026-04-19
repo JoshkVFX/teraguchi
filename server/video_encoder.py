@@ -20,6 +20,7 @@ import os
 import signal
 import struct
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -175,6 +176,9 @@ class VideoEncoder:
         self._encode_times: list = []
         self._total_bytes = 0
         self._start_time = 0.0
+        # Phase 2 D-04: Mac direct-VT delegate (set in start()).
+        self._mac_vt_delegate = None
+        self._using_mac_direct_vt: bool = False
 
     @property
     def active_encoder_name(self) -> str:
@@ -198,10 +202,44 @@ class VideoEncoder:
         return (self._total_bytes * 8) / (elapsed * 1_000_000)
 
     def start(self, on_encoded_frame: Callable):
-        """Start the encoder."""
+        """Start the encoder.
+
+        Phase 2 D-04 dispatch: on macOS, prefer the direct
+        VTCompressionSession path (server.mac_video_encoder) when
+        ``platform_backends._MAC_VIDEO_ENC_AVAILABLE`` is True. The
+        existing FFmpeg ``hevc_videotoolbox`` subprocess path is the
+        documented fallback when PyObjC / VideoToolbox are missing.
+        Linux behavior is unchanged.
+        """
         self._on_encoded_frame = on_encoded_frame
         self._running = True
         self._start_time = time.time()
+
+        if sys.platform == "darwin":
+            try:
+                from server.platform_backends import (
+                    _MAC_VIDEO_ENC_AVAILABLE,
+                )
+            except Exception:
+                _MAC_VIDEO_ENC_AVAILABLE = False
+            if _MAC_VIDEO_ENC_AVAILABLE:
+                # Lazy import so Linux callers never touch the PyObjC
+                # module. Patched in tests/server/test_platform_backends_video.py.
+                from server.mac_video_encoder import MacVideoEncoder
+                self._mac_vt_delegate = MacVideoEncoder(
+                    self.width, self.height, self.settings
+                )
+                self._using_mac_direct_vt = True
+                logger.info(
+                    "video_encoder.dispatch=mac_direct_vt "
+                    "(VTCompressionSession; saves ~5-8ms/frame)"
+                )
+                self._mac_vt_delegate.start(on_encoded_frame)
+                return
+            logger.warning(
+                "video_encoder.mac_vt_unavailable_using_ffmpeg_hevc_videotoolbox_subprocess"
+            )
+
         self._start_ffmpeg()
 
     def _select_encoder(self) -> HWEncoder:
@@ -758,6 +796,11 @@ class VideoEncoder:
 
     def feed_frame(self, bgra_data: bytes):
         """Feed a raw BGRA frame to the encoder."""
+        # Phase 2 D-04: route through MacVideoEncoder when active.
+        if self._using_mac_direct_vt and self._mac_vt_delegate is not None:
+            self._mac_vt_delegate.feed_frame(bgra_data)
+            self._frame_count += 1
+            return
         if not self._process or self._process.poll() is not None:
             return
 
@@ -790,8 +833,18 @@ class VideoEncoder:
             self.start(callback)
 
     def request_keyframe(self):
-        """Force the encoder to emit a keyframe by restarting the FFmpeg process."""
+        """Force the encoder to emit a keyframe.
+
+        FFmpeg path: restart the subprocess (the only IDR-on-demand
+        knob that path exposes; D-08/STAB-04 wires this from the
+        IDR-on-drop hook). MacVideoEncoder path: latches a flag the
+        next feed_frame consults — VT does not need a session restart
+        to emit IDR.
+        """
         if not self._running or not self._on_encoded_frame:
+            return
+        if self._using_mac_direct_vt and self._mac_vt_delegate is not None:
+            self._mac_vt_delegate.request_keyframe()
             return
         logger.info("Keyframe requested — restarting encoder")
         callback = self._on_encoded_frame
@@ -804,6 +857,14 @@ class VideoEncoder:
     def stop(self):
         """Stop the encoder and clean up."""
         self._running = False
+        # Phase 2 D-04: tear down the MacVideoEncoder delegate first.
+        if self._mac_vt_delegate is not None:
+            try:
+                self._mac_vt_delegate.stop()
+            except Exception:
+                pass
+            self._mac_vt_delegate = None
+            self._using_mac_direct_vt = False
         if self._process:
             try:
                 self._process.stdin.close()

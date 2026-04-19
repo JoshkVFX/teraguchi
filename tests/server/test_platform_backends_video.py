@@ -14,8 +14,6 @@ from __future__ import annotations
 
 import sys
 
-import pytest
-
 
 def test_platform_backends_exposes_mac_video_enc_available_flag():
     """platform_backends MUST publish ``_MAC_VIDEO_ENC_AVAILABLE`` so the

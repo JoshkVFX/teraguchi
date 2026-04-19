@@ -51,6 +51,38 @@ else:
     from server.xtest_injector import XTestInputInjector  # noqa: F401
 
 # ----------------------------------------------------------------------
+# Video encode (Phase 2 D-04 / VIDEO-04)
+# ----------------------------------------------------------------------
+#
+# When the macOS server has pyobjc-framework-VideoToolbox installed,
+# the Mac path prefers the direct VTCompressionSession wrapper in
+# server.mac_video_encoder (saves 5-8ms/frame per WWDC21 session 10158
+# vs. the FFmpeg subprocess hop). Otherwise we fall back to the Phase 1
+# FFmpeg ``hevc_videotoolbox`` path documented in server/video_encoder.py.
+#
+# server.video_encoder.VideoEncoder.start() reads this flag once at
+# session creation; do not flip it at runtime.
+_MAC_VIDEO_ENC_AVAILABLE: bool = False
+if IS_MACOS:
+    try:
+        from server.mac_video_encoder import _HAS_VT as _MAC_VIDEO_ENC_AVAILABLE  # noqa: F401
+        if _MAC_VIDEO_ENC_AVAILABLE:
+            logger.info(
+                "platform_backends: MacVideoEncoder available "
+                "(VTCompressionSession direct path)"
+            )
+        else:
+            logger.warning(
+                "platform_backends.mac_video_encoder_pyobjc_missing — "
+                "falling back to FFmpeg hevc_videotoolbox subprocess path"
+            )
+    except Exception as _e:
+        _MAC_VIDEO_ENC_AVAILABLE = False
+        logger.warning(
+            "platform_backends.mac_video_encoder_unavailable: %s", _e
+        )
+
+# ----------------------------------------------------------------------
 # Clipboard
 # ----------------------------------------------------------------------
 
