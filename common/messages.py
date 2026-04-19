@@ -698,6 +698,18 @@ class ConnectionProfile:
     created: str = ""
     color_label: str = ""  # For visual organization
     mode: str = "direct"  # "direct" or "broker"
+    # Phase 2 D-10 — per-bookmark Cmd<->Ctrl swap state. ``destination_kind``
+    # is "linux" or "mac" and is the canonical signal driving the default
+    # value of ``swap_cmd_ctrl``. v1 servers are Mac-client → Rocky/macOS
+    # server only (Windows server is Phase 3); other strings round-trip
+    # but are treated as "linux" for the swap-default policy because
+    # Linux is the documented Flame production path.
+    destination_kind: str = "linux"
+    # Default True for Linux destinations (Cmd → Ctrl matches Flame
+    # muscle memory on Linux). Default False when destination_kind == "mac"
+    # is enforced at construction time by ``BookmarkManager._migrate_swap_default``
+    # so existing saved bookmarks pre-Phase-2 get the right default on load.
+    swap_cmd_ctrl: bool = True
 
     def to_dict(self) -> dict:
         return asdict(self)
