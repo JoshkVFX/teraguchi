@@ -427,20 +427,26 @@ class MacInputInjector:
                   hovering: bool = False, pen_type: str = "pen"):
         """Best-effort pen injection.
 
-        Full tablet pressure/tilt injection on macOS requires a signed
-        IOHIDUserDevice helper. Until that lands, we downgrade to:
+        Phase 2 INPUT-08 re-scope (D-07 FAIL branch):
+        ``docs/release.md`` records the IOHIDUserDevice spike outcome as
+        FAIL — Mac-server pen pressure is a v1 known-limitation. Full
+        tablet pressure/tilt injection on macOS requires a signed
+        IOHIDUserDevice helper (or a HIDDriverKit system extension);
+        neither is in v1 scope. Until that lands, we downgrade to:
           - Pen hover (no pressure) → mouse move
           - Pen tip down → left-mouse-down+drag
           - Eraser tip down → right-mouse-down+drag
         Pressure and tilt are dropped on the floor. Client-side tools
         that require real pressure will fall back to their binary-mode
-        brush behavior.
+        brush behavior. **Flame artists should run on the Rocky Linux
+        server** (production path per ``PROJECT.md``) for full pressure.
         """
         if not MacInputInjector._pen_warned and pressure > 0:
             logger.warning(
                 "Pen pressure/tilt injection not implemented on macOS — "
                 "pen events are being downgraded to mouse clicks "
-                "(pressure dropped)."
+                "(pressure dropped). See docs/release.md "
+                "'Phase 2 IOHIDUserDevice spike outcome'."
             )
             MacInputInjector._pen_warned = True
 

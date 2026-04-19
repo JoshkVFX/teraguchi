@@ -31,3 +31,40 @@ as `Literal[False]` or `None`). Not introduced by 02-04. Scope boundary;
 Fix in a follow-up `fix(common/logging)` commit — change `-> bool` to
 `-> None` (since the function only returns `False`) and remove the
 literal return. Trivial, no behavioral risk.
+
+## From 02-10 (mac-pen-injector + PenFSM)
+
+**3. Pre-existing ruff errors in `client/viewer.py`** — noted during
+02-10 ruff verification on the D-19 viewer changes. Not introduced by
+02-10:
+
+- `client/viewer.py:451-452` UP045 — `Optional[QImage]` / `Optional[QPixmap]` should be `X | None`
+- `client/viewer.py:659` F841 — local `rh` assigned but never used
+- ~9 additional UP045 / I001 instances in the same file
+
+Fix in a follow-up `style(client/viewer)` commit — `ruff --fix` handles
+all of them. Phase 1 set the precedent (UP045 / F841 are not in the
+strict-fail set). Trivial, no behavioral risk.
+
+**4. Pre-existing test collection error in
+`tests/client/test_health_display.py`** — top-level `from PySide6.QtCore
+import ...` lacks a `pytest.importorskip("PySide6")` guard. Fails
+collection on hosts without PySide6 installed (the executor sandbox).
+Not introduced by 02-10; the file was added in an earlier wave.
+
+Fix in a follow-up `test(client/test_health_display)` commit — add the
+skip guard at top of module, mirroring the pattern in
+`test_viewer_modifier_triggers.py`. Trivial.
+
+**5. Pre-existing PAM auth test failures (`tests/server/test_pam_auth.py`)**
+— 1 fail + 3 errors with `AttributeError` on the python-pam mock. Not
+introduced by 02-10; reproducible at HEAD with 02-10 changes stashed.
+
+Fix in a follow-up `test(server/test_pam_auth)` commit — likely a
+python-pam version drift. Out of scope for Phase 2 (Phase 1 territory).
+
+**6. Pre-existing F401 in `server/mac_input_injector.py`** — Phase 1
+era code; 5 unused Quartz imports flagged by ruff. Not introduced by
+02-10's docstring + WARNING-log update.
+
+Fix in a follow-up `style(server/mac_input_injector)` commit.
