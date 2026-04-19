@@ -238,7 +238,7 @@ For scope discipline (single maintainer):
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Stability + CI + Test Baseline | 17/17 | In progress | — |
+| 1. Stability + CI + Test Baseline | 17/17 | Complete | 2026-04-19 |
 | 2. Input + Color Fidelity | 0/0 | Not started | — |
 | 3. Display + Multi-Monitor + Clipboard | 0/0 | Not started | — |
 | 4. Audio | 0/0 | Not started | — |
