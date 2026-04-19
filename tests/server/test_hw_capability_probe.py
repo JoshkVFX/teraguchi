@@ -19,7 +19,6 @@ import pytest
 
 from server.capability_probe import probe_nvenc_main10, probe_vt_main10
 
-
 # ---------------------------------------------------------------------------
 # subprocess.run fixtures for the 4 hardware classes the probe cares about
 # ---------------------------------------------------------------------------
