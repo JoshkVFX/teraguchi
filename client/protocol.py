@@ -808,6 +808,15 @@ class ClientProtocol:
             else:
                 logger.error("Broker assignment failed: %s",
                              assign.get("message", ""))
+            # Phase 2 WR-04: clear self._ws BEFORE raising the redirect.
+            # The async-with context in _connect_to_server is about to
+            # exit, taking the websocket with it; if a leftover task
+            # (e.g. _client_health_ping_loop) tries to write into the
+            # dead ws after the raise but before the recursive
+            # _connect_to_server call swaps in a fresh one, we'd blow
+            # up with OSError. Setting it to None makes the dead-ws
+            # window observable to send_input and friends.
+            self._ws = None
             # Signal caller to handle redirect (raise to exit the ws context)
             raise _BrokerRedirect()
         else:
