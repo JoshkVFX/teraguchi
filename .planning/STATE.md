@@ -3,7 +3,7 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-last_updated: "2026-04-18T23:34:02.466Z"
+last_updated: "2026-04-19T05:26:16.890Z"
 progress:
   total_phases: 7
   completed_phases: 1
@@ -18,7 +18,7 @@ progress:
 
 **Maintainer:** Randy McEntee (solo, single committer; second-committer invite is a Phase 7 success criterion)
 
-**Last updated:** 2026-04-18 (Phase 1 context gathered)
+**Last updated:** 2026-04-18 (Phase 2 context gathered)
 
 ---
 
@@ -26,7 +26,7 @@ progress:
 
 **Core value:** A Flame artist can work an 8-hour client session remotely and not notice they're remote — input latency, color accuracy, and reliability all match sitting in front of the machine. If that holds, everything else matters. If it doesn't, the project has failed regardless of feature count.
 
-**Current focus:** Phase 1 — stability-ci-test-baseline
+**Current focus:** Phase 2 — input-color-fidelity (context locked, ready for planning)
 
 **Why now:** HP Anyware (PCoIP) end-of-life announced; new sales end May 7 2026, existing customers migrate by Oct 31 2029. Every small independent VFX studio (1-10 person shops) running Flame / Nuke / Resolve over PCoIP is now on a clock. NICE DCV is AWS-only and expensive; Parsec is SaaS-only / 8-bit / Windows-server; Sunshine has no pen tablet support. The gap (self-hosted, OSS, 10-bit, Wacom-first, macOS server) is uncontested.
 
@@ -36,17 +36,17 @@ progress:
 
 ## Current Position
 
-Phase: 1 (stability-ci-test-baseline) — ✓ COMPLETE
-Plan: 17 of 17 complete · Verification PASSED · 14/14 must-haves · 14/14 REQ-IDs
+Phase: 2 (input-color-fidelity) — CONTEXT GATHERED, ready for planning
+Phase 1: ✓ COMPLETE · 17 of 17 plans · Verification PASSED · 14/14 must-haves · 14/14 REQ-IDs
 | Field | Value |
 |-------|-------|
 | Milestone | v1.0 |
-| Current phase | Phase 1 — Stability + CI + Test Baseline (VERIFIED) |
-| Current plan | Phase 2 (Input + Color Fidelity) next — run `/gsd-discuss-phase 2` |
-| Status | Phase 1 COMPLETE at dev (b07c449); 229 tests pass + 1 xfail; all 4 CI gates installed; decomposition + FSM + observability + smoke harness all green |
+| Current phase | Phase 2 — Input + Color Fidelity (context locked) |
+| Current plan | Run `/gsd-plan-phase 2` to decompose Phase 2 into plans |
+| Status | Phase 2 CONTEXT.md committed (be29f20); 21 implementation decisions across 4 gray areas + latency-gate; 24 requirements (INPUT-01..12, VIDEO-01..12) scoped |
 | Phases complete | 1 / 7 |
 | Requirements mapped | 108 / 108 (100% coverage) |
-| Resume file | `.planning/phases/01-stability-ci-test-baseline/01-VERIFICATION.md` |
+| Resume file | `.planning/phases/02-input-color-fidelity/02-CONTEXT.md` |
 
 **Progress bar:** [██▱▱▱▱▱] 1 / 7 phases complete
 
@@ -130,25 +130,21 @@ None at roadmap-lock time. All five PROJECT.md / SUMMARY.md open questions were 
 
 **Files written most recent session:**
 
-- `.planning/phases/01-stability-ci-test-baseline/01-CONTEXT.md` — 18 implementation decisions across 4 gray areas
-- `.planning/phases/01-stability-ci-test-baseline/01-DISCUSSION-LOG.md` — full Q&A audit trail
+- `.planning/phases/02-input-color-fidelity/02-CONTEXT.md` — 21 implementation decisions across 4 gray areas + latency gate (commit be29f20)
+- `.planning/phases/02-input-color-fidelity/02-DISCUSSION-LOG.md` — full Q&A audit trail
 
-**Phase 1 decisions locked (see 01-CONTEXT.md for full detail):**
+**Phase 2 decisions locked (see 02-CONTEXT.md for full detail):**
 
-- Coverage = critical path only (`common/`, auth, tokens, bookmarks, SessionFSM)
-- HW mocking = mock at FFmpeg subprocess boundary
-- Integration tests = in-process loopback in CI
-- TDD = tests-with-code (no strict ceremony)
-- CI = GitHub-hosted only (macos-14 + rockylinux:9)
-- Branch protection = required from day one; all four CI gates hard
-- Refactor = incremental, test-gated; aggressive split for both monoliths
-- FSM library = python-statemachine
-- Order = critical bugs first (send_queue → CERT_NONE → tests/CI → refactor)
-- Smoke harness = synthetic loop, GitHub Actions nightly cron, 1-hour in Phase 1, full 8h by Phase 4
+- Color fidelity: 9-checkpoint byte-equality fixture; Metal/QRhi direct 10-bit texture on client; refuse-and-overlay HW capability gate; full VTCompressionSession PyObjC wrapper in Phase 2; 4:2:0 default, 4:2:2 opt-in; ICC out of scope
+- macOS pen pressure: IOHIDUserDevice spike, 2-day success bar = pressure visible in Photoshop/Preview. Fail path = document as v1 limitation, Flame on Rocky stays production path. New `server/mac_pen_injector.py` module
+- Hotkey correctness: auto-swap Cmd↔Ctrl with per-bookmark override; release-all-modifiers on focusOut + reconnect + periodic + F9 panic key; exhaustive Qt × modifier × platform keymap tests; US/UK/DE/JP layouts + IME passthrough; `xset r off` + client-driven repeats; Caps bit in every KeyEvent
+- Wacom HW verification: one-shot gate + per-release runbook ritual (no self-hosted runners); hybrid protocol + automated counters + video; RMS < 1% on known-ramp for INPUT-12; proximity synthesis on focusIn/showEvent; TCC detect + guide in client
+- Latency: keep Phase 1 synthetic p99<25ms gate; add one-time DXS real-HW measurement to docs/release.md
 
-**Next action:** `/gsd-plan-phase 1` to decompose Phase 1 into executable plans.
+**Next action:** `/gsd-plan-phase 2` to decompose Phase 2 into executable plans.
 
 ---
 
 *Initialized 2026-04-18 by gsd-roadmapper.*
 *Phase 1 context gathered 2026-04-18 by gsd-discuss-phase.*
+*Phase 2 context gathered 2026-04-18 by gsd-discuss-phase.*
