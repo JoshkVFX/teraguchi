@@ -49,6 +49,7 @@ from common.messages import (
     ClipboardMsg, encode_video_header, encode_jpeg_header, encode_audio_header,
     AudioCodec, parse_message, generate_challenge,
 )
+from common.logging import configure as _configure_logging
 from common.keymap import qt_key_to_linux_scancode
 from server.platform_backends import (
     ScreenCapture,
@@ -1096,10 +1097,10 @@ def main():
     args = parser.parse_args()
     server_args = args
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
+    # OBS-01: route all logging (stdlib + structlog) through the canonical
+    # processor chain. phase="server" is bound into contextvars so every
+    # emit carries it (CONTEXT.md §"Claude's Discretion" line 83).
+    _configure_logging(phase="server", verbose=args.verbose)
 
     if args.no_auth:
         args.auth_mode = "none"

@@ -34,6 +34,7 @@ from client.health_display import HealthStatusWidget, HealthData
 from client.quality_control import QualityControlPanel
 from client.fullscreen_toolbar import FullscreenToolbar, REVEAL_ZONE
 from common.messages import QualitySettings
+from common.logging import configure as _configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -1146,9 +1147,10 @@ def main():
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    # OBS-01: route all logging (stdlib + structlog) through the canonical
+    # processor chain. phase="client" is bound into contextvars so every
+    # emit carries it (CONTEXT.md §"Claude's Discretion" line 83).
+    _configure_logging(phase="client", verbose=args.verbose)
 
     # macOS: don't swap Control/Meta so physical Control = Control_L on Linux
     if sys.platform == "darwin":
