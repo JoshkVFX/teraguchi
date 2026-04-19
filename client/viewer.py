@@ -64,6 +64,17 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QRhiWidget, QWidget
 
+# Phase 2 WR-08: wire-format modifier bit constants live in
+# common/keymap.py so the encoder + decoder + viewer key-handlers all
+# reference the same source of truth instead of magic numbers.
+from common.keymap import (
+    MODIFIER_BIT_ALT,
+    MODIFIER_BIT_CTRL,
+    MODIFIER_BIT_KEYPAD,
+    MODIFIER_BIT_META,
+    MODIFIER_BIT_SHIFT,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -894,8 +905,12 @@ class RemoteViewer(QWidget):
         modifiers = self._qt_modifiers_to_int(event.modifiers())
         logger.debug("Key press: key=0x%x mod=0x%x", key, modifiers)
 
-        # Detect paste: Ctrl+V or Cmd+V → ensure clipboard is synced to server
-        if key == Qt.Key_V and (modifiers & 2):  # bit 2 = Ctrl on wire
+        # Detect paste: Ctrl+V or Cmd+V → ensure clipboard is synced
+        # to server. Phase 2 WR-08: MODIFIER_BIT_CTRL is the wire-format
+        # bit position (defined in common/keymap.py); on darwin
+        # _qt_modifiers_to_int folds Cmd into the same bit so Cmd+V on
+        # Mac correctly fires paste here.
+        if key == Qt.Key_V and (modifiers & MODIFIER_BIT_CTRL):
             self.paste_requested.emit()
 
         self.key_changed.emit(key, key, True, modifiers)
@@ -1014,25 +1029,28 @@ class RemoteViewer(QWidget):
 
     @staticmethod
     def _qt_modifiers_to_int(mods) -> int:
+        # Phase 2 WR-08: bit positions imported from common.keymap so the
+        # numbers stay in sync with downstream consumers (server input
+        # injectors and the keyPressEvent paste-detection above).
         result = 0
         if mods & Qt.ShiftModifier:
-            result |= 1
+            result |= MODIFIER_BIT_SHIFT
         if mods & Qt.AltModifier:
-            result |= 4
+            result |= MODIFIER_BIT_ALT
         if mods & Qt.KeypadModifier:
-            # bit 0x10 = numpad-origin key; server disambiguates KP_*
-            result |= 0x10
+            # MODIFIER_BIT_KEYPAD = numpad-origin key; server disambiguates KP_*
+            result |= MODIFIER_BIT_KEYPAD
         import sys
         if sys.platform == "darwin":
             # macOS: both Command and Control → Ctrl on Linux
             # Command+V = paste, Control+C = SIGINT — both need Ctrl
             if mods & (Qt.ControlModifier | Qt.MetaModifier):
-                result |= 2
+                result |= MODIFIER_BIT_CTRL
         else:
             if mods & Qt.ControlModifier:
-                result |= 2
+                result |= MODIFIER_BIT_CTRL
             if mods & Qt.MetaModifier:
-                result |= 8
+                result |= MODIFIER_BIT_META
         return result
 
     # --- Drag and Drop ---

@@ -189,6 +189,25 @@ MOD_ALT   = 0x08000000
 MOD_META  = 0x10000000
 
 
+# =====================================================================
+# Wire-format modifier bit positions used by client/viewer.py's
+# _qt_modifiers_to_int and consumed by the server's input injectors.
+# These are NOT the Qt enum values above -- they are the compact
+# bit positions transmitted on the wire (KeyEventMsg.modifiers).
+#
+# Phase 2 WR-08: previously these were magic numbers buried in
+# _qt_modifiers_to_int and a `modifiers & 2` paste-detection check in
+# keyPressEvent. Hoisting them here so any future modifier-bit
+# reshuffle (D-14 already uses 0x10 for keypad) only changes one place
+# and the dependent call sites stay in sync.
+# =====================================================================
+MODIFIER_BIT_SHIFT  = 0x01
+MODIFIER_BIT_CTRL   = 0x02
+MODIFIER_BIT_ALT    = 0x04
+MODIFIER_BIT_META   = 0x08
+MODIFIER_BIT_KEYPAD = 0x10
+
+
 def swap_cmd_ctrl_for_linux_dest(qt_key: int, qt_modifiers: int) -> tuple[int, int]:
     """Mac-client -> Linux-server Cmd<->Ctrl translation (D-10 default).
 
