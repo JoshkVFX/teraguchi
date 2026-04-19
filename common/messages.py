@@ -474,6 +474,31 @@ class ClientHelloMsg:
 
 
 @dataclass
+class ServerColorCaps:
+    """Server-advertised color pipeline capabilities (D-03, D-05).
+
+    Populated by the server-side capability probe (Plan 02-04) — ``main10``
+    requires NVENC Main10 on Turing+ or VT HEVC Main10 AutoLevel on Mac,
+    ``chroma_422`` requires Blackwell NVENC / M3+ VT, ``chroma_444`` stays
+    non-user-facing in v1 (HEVC 4:4:4 is bandwidth-heavy + software-decode
+    only on older Macs).
+
+    Default instance (all False + ``negotiated_state='not_supported'``) is
+    the "probe failed or not run yet" sentinel — server refuses to claim
+    a capability it can't honestly deliver. No silent fallback: the client
+    health overlay renders ``negotiated_state`` so artists see the actual
+    state of the pipeline at a glance.
+    """
+    main10: bool = False
+    chroma_422: bool = False
+    chroma_444: bool = False
+    advertised_pix_fmt: str = "p010le"  # canonical name the server will send
+    # negotiated_state values:
+    # "negotiated" | "confirmed" | "degraded" | "not_supported"
+    negotiated_state: str = "not_supported"
+
+
+@dataclass
 class ServerHelloMsg:
     type: str = MsgType.SERVER_HELLO
     server_name: str = "Teraguchi Server"
@@ -491,6 +516,12 @@ class ServerHelloMsg:
     # Encoder details for client display
     encoder_backend: str = ""           # "nvenc", "vaapi", "amf", "software"
     available_encoders: dict = field(default_factory=dict)  # codec -> [encoder info]
+    # Phase 2 addition (D-03) — structured color-capability block.
+    # ``asdict`` recurses into nested dataclasses so the wire format is
+    # ``color_caps: {main10, chroma_422, chroma_444, advertised_pix_fmt,
+    # negotiated_state}``. Default factory preserves Phase 1 wire compat:
+    # servers that don't set color_caps ship the probe-failed sentinel.
+    color_caps: ServerColorCaps = field(default_factory=ServerColorCaps)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -499,6 +530,38 @@ class ServerHelloMsg:
 # ============================================================
 # Input Messages
 # ============================================================
+
+@dataclass
+class KeyEventMsg:
+    """Keyboard key event (D-14 — promoted from dict to dataclass).
+
+    Phase 1 wire shape (``{"type": "key_event", "scan_code": N,
+    "pressed": bool}``) remains compatible — the three new lock-state
+    fields default to False so the parsed dict on the server side
+    behaves identically when older clients omit them.
+
+    D-14 — every KeyEvent carries ``caps_lock_on`` / ``num_lock_on`` /
+    ``scroll_lock_on``; server auto-corrects virtual-display lock state
+    on mismatch. State re-converges on the next keystroke, so zero
+    round-trip cost.
+
+    Note: Phase 1 client callsite in ``client/session.py::_send_key_event``
+    still emits the dict form with a ``modifiers`` field. Plan 02-09
+    (``viewer-modifier-triggers``) wires the client to emit the new
+    dataclass with live lock-state bits. 02-02's scope is the wire
+    shape — landing the dataclass here unblocks that downstream plan.
+    """
+    type: str = MsgType.KEY_EVENT
+    scan_code: int = 0
+    pressed: bool = False
+    # Phase 2 additions (D-14) — lock-state bits sent on every KeyEvent.
+    caps_lock_on: bool = False
+    num_lock_on: bool = False
+    scroll_lock_on: bool = False
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self))
+
 
 @dataclass
 class PenEventMsg:
