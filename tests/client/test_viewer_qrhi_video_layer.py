@@ -69,28 +69,44 @@ def qapp():
 def _make_null_video_blit_widget():
     """Construct a VideoBlitWidget pinned to the Null QRhi backend.
 
-    The Null backend does not require a GPU; Qt ships it for headless
-    testing — exactly the use case here.
+    The Null backend is the documented headless test target — Qt ships
+    it specifically so widget classes can be exercised without a GPU.
+    Backend selection on the widget itself is informational here; the
+    test drives ``_create_resources`` with an explicit Null-backend QRhi
+    constructed via ``QRhi.create(QRhi.Implementation.Null, ...)`` so
+    the assertion does not depend on Qt actually instantiating a
+    surface (offscreen Qt platform refuses to back the QRhiWidget).
     """
     from PySide6.QtWidgets import QRhiWidget
+
     from client.viewer import VideoBlitWidget
     w = VideoBlitWidget()
     w.setApi(QRhiWidget.Api.Null)
     return w
 
 
+def _make_null_rhi():
+    """Return a directly-created Null QRhi for resource-format tests."""
+    from PySide6.QtGui import QRhi, QRhiNullInitParams
+    rhi = QRhi.create(QRhi.Implementation.Null, QRhiNullInitParams())
+    assert rhi is not None, (
+        "Failed to create QRhi(Null) — PySide6 build is missing the null "
+        "backend. Re-install PySide6 or upgrade to >= 6.10."
+    )
+    return rhi
+
+
 def test_video_blit_widget_uses_r16_for_y_plane(qapp):
     """D-02 cp.7: Y plane MUST be QRhiTexture.Format.R16 (10-bit-in-16)."""
-    from PySide6.QtCore import QCoreApplication, QEventLoop
     from PySide6.QtGui import QRhiTexture
 
     w = _make_null_video_blit_widget()
-    w.resize(320, 240)
-    w.show()
-    # Pump the event loop so QRhiWidget.initialize() fires.
-    for _ in range(20):
-        QCoreApplication.processEvents(QEventLoop.AllEvents, 50)
-    assert w._tex_y is not None, "Y texture not created during initialize()"
+    rhi = _make_null_rhi()
+    # Drive the resource-creation path directly. The pipeline step is
+    # skipped because it needs a render-pass descriptor which only a
+    # real surface provides — texture formats are what cp.7 cares about.
+    w._create_resources(rhi, with_pipeline=False)
+    assert w._tex_y is not None, "Y texture not created"
     assert w._tex_y.format() == QRhiTexture.Format.R16, (
         f"Y texture must be R16 (10-bit-in-16-bit), got {w._tex_y.format()!r}"
     )
@@ -98,18 +114,28 @@ def test_video_blit_widget_uses_r16_for_y_plane(qapp):
 
 def test_video_blit_widget_uses_rg16_for_uv_plane(qapp):
     """D-02 cp.7: UV plane MUST be QRhiTexture.Format.RG16 (interleaved 10-bit)."""
-    from PySide6.QtCore import QCoreApplication, QEventLoop
     from PySide6.QtGui import QRhiTexture
 
     w = _make_null_video_blit_widget()
-    w.resize(320, 240)
-    w.show()
-    for _ in range(20):
-        QCoreApplication.processEvents(QEventLoop.AllEvents, 50)
-    assert w._tex_uv is not None, "UV texture not created during initialize()"
+    rhi = _make_null_rhi()
+    w._create_resources(rhi, with_pipeline=False)
+    assert w._tex_uv is not None, "UV texture not created"
     assert w._tex_uv.format() == QRhiTexture.Format.RG16, (
         f"UV texture must be RG16 (interleaved 10-bit), got {w._tex_uv.format()!r}"
     )
+
+
+def test_video_blit_widget_uv_plane_is_half_resolution(qapp):
+    """D-02 / 4:2:0 chroma: UV plane must be half-width and half-height of Y."""
+    from client.viewer import VideoBlitWidget
+    w = VideoBlitWidget()
+    w.feed_frame(b"", b"", 1920, 1080)  # latch a frame size
+    rhi = _make_null_rhi()
+    w._create_resources(rhi, with_pipeline=False)
+    assert w._tex_y.pixelSize().width() == 1920
+    assert w._tex_y.pixelSize().height() == 1080
+    assert w._tex_uv.pixelSize().width() == 960
+    assert w._tex_uv.pixelSize().height() == 540
 
 
 def test_video_blit_widget_loads_baked_qsb_shaders(qapp):
