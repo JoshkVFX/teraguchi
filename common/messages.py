@@ -357,7 +357,19 @@ class HealthPong:
 
 @dataclass
 class HealthStats:
-    """Periodic health statistics from server."""
+    """Periodic health statistics from server.
+
+    Plan 01-14 (OBS-02 + OBS-03) adds 5 new fields to surface per-stage latency
+    breakdown + keyframe telemetry on the wire:
+
+    * ``transmit_time_ms``, ``decode_time_ms``, ``display_time_ms``: rolling
+      average of the stage deques in :class:`server.health.HealthMonitor`
+    * ``keyframe_requested``, ``keyframe_emitted``: monotonic counters backed
+      by the STAB-04 IDR-on-drop path (request) and the encoder keyframe
+      callback (emit)
+
+    All five default to 0.0 / 0 so existing call sites don't need to change.
+    """
     type: str = MsgType.HEALTH_STATS
     rtt_ms: float = 0.0           # Round-trip time
     fps_actual: float = 0.0       # Actual frame rate
@@ -368,6 +380,14 @@ class HealthStats:
     encode_time_ms: float = 0.0   # Average encode time per frame
     capture_time_ms: float = 0.0  # Average capture time per frame
     input_latency_ms: float = 0.0 # Input processing latency
+    # OBS-02 — per-stage latency (client-reported stages submitted via Plan
+    # 17 smoke harness; server-side transmit populated in Plan 14+).
+    transmit_time_ms: float = 0.0
+    decode_time_ms: float = 0.0
+    display_time_ms: float = 0.0
+    # OBS-03 — keyframe telemetry counters
+    keyframe_requested: int = 0
+    keyframe_emitted: int = 0
     codec: str = "h264"
     chroma: str = "yuv444"
     resolution: str = "1920x1080"
