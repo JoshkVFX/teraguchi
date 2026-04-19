@@ -245,11 +245,34 @@ class NvFBCBackend:
                 logger.error("NvFBC framing lost: bad magic %r — bailing",
                              magic)
                 break
-            # Sanity check on size — a single BGRA frame shouldn't be
-            # larger than say 8K@RGBA = ~130 MB. Reject anything wild
-            # so a corrupt header doesn't make us allocate a petabyte.
-            if sz == 0 or sz > 256 * 1024 * 1024:
-                logger.error("NvFBC rejected absurd frame size %d", sz)
+            # Phase 2 WR-07: derive the size cap from the frame geometry
+            # rather than a hardcoded 256 MB constant. The previous cap
+            # was fine for 8K BGRA but YUV420P10LE @ 8K is ~200 MB
+            # (sneaks under) and 16K oversampled-capture would silently
+            # break the reader by hitting the hardcoded limit.
+            #
+            # Cap = w * h * 8 bytes-per-pixel * 2 safety_margin. Picks
+            # the worst case (4:4:4 16-bit per channel = 8 BPP) so any
+            # legitimate format passes; 2x safety so a single
+            # bit-flipped header that doesn't fully blow the format
+            # check still gets caught before we ask the OS for tens of
+            # gigs.
+            #
+            # Absolute floor of 4 MB so we still reject obviously-bogus
+            # tiny-frame + huge-size combos when w/h are unset (first
+            # frame, ``self._width == 0``).
+            if w > 0 and h > 0:
+                derived_cap = max(4 * 1024 * 1024, w * h * 8 * 2)
+            else:
+                # No geometry yet — fall back to the legacy absolute
+                # cap so the first frame still has SOMETHING to gate on.
+                derived_cap = 256 * 1024 * 1024
+            if sz == 0 or sz > derived_cap:
+                logger.error(
+                    "NvFBC rejected absurd frame size %d "
+                    "(derived_cap=%d, w=%d, h=%d) — bailing reader",
+                    sz, derived_cap, w, h,
+                )
                 break
             payload = self._read_exact(fd, sz)
             if payload is None:
