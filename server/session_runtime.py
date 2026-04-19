@@ -57,7 +57,7 @@ from common.messages import (
     encode_audio_header,
     encode_video_header,
 )
-from common.session_fsm import is_state_pair_allowed
+from common.session_fsm import PenFSM, is_state_pair_allowed
 from common.keymap import qt_key_to_linux_scancode
 from server.health_loop import check_state_pair  # Plan 01-14: structured ERROR emit
 from server.platform_backends import (
@@ -251,6 +251,11 @@ class SessionRuntime:
         self._last_key_event_at: float = time.monotonic()
         self._last_key_event_had_modifiers: bool = False
         self._modifier_safety_task: Optional[asyncio.Task] = None
+        # Phase 2 D-19 — pen-proximity FSM (orthogonal to ClientFSM/ServerFSM).
+        # Driven by PEN_PROXIMITY wire messages from the client's focusIn /
+        # showEvent re-synth. Idempotent on duplicate enter / leave per
+        # the PenFSM contract — see common/session_fsm.py::PenFSM.
+        self._pen_fsm = PenFSM()
         # Phase 2 D-14 — server's view of virtual-display lock state.
         # Default False matches a freshly-spawned X session; the wire
         # bits flip these to True/False as needed via
@@ -691,6 +696,33 @@ class SessionRuntime:
             # periodic safety net so we don't immediately re-fire.
             self._last_key_event_at = time.monotonic()
             self._last_key_event_had_modifiers = False
+
+        elif msg_type == MsgType.PEN_PROXIMITY:
+            # Phase 2 D-19 — pen-proximity re-synth from client focusIn /
+            # showEvent. Drives the per-session PenFSM. Both transitions
+            # are idempotent (see common/session_fsm.py::PenFSM) so
+            # duplicate emissions across rapid focus / show storms (Cmd-
+            # Tab cycles, lockscreen wakes, virtual-desktop switches) are
+            # safe by construction. PITFALLS #3 mitigation.
+            in_prox = bool(msg.get("in_proximity", False))
+            try:
+                if in_prox:
+                    self._pen_fsm.send("enter_proximity")
+                else:
+                    self._pen_fsm.send("leave_proximity")
+                logger.info(
+                    "input.pen_proximity in_proximity=%s pen_state=%s "
+                    "client_id=%s",
+                    in_prox,
+                    self._pen_fsm.current_state.id,
+                    session.client_id,
+                )
+            except Exception as e:
+                # Idempotent transitions should never raise, but defensive
+                # logging matches the pattern used by the modifier-reset
+                # path above (D-11) — never let a single message kill the
+                # session loop.
+                logger.debug("input.pen_proximity_failed: %s", e)
 
         elif msg_type == MsgType.TEXT_COMMIT:
             # Phase 2 D-15 — IME / dead-key passthrough. Server injects as
