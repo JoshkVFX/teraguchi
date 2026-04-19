@@ -8,8 +8,8 @@ progress:
   total_phases: 7
   completed_phases: 0
   total_plans: 17
-  completed_plans: 10
-  percent: 58
+  completed_plans: 12
+  percent: 70
 ---
 
 # Teraguchi — Project State
@@ -37,13 +37,13 @@ progress:
 ## Current Position
 
 Phase: 1 (stability-ci-test-baseline) — EXECUTING
-Plan: 10 of 17 complete; Waves 1-6 done
+Plan: 12 of 17 complete; Waves 1-7 done
 | Field | Value |
 |-------|-------|
 | Milestone | v1.0 |
-| Current phase | Phase 1 — Stability + CI + Test Baseline (Waves 1-6 complete) |
-| Current plan | 01-11 + 01-12 next (server decomp pt.2 + client decomp + ConnectionSupervisor) — Wave 7 |
-| Status | Wave 6 merged to dev (491583f); 172 pass + 1 xfail; StreamLoop/HealthLoop/EncoderLifecycle/MonitorHotplug extracted; server/main.py 1299→1209 lines |
+| Current phase | Phase 1 — Stability + CI + Test Baseline (Waves 1-7 complete) |
+| Current plan | 01-13 / 01-14 / 01-15 next (pipeline queue audit + per-stage telemetry + diagnostic bundle) — Wave 8 |
+| Status | Wave 7 merged to dev (f57e5fa); 185 pass + 1 xfail; D-11 server split complete (main 1299→540); D-12 client split complete (main 1189→43); ConnectionSupervisor (STAB-08) installed |
 | Phases complete | 0 / 7 |
 | Requirements mapped | 108 / 108 (100% coverage) |
 | Resume file | `.planning/phases/01-stability-ci-test-baseline/01-CONTEXT.md` |

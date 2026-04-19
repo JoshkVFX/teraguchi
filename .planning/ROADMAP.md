@@ -52,8 +52,8 @@ This is brownfield. A working vibe-coded prototype already covers the happy path
   - [x] 01-08-PLAN.md — STAB-06 HealthPing/HealthPong state serialization + FSM wiring into server + client
   - [x] 01-09-PLAN.md — STAB-05 prep: characterization tests (server bootstrap + VideoEncoder mock)
   - [x] 01-10-PLAN.md — STAB-05 server decomp 1/2: StreamLoop + HealthLoop + EncoderLifecycle + MonitorHotplug
-  - [ ] 01-11-PLAN.md — STAB-05 server decomp 2/2: SessionRuntime + ClientSession + thin __main__.py
-  - [ ] 01-12-PLAN.md — STAB-05 client decomp + STAB-08 ConnectionSupervisor + reconnect integration
+  - [x] 01-11-PLAN.md — STAB-05 server decomp 2/2: SessionRuntime + ClientSession + thin __main__.py
+  - [x] 01-12-PLAN.md — STAB-05 client decomp + STAB-08 ConnectionSupervisor + reconnect integration
   - [ ] 01-13-PLAN.md — STAB-07 bounded pipeline queues (CaptureQueue, EncoderQueue, InputQueue audit)
   - [ ] 01-14-PLAN.md — OBS-02/OBS-03 per-stage latency + keyframe telemetry + clock-offset helper
   - [ ] 01-15-PLAN.md — OBS-05 diagnostic bundle (T-1-05 redaction regression guard)
@@ -238,7 +238,7 @@ For scope discipline (single maintainer):
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Stability + CI + Test Baseline | 10/17 | In progress | — |
+| 1. Stability + CI + Test Baseline | 12/17 | In progress | — |
 | 2. Input + Color Fidelity | 0/0 | Not started | — |
 | 3. Display + Multi-Monitor + Clipboard | 0/0 | Not started | — |
 | 4. Audio | 0/0 | Not started | — |
