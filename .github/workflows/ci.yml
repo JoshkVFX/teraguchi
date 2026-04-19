@@ -1,0 +1,98 @@
+name: CI
+on:
+  pull_request:
+    branches: [dev, main]
+  push:
+    branches: [dev, main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-typecheck:
+    name: Lint + typecheck (ruff + mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-lint-${{ hashFiles('requirements-*.txt') }}
+      - name: Install deps
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r requirements-dev.txt
+      - name: ruff check
+        run: python3 -m ruff check .
+      - name: ruff format --check
+        run: python3 -m ruff format --check .
+      - name: mypy
+        run: python3 -m mypy
+
+  test-linux:
+    name: Tests (Rocky 9 + Python 3.12)
+    runs-on: ubuntu-latest
+    container:
+      image: rockylinux:9
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install OS deps
+        # RESEARCH Pitfall 5: Rocky 9's default python3 is 3.9. EPEL is required
+        # for python3.12. ffmpeg-free covers the D-02 mocked-at-subprocess boundary
+        # (we never actually encode on the runner).
+        run: |
+          dnf -y install epel-release
+          dnf -y install python3.12 python3.12-devel python3.12-pip gcc git \
+                         ffmpeg-free xclip pulseaudio-utils
+      - name: Install Python deps
+        run: |
+          python3.12 -m pip install --upgrade pip
+          python3.12 -m pip install -r requirements-dev.txt
+      - name: Pytest
+        # --timeout=60 overrides pyproject.toml's 30s default for the linux suite
+        # which includes integration tests.
+        run: python3.12 -m pytest -v --timeout=60
+
+  test-macos:
+    name: Tests (macOS 14 / Apple Silicon)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-macos-${{ hashFiles('requirements-*.txt') }}
+      - name: Install ffmpeg (for decoder tests)
+        run: brew install ffmpeg@7 || brew install ffmpeg
+      - name: Install Python deps
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r requirements-dev.txt
+      - name: Pytest
+        # Offscreen Qt for macOS so client tests don't require a display
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python3 -m pytest -v --timeout=60
+
+  # Synthetic harness-math gate per D-09. Real-hardware latency is measured
+  # manually on DXS workstations pre-release. PLACEHOLDER — Plan 16 replaces
+  # this job body with the real synthetic-stage-time accumulator benchmark.
+  # The job NAME must stay `latency-bench` so D-07 branch protection never
+  # needs reconfiguration across the Plan 05 → Plan 16 transition.
+  latency-bench:
+    name: Latency benchmark (synthetic p99 < 25 ms) — PENDING Plan 16
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Placeholder
+        run: |
+          echo "PENDING — Plan 16 will replace this with the real benchmark"
+          echo "(synthetic-stage-time accumulator per D-09; p99 < 25 ms gate per D-08)"
+          exit 0
