@@ -29,6 +29,7 @@ from common.messages import (
     AuthResponse, parse_message,
 )
 from common.session_fsm import ClientFSM
+from client.connection_supervisor import ConnectionSupervisor
 
 
 class _BrokerRedirect(Exception):
@@ -119,9 +120,31 @@ class ClientProtocol:
         self.last_reported_server_state: str = ""
         self._ping_seq: int = 0
 
+        # STAB-08 / Plan 01-12: ConnectionSupervisor reference. Full
+        # replacement of ``_run_loop`` with supervisor.connect() is
+        # deferred to a follow-up plan because the current reconnect
+        # loop is interleaved with QThread event-loop bootstrap. For
+        # now the supervisor is constructed lazily so callers can reach
+        # it for is_reconnecting queries; the existing _run_loop
+        # reconnect policy remains the active driver.
+        # TODO(Plan-12 follow-up): replace _run_loop's while-loop with
+        # ConnectionSupervisor.connect() and delete the duplicated
+        # backoff math on lines 283-284.
+        self._supervisor: Optional[ConnectionSupervisor] = None
+
     @property
     def connected(self) -> bool:
         return self._connected
+
+    @property
+    def is_reconnecting(self) -> bool:
+        """STAB-08: True while the ClientFSM is in 'reconnecting' state.
+
+        Reads directly from ``self.fsm`` so it stays accurate even when
+        the supervisor isn't attached (current behavior — see the TODO
+        in __init__).
+        """
+        return self.fsm.current_state.id == "reconnecting"
 
     def set_insecure_skip_verify(self, enable: bool, ca_bundle: Optional[str] = None):
         """SEC-01: dev-only escape hatch. Double-gated with TERAGUCHI_ACCEPT_INSECURE=1.
