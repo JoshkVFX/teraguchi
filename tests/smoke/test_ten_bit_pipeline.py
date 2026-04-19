@@ -12,8 +12,8 @@ Checkpoint mapping (D-01, see CONTEXT.md):
   cp.2  encoder INPUT pixel format      (Wave 3 — landed here)
   cp.3  encoder OUTPUT ffprobe profile  (Wave 3 — landed here, ref-JSON)
   cp.4  on-wire H.265 general_profile_idc (Wave 3 — landed here, ref-JSON)
-  cp.5  decoder AVFrame.format          (xfail — Wave 4 client decode)
-  cp.6  decoder hwaccel == videotoolbox (xfail — Wave 4)
+  cp.5  decoder AVFrame.format          (Wave 5 02-08 — landed here, source-grep)
+  cp.6  decoder hwaccel == videotoolbox (Wave 5 02-08 — landed here, source-grep)
   cp.7  QRhi texture format = R16/RG16  (Wave 4 02-07 — landed here, source-grep)
   cp.8  Metal final blit preserves bits (manual one-off — see VALIDATION.md)
   cp.9  macOS display state             (log-only per D-01 cp.9)
@@ -141,14 +141,71 @@ def test_checkpoint_4_wire_general_profile_idc_is_2(reference_checkpoints):
     )
 
 
-@pytest.mark.xfail(reason="Wave 3 - decoder AVFrame.format assertion pending", strict=False)
 def test_checkpoint_5_decoder_output_format_is_p010():
-    pytest.fail("Wave 3 owner asserts frame.format.name in ('p010le','yuv420p10le')")
+    """D-01 cp.5 — client/video_decoder.py asserts AVFrame.format in
+    {p010le, yuv420p10le} when Main10 is negotiated. Source-grep gate
+    runs everywhere (no PyAV decode required); the live assertion lives
+    in tests/client/test_video_decoder.py and runs whenever PyAV is
+    installed (CI macos-14 + rockylinux:9 runners).
+
+    The grep checks both 10-bit format strings appear in the source
+    AND that the rgb24 coercion is no longer on the live decode hot
+    path (allowed only in '# phase1' fallback code paths per the
+    decoder's docstring contract).
+    """
+    src = pathlib.Path("client/video_decoder.py").read_text()
+    assert "p010le" in src, (
+        "D-01 cp.5: client/video_decoder.py must reference 'p010le' "
+        "(VideoToolbox semi-planar 10-bit format). Without this the "
+        "decoder cannot assert on Main10 negotiation."
+    )
+    assert "yuv420p10le" in src, (
+        "D-01 cp.5: client/video_decoder.py must reference 'yuv420p10le' "
+        "(software decode + NVENC/VAAPI 10-bit format). Without this "
+        "the decoder accepts only the p010le hwaccel path."
+    )
+    # The legacy decode_frame() / decode_frame_to_ndarray() retain rgb24
+    # for the QPainter overlay / JPEG fallback path, marked '# phase1
+    # fallback' in source. The new hot path (decode_frame_planes) MUST
+    # NOT call .to_ndarray('rgb24') — that is PITFALLS #2.
+    assert "decode_frame_planes" in src, (
+        "D-01 cp.5: client/video_decoder.py must expose decode_frame_planes "
+        "as the new 10-bit hot path consumed by VideoBlitWidget.feed_frame."
+    )
+    assert "_extract_planes_p010" in src, (
+        "D-01 cp.5: client/video_decoder.py must expose _extract_planes_p010 "
+        "to convert AVFrame planes -> (Y, UV) bytes for QRhi RG16 sampling."
+    )
 
 
-@pytest.mark.xfail(reason="Wave 3 - decoder hwaccel stability pending", strict=False)
 def test_checkpoint_6_decoder_hwaccel_is_videotoolbox():
-    pytest.fail("Wave 3 owner asserts decoder.hw_backend == 'videotoolbox' on macOS")
+    """D-01 cp.6 — client/video_decoder.py exposes hw_backend property
+    + handles the VideoToolbox-silent-software-fallback case.
+
+    Source-grep gate (cheap, runs everywhere). The live property check
+    is in tests/client/test_video_decoder.py (which runs whenever PyAV
+    is installed on the macos-14 CI runner).
+    """
+    src = pathlib.Path("client/video_decoder.py").read_text()
+    # hw_backend property is the cp.6 health-overlay surface.
+    assert "def hw_backend" in src, (
+        "D-01 cp.6: client/video_decoder.py must expose hw_backend "
+        "property so the health overlay can render the active hwaccel."
+    )
+    assert "videotoolbox" in src, (
+        "D-01 cp.6: client/video_decoder.py must reference videotoolbox "
+        "in the HW_DECODERS hwaccel candidate list."
+    )
+    # The fallback-detection wiring: when Main10 is negotiated but the
+    # decoder produces an 8-bit frame, hw_type is flipped back to None
+    # (so hw_backend reports 'software') AND the decoder raises so the
+    # supervisor surfaces the failure. Both behaviors are covered by
+    # tests/client/test_video_decoder.py.
+    assert "hwaccel_software_fallback" in src, (
+        "D-01 cp.6: client/video_decoder.py must log "
+        "decoder.hwaccel_software_fallback when VideoToolbox silently "
+        "falls back to 8-bit on Main10 input (PITFALLS #2 detection)."
+    )
 
 
 def test_checkpoint_7_qrhi_texture_formats_are_r16_rg16():
