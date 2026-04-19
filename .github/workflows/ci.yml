@@ -57,7 +57,9 @@ jobs:
         # which includes integration tests. `-m "not latency_bench"` excludes the
         # D-08 synthetic-stage benchmark (Plan 01-16) — that runs in the dedicated
         # `latency-bench` job so PR turnaround doesn't pay its ~25 s cost.
-        run: python3.12 -m pytest -v --timeout=60 -m "not latency_bench"
+        # `-m "not smoke_1h"` excludes the STAB-09 1-hour smoke harness
+        # (Plan 01-17) — that runs only in the nightly `smoke-nightly.yml` cron.
+        run: python3.12 -m pytest -v --timeout=60 -m "not latency_bench and not smoke_1h"
 
   test-macos:
     name: Tests (macOS 14 / Apple Silicon)
@@ -81,10 +83,11 @@ jobs:
         # Offscreen Qt for macOS so client tests don't require a display.
         # `-m "not latency_bench"` excludes the D-08 synthetic-stage benchmark
         # (Plan 01-16) — that runs in the dedicated `latency-bench` job on
-        # Rocky 9 only.
+        # Rocky 9 only. `-m "not smoke_1h"` excludes the STAB-09 1-hour smoke
+        # harness (Plan 01-17) — that runs only in `smoke-nightly.yml`.
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python3 -m pytest -v --timeout=60 -m "not latency_bench"
+        run: python3 -m pytest -v --timeout=60 -m "not latency_bench and not smoke_1h"
 
   # Synthetic harness-math gate per D-09. Real-hardware latency is measured
   # manually on DXS workstations pre-release.
