@@ -86,15 +86,28 @@ def test_redact_dict_handles_nested():
         "user": "alice",
         "password": "hunter2",
         "config": {"api_key": "secret-key-xyz", "ok_field": "visible"},
-        "tokens": [{"token": "t1"}, {"other": "ok"}],
+        # Outer list key is deliberately non-matching so we can inspect
+        # nested redaction behaviour. A key containing "token" would get
+        # whole-value redacted (see test below).
+        "items": [{"token": "t1"}, {"other": "ok"}],
     }
     redacted = _redact_dict(data)
     assert redacted["user"] == "alice"
     assert redacted["password"] == "[REDACTED]"
     assert redacted["config"]["api_key"] == "[REDACTED]"
     assert redacted["config"]["ok_field"] == "visible"
-    assert redacted["tokens"][0]["token"] == "[REDACTED]"
-    assert redacted["tokens"][1]["other"] == "ok"
+    assert redacted["items"][0]["token"] == "[REDACTED]"
+    assert redacted["items"][1]["other"] == "ok"
+
+
+def test_redact_dict_redacts_whole_value_when_outer_key_matches():
+    """When a dict key itself matches a redact substring, the entire
+    value (dict, list, whatever) gets replaced — matches the behaviour
+    of common.logging._redact_value for consistency.
+    """
+    data = {"tokens": [{"token": "t1"}, {"other": "ok"}]}
+    redacted = _redact_dict(data)
+    assert redacted["tokens"] == "[REDACTED]"
 
 
 def test_redact_text_replaces_inline_values():
