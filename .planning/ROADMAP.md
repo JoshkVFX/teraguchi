@@ -92,7 +92,7 @@ This is brownfield. A working vibe-coded prototype already covers the happy path
   - [x] 02-07-PLAN.md — client/viewer.py QRhiWidget Metal P010 blit + BT.709 shader (biggest client-side change)
   - [x] 02-08-PLAN.md — client/video_decoder.py P010 format assertion + hw_backend property + docs/build-pyav-macos.md
   - [x] 02-09-PLAN.md — modifier discipline: 4 release-all triggers + bookmark swap UI + Caps/Num/Scroll + TextCommit + xset r off
-  - [ ] 02-10-PLAN.md — INPUT-08 IOHIDUserDevice spike + mac_pen_injector (branches on D-07 outcome) + PenFSM + proximity re-synth
+  - [x] 02-10-PLAN.md — INPUT-08 IOHIDUserDevice spike + mac_pen_injector (branches on D-07 outcome) + PenFSM + proximity re-synth
   - [ ] 02-11-PLAN.md — INPUT-04 crazy-hotkeys integration + Wacom setup tab with TCC detection (D-20)
   - [ ] 02-12-PLAN.md — 4-cell Wacom matrix + RMS analysis + DXS pre/post latency measurement + docs/release.md seed
 **Size**: L
