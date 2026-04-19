@@ -238,6 +238,11 @@ class VideoBlitWidget(QRhiWidget):
                 QRhiTexture.Format.R16, self._frame_size, 1
             )
             self._tex_y.create()
+            # Phase 2 WR-05: textures were just (re)created — the SRB's
+            # baked-in sampledTexture bindings now reference the new
+            # handle, but the SRB binding list was built off the OLD
+            # one. Force the SRB to be rebuilt below.
+            self._srb = None
 
         # --- UV plane texture -- QRhiTexture.Format.RG16 -- 4:2:0 half-res
         if self._tex_uv is None:
@@ -249,6 +254,8 @@ class VideoBlitWidget(QRhiWidget):
                 QRhiTexture.Format.RG16, uv_size, 1
             )
             self._tex_uv.create()
+            # Phase 2 WR-05: see note above — invalidate stale SRB.
+            self._srb = None
 
         # --- Sampler (linear filter, clamp-to-edge -- standard for video) ---
         if self._sampler is None:
