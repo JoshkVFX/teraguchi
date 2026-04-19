@@ -402,8 +402,33 @@ def main():
     parser.add_argument("--no-audio", action="store_true")
     parser.add_argument("--no-clipboard", action="store_true")
 
+    # OBS-05 / Plan 01-15: diagnostic bundle export. Presence-only flag with
+    # optional path — `--diag-bundle` alone writes to
+    # ~/teraguchi-diag-<ts>.zip; `--diag-bundle /tmp/x.zip` writes there.
+    # The short-circuit MUST run before any auth/root/network setup so
+    # bundle export stays usable on a broken install.
+    parser.add_argument(
+        "--diag-bundle",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="PATH",
+        help="Export a diagnostic bundle zip and exit (OBS-05). "
+             "Default path: ~/teraguchi-diag-<timestamp>.zip",
+    )
+
     args = parser.parse_args()
     server_args = args
+
+    # OBS-05 short-circuit — runs BEFORE logging config so a misconfigured
+    # log path (e.g. permission-denied file handler) can't prevent bundle
+    # export. Also BEFORE PAM/root guard so the bundle is available even
+    # without sudo.
+    if args.diag_bundle is not None:
+        from common.diagnostic_bundle import build_bundle
+        path = build_bundle(args.diag_bundle or "", tier="server")
+        print(f"Diagnostic bundle: {path}")
+        sys.exit(0)
 
     # OBS-01: route all logging (stdlib + structlog) through the canonical
     # processor chain. phase="server" is bound into contextvars so every
