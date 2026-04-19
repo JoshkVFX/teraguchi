@@ -134,3 +134,29 @@ def test_table_contains_full_ascii_letter_range():
     here would silently eat a Flame keystroke."""
     missing = [0x41 + i for i in range(26) if (0x41 + i) not in QT_KEY_TO_LINUX]
     assert missing == [], f"letters missing from table: {missing}"
+
+
+# =============================================================================
+# Phase 2 Wave 1 (02-03) — D-12 exhaustive Qt × modifier × {linux, mac} matrix.
+# Plan 02-03 fills in QT_KEY_TO_MAC_VK + qt_key_to_mac_vk() + FLAME_CRITICAL_CHORDS.
+# =============================================================================
+
+
+@pytest.mark.skip(reason="Wave 1 - QT_KEY_TO_MAC_VK table lands in 02-03")
+def test_qt_key_to_mac_vk_letter_a_returns_kvk_ansi_a():
+    from common.keymap import qt_key_to_mac_vk  # noqa: F401
+    assert qt_key_to_mac_vk(0x41) == 0x00  # kVK_ANSI_A
+
+
+@pytest.mark.skip(reason="Wave 1 - FLAME_CRITICAL_CHORDS constant lands in 02-03")
+def test_flame_critical_chords_exist():
+    from common.keymap import FLAME_CRITICAL_CHORDS  # noqa: F401
+    assert len(FLAME_CRITICAL_CHORDS) >= 20
+
+
+@pytest.mark.skip(reason="Wave 1 - swap_cmd_ctrl helper lands in 02-03")
+def test_swap_cmd_ctrl_for_linux_dest_inverts_cmd_to_ctrl():
+    from common.keymap import swap_cmd_ctrl_for_linux_dest  # noqa: F401
+    # Qt Meta (0x01000022) should become Qt Control (0x01000021) when dest=linux
+    out_key, out_mods = swap_cmd_ctrl_for_linux_dest(0x01000022, 0)
+    assert out_key == 0x01000021
