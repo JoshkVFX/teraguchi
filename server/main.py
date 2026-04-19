@@ -46,7 +46,11 @@ from common.logging import configure as _configure_logging
 from server.platform_backends import IS_MACOS
 from server.video_encoder import check_ffmpeg_available, detect_encoders
 from server.auth import Authenticator
-from server.bootstrap import check_system_dependencies, create_tls_context
+from server.bootstrap import (
+    build_color_caps,
+    check_system_dependencies,
+    create_tls_context,
+)
 from server.status_endpoint import make_status_handler
 # D-11 / Plan 01-11 Task 1: ClientSession moved to its own module. Re-export
 # here so existing callers (``from server.main import ClientSession``) keep
@@ -252,7 +256,13 @@ async def handle_client(websocket: WebSocketServerProtocol):
         monitors = [asdict(m) for m in runtime.capture.list_monitors()]
         encoder_backend = runtime.encoder.active_backend if runtime.encoder else ""
 
-        hello = ServerHelloMsg(
+        # Phase 2 D-03: run the hardware capability probe and advertise the
+        # ServerColorCaps payload so the client renders the '10-bit: <state>'
+        # badge. Gated POST-auth (see T-02-10) because this callsite fires
+        # only after the PAM handshake above succeeds.
+        color_caps = build_color_caps()
+
+        hello_kwargs = dict(
             screen_width=runtime.capture.width,
             screen_height=runtime.capture.height,
             monitors=monitors,
@@ -266,6 +276,14 @@ async def handle_client(websocket: WebSocketServerProtocol):
             encoder_backend=encoder_backend,
             available_encoders=ffmpeg_caps.get("encoders", {}),
         )
+        # color_caps is only a valid kwarg once plan 02-02 extends
+        # ServerHelloMsg. Pass it defensively so bootstrap works in the
+        # pre-merge worktree AND after 02-02 lands.
+        import dataclasses as _dc
+        if "color_caps" in {f.name for f in _dc.fields(ServerHelloMsg)}:
+            hello_kwargs["color_caps"] = color_caps
+
+        hello = ServerHelloMsg(**hello_kwargs)
         await websocket.send(hello.to_json())
 
         mon_msg = MonitorListMsg(monitors=monitors)

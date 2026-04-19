@@ -43,29 +43,55 @@ class HWEncoder:
     supports_444: bool  # Can do YUV 4:4:4
     supports_lossless: bool
     priority: int       # Lower = preferred
+    # Phase 2 D-03 / D-05 capability flags:
+    #   supports_main10:    HEVC Main10 / 10-bit Main10 equivalent
+    #   supports_422:       YUV 4:2:2 at 10-bit (Blackwell / M4+ only)
+    #   main10_detection:   how this flag's TRUTH is established at runtime
+    #                       "family"  -> static table only (software codecs)
+    #                       "probe"   -> NVENC trial-encode probe
+    #                       "vt_query"-> VideoToolbox query
+    supports_main10: bool = False
+    supports_422: bool = False
+    main10_detection: str = "family"  # "family" | "probe" | "vt_query"
 
 
+# D-05: 4:4:4 not user-facing in v1; family-table only (not trial-encoded). Revisit when Blackwell + M4 are ubiquitous.
 # Encoder definitions ordered by priority
 ENCODER_DEFS = [
-    # NVENC (NVIDIA)
-    HWEncoder("h264_nvenc",  "h264", "nvenc", supports_444=True,  supports_lossless=True,  priority=10),
-    HWEncoder("hevc_nvenc",  "h265", "nvenc", supports_444=True,  supports_lossless=True,  priority=10),
-    HWEncoder("av1_nvenc",   "av1",  "nvenc", supports_444=False, supports_lossless=False, priority=10),
-    # VideoToolbox (macOS / Apple Silicon). No 4:4:4, no lossless.
-    HWEncoder("h264_videotoolbox", "h264", "videotoolbox", supports_444=False, supports_lossless=False, priority=15),
-    HWEncoder("hevc_videotoolbox", "h265", "videotoolbox", supports_444=False, supports_lossless=False, priority=15),
-    HWEncoder("av1_videotoolbox",  "av1",  "videotoolbox", supports_444=False, supports_lossless=False, priority=15),
+    # NVENC (NVIDIA) — hevc_nvenc + av1_nvenc advertise Main10 but the
+    # runtime probe (D-03) promotes or demotes per GPU generation.
+    HWEncoder("h264_nvenc",  "h264", "nvenc", supports_444=True,  supports_lossless=True,  priority=10,
+              supports_main10=False, supports_422=False, main10_detection="family"),
+    HWEncoder("hevc_nvenc",  "h265", "nvenc", supports_444=True,  supports_lossless=True,  priority=10,
+              supports_main10=True,  supports_422=False, main10_detection="probe"),
+    HWEncoder("av1_nvenc",   "av1",  "nvenc", supports_444=False, supports_lossless=False, priority=10,
+              supports_main10=True,  supports_422=False, main10_detection="probe"),
+    # VideoToolbox (macOS / Apple Silicon). No 4:4:4, no lossless. HEVC Main10 via vt_query.
+    HWEncoder("h264_videotoolbox", "h264", "videotoolbox", supports_444=False, supports_lossless=False, priority=15,
+              supports_main10=False, supports_422=False, main10_detection="family"),
+    HWEncoder("hevc_videotoolbox", "h265", "videotoolbox", supports_444=False, supports_lossless=False, priority=15,
+              supports_main10=True,  supports_422=False, main10_detection="vt_query"),
+    HWEncoder("av1_videotoolbox",  "av1",  "videotoolbox", supports_444=False, supports_lossless=False, priority=15,
+              supports_main10=False, supports_422=False, main10_detection="family"),
     # VAAPI (Intel/AMD on Linux)
-    HWEncoder("h264_vaapi",  "h264", "vaapi", supports_444=False, supports_lossless=False, priority=20),
-    HWEncoder("hevc_vaapi",  "h265", "vaapi", supports_444=False, supports_lossless=False, priority=20),
-    HWEncoder("av1_vaapi",   "av1",  "vaapi", supports_444=False, supports_lossless=False, priority=20),
+    HWEncoder("h264_vaapi",  "h264", "vaapi", supports_444=False, supports_lossless=False, priority=20,
+              supports_main10=False, supports_422=False, main10_detection="family"),
+    HWEncoder("hevc_vaapi",  "h265", "vaapi", supports_444=False, supports_lossless=False, priority=20,
+              supports_main10=False, supports_422=False, main10_detection="family"),
+    HWEncoder("av1_vaapi",   "av1",  "vaapi", supports_444=False, supports_lossless=False, priority=20,
+              supports_main10=False, supports_422=False, main10_detection="family"),
     # AMF (AMD on Windows/Linux)
-    HWEncoder("h264_amf",    "h264", "amf",   supports_444=False, supports_lossless=False, priority=30),
-    HWEncoder("hevc_amf",    "h265", "amf",   supports_444=False, supports_lossless=False, priority=30),
-    # Software fallbacks
-    HWEncoder("libx264",     "h264", "software", supports_444=True,  supports_lossless=True,  priority=100),
-    HWEncoder("libx265",     "h265", "software", supports_444=True,  supports_lossless=True,  priority=100),
-    HWEncoder("libsvtav1",   "av1",  "software", supports_444=False, supports_lossless=False, priority=100),
+    HWEncoder("h264_amf",    "h264", "amf",   supports_444=False, supports_lossless=False, priority=30,
+              supports_main10=False, supports_422=False, main10_detection="family"),
+    HWEncoder("hevc_amf",    "h265", "amf",   supports_444=False, supports_lossless=False, priority=30,
+              supports_main10=False, supports_422=False, main10_detection="family"),
+    # Software fallbacks — libx265 can always do Main10 + 4:2:2 in software.
+    HWEncoder("libx264",     "h264", "software", supports_444=True,  supports_lossless=True,  priority=100,
+              supports_main10=False, supports_422=False, main10_detection="family"),
+    HWEncoder("libx265",     "h265", "software", supports_444=True,  supports_lossless=True,  priority=100,
+              supports_main10=True,  supports_422=True,  main10_detection="family"),
+    HWEncoder("libsvtav1",   "av1",  "software", supports_444=False, supports_lossless=False, priority=100,
+              supports_main10=False, supports_422=False, main10_detection="family"),
 ]
 
 
