@@ -117,6 +117,11 @@ class ClientSession:
             if self._drops_since_keyframe == 1 and self.runtime and self.runtime.encoder:
                 try:
                     self.runtime.encoder.request_keyframe()
+                    # OBS-03 (Plan 01-14) — bump request counter for overlay /
+                    # dashboard keyframe-request-rate visibility. Paired with
+                    # SessionRuntime._on_encoded_frame's record_keyframe_emitted
+                    # so the request/emit ratio is observable.
+                    self.runtime.health.record_keyframe_requested()
                     logger.warning(
                         "broadcaster.idr_requested client=%s drops=%d",
                         self.client_id, self._drops_since_keyframe)

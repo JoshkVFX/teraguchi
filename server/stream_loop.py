@@ -14,9 +14,12 @@ Behavior is preserved exactly from the pre-extraction monolith:
   * H264 path: full-frame BGRA capture + encoder feed
   * JPEG path: dirty-rect capture + per-region enqueue broadcast
 
-CONCERNS.md flags the JPEG path as largely dead-weight (the H264/HEVC path
-covers real deployments) but Phase 1 does a faithful extraction — Plan 14
-(OBS-02 instrumentation) is when timing changes land.
+Plan 01-14 (OBS-02) wiring: ``StageTimer`` from :mod:`common.logging`
+wraps the capture + encode stages so every iteration emits
+``stage.timing`` structlog events. ``HealthMonitor.record_capture_time``
+remains the aggregate-path recorder (feeds the rolling average surfaced
+in ``HealthStats.capture_time_ms``); the structlog event and the deque
+serve different consumers (event log / dashboard vs. client overlay).
 """
 from __future__ import annotations
 
@@ -25,6 +28,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Optional
 
+from common.logging import StageTimer
 from common.messages import FrameType, encode_jpeg_header
 
 if TYPE_CHECKING:
@@ -51,11 +55,18 @@ class StreamLoop:
             start = time.time()
             if self._runtime.clients and self._runtime.encoder:
                 try:
+                    # OBS-02 (Plan 01-14) — StageTimer emits stage.timing
+                    # events for the capture + encode stages. The existing
+                    # HealthMonitor.record_capture_time call is preserved so
+                    # HealthStats.capture_time_ms (client overlay consumer)
+                    # still reflects the rolling average.
                     t0 = time.time()
-                    raw = self._runtime.capture.capture_raw_bgra()
+                    with StageTimer("capture"):
+                        raw = self._runtime.capture.capture_raw_bgra()
                     self._runtime.health.record_capture_time(
                         (time.time() - t0) * 1000)
-                    self._runtime.encoder.feed_frame(raw)
+                    with StageTimer("encode"):
+                        self._runtime.encoder.feed_frame(raw)
                 except Exception as e:
                     logger.error("[%s] H264 capture error: %s",
                                  self._runtime.username, e)
