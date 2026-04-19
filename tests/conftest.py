@@ -87,3 +87,19 @@ def canned_hevc_keyframes():
         frames.append((payload, is_keyframe))
         offset += 5 + size
     return frames
+
+
+@pytest.fixture(scope="module")
+def ten_bit_ramp_bytes():
+    """Phase 2 D-01 - raw bytes of the 10-bit P010 ramp fixture.
+
+    Loaded module-scope to avoid repeated 7.4 MB reads across the 9-checkpoint
+    harness. Mirrors the canned_hevc_keyframes graceful-degradation pattern:
+    returns None if the binary is missing so tests can skip without failing
+    collection pre-Wave-0.
+    """
+    path = (pathlib.Path(__file__).parent /
+            "smoke" / "fixtures" / "10bit_ramp.p010.bin")
+    if not path.exists():
+        return None
+    return path.read_bytes()
