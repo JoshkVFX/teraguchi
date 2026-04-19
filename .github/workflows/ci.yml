@@ -54,8 +54,10 @@ jobs:
           python3.12 -m pip install -r requirements-dev.txt
       - name: Pytest
         # --timeout=60 overrides pyproject.toml's 30s default for the linux suite
-        # which includes integration tests.
-        run: python3.12 -m pytest -v --timeout=60
+        # which includes integration tests. `-m "not latency_bench"` excludes the
+        # D-08 synthetic-stage benchmark (Plan 01-16) — that runs in the dedicated
+        # `latency-bench` job so PR turnaround doesn't pay its ~25 s cost.
+        run: python3.12 -m pytest -v --timeout=60 -m "not latency_bench"
 
   test-macos:
     name: Tests (macOS 14 / Apple Silicon)
@@ -76,23 +78,34 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install -r requirements-dev.txt
       - name: Pytest
-        # Offscreen Qt for macOS so client tests don't require a display
+        # Offscreen Qt for macOS so client tests don't require a display.
+        # `-m "not latency_bench"` excludes the D-08 synthetic-stage benchmark
+        # (Plan 01-16) — that runs in the dedicated `latency-bench` job on
+        # Rocky 9 only.
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python3 -m pytest -v --timeout=60
+        run: python3 -m pytest -v --timeout=60 -m "not latency_bench"
 
   # Synthetic harness-math gate per D-09. Real-hardware latency is measured
-  # manually on DXS workstations pre-release. PLACEHOLDER — Plan 16 replaces
-  # this job body with the real synthetic-stage-time accumulator benchmark.
-  # The job NAME must stay `latency-bench` so D-07 branch protection never
-  # needs reconfiguration across the Plan 05 → Plan 16 transition.
+  # manually on DXS workstations pre-release.
   latency-bench:
-    name: Latency benchmark (synthetic p99 < 25 ms) — PENDING Plan 16
+    name: Latency benchmark (synthetic p99 < 25 ms)
     runs-on: ubuntu-latest
+    container:
+      image: rockylinux:9
+    needs: test-linux
     steps:
       - uses: actions/checkout@v4
-      - name: Placeholder
+      - name: Install OS deps
         run: |
-          echo "PENDING — Plan 16 will replace this with the real benchmark"
-          echo "(synthetic-stage-time accumulator per D-09; p99 < 25 ms gate per D-08)"
-          exit 0
+          dnf -y install epel-release
+          dnf -y install python3.12 python3.12-pip gcc
+      - name: Install Python deps
+        run: |
+          python3.12 -m pip install --upgrade pip
+          python3.12 -m pip install -r requirements-dev.txt
+      - name: Run latency benchmark
+        # D-09: synthetic-stage-time accumulator; D-08: p99 < 25 ms gate.
+        # This is NOT real-hardware timing — it validates the harness math
+        # and asyncio scheduling budget only.
+        run: python3.12 -m pytest tests/smoke/test_latency_benchmark.py -v -m latency_bench --timeout=120
