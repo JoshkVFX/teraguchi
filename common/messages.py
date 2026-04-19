@@ -330,6 +330,10 @@ class HealthPing:
     type: str = MsgType.HEALTH_PING
     timestamp_ms: int = 0
     sequence: int = 0
+    # STAB-06 — FSM state serialized verbatim from common.session_fsm.ClientFSM
+    # HealthPing ORIGINATES ON THE CLIENT (Plan 01-08 inverts prior direction).
+    # Empty string indicates "state not reported by this peer" (backward compat).
+    client_state: str = ""
 
     def to_json(self) -> str:
         self.timestamp_ms = int(time.time() * 1000)
@@ -342,6 +346,9 @@ class HealthPong:
     ping_timestamp_ms: int = 0
     sequence: int = 0
     server_timestamp_ms: int = 0
+    # STAB-06 — FSM state serialized verbatim from common.session_fsm.ServerFSM
+    # HealthPong ORIGINATES ON THE SERVER (Plan 01-08 inverts prior direction).
+    server_state: str = ""
 
     def to_json(self) -> str:
         self.server_timestamp_ms = int(time.time() * 1000)
