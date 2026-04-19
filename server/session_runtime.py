@@ -59,6 +59,7 @@ from common.messages import (
 )
 from common.session_fsm import is_state_pair_allowed
 from common.keymap import qt_key_to_linux_scancode
+from server.health_loop import check_state_pair  # Plan 01-14: structured ERROR emit
 from server.platform_backends import (
     ClipboardSync,
     InputInjector,
@@ -308,6 +309,11 @@ class SessionRuntime:
     # ── Encoder callbacks ────────────────────────────────────
 
     def _on_encoded_frame(self, frame_data: bytes, is_keyframe: bool):
+        # OBS-03 (Plan 01-14) — bump keyframe_emitted counter on every IDR
+        # the encoder emits. Pair with ClientSession.enqueue's
+        # record_keyframe_requested call for request/emit ratio telemetry.
+        if is_keyframe:
+            self.health.record_keyframe_emitted()
         timestamp = int(time.time() * 1000) & 0xFFFFFFFF
         codec_name = self.quality.codec.lower()
         if codec_name == "av1":
@@ -500,21 +506,21 @@ class SessionRuntime:
                                     msg.get("ping_timestamp_ms", 0))
 
         elif msg_type == MsgType.HEALTH_PING:
-            # STAB-06 / Plan 01-08 — client now originates HealthPing and
-            # stamps it with client_state from its ClientFSM. Server reads
-            # the state, checks the (client_state, server_state) pair
-            # against ALLOWED_PAIRS, and flags disagreements. Structured
-            # ERROR logging of the disagreement event is wired in Plan 01-17.
+            # STAB-06 / Plan 01-08 — client originates HealthPing and stamps
+            # it with client_state from its ClientFSM. Server reads the
+            # state, checks the (client_state, server_state) pair against
+            # ALLOWED_PAIRS, and flags disagreements.
+            # Plan 01-14 (OBS) upgrades the disagreement emit from a stdlib
+            # logger.warning to a structlog ERROR event via check_state_pair
+            # so the overlay / dashboard can filter on level=error.
             incoming_client_state = msg.get("client_state", "")
             session.last_reported_client_state = incoming_client_state
             try:
-                if incoming_client_state and not is_state_pair_allowed(
-                    incoming_client_state, session.fsm.current_state.id,
-                ):
-                    logger.warning(
-                        "fsm.state_disagreement client_state=%s server_state=%s",
-                        incoming_client_state, session.fsm.current_state.id,
-                    )
+                check_state_pair(
+                    incoming_client_state,
+                    session.fsm.current_state.id,
+                    session.client_id,
+                )
             except Exception:
                 pass
 
