@@ -66,7 +66,7 @@ The 21 decisions (D-01..D-21) in `.planning/phases/02-input-color-fidelity/02-CO
 
 **Phase 2 Latency Gate:**
 
-- **D-21** Latency gate = keep Phase 1 synthetic p99 < 30ms gate (widened from 25ms per Phase 1 deviation #1) + add manual DXS measurement. Commit pre/post Phase-2 real-hardware end-to-end number to `docs/release.md`. Post-Phase-2 slower than pre triggers investigation before sign-off.
+- **D-21** Latency gate = Phase 1 synthetic p99 < 25ms gate (D-08/D-09, unchanged in Phase 2 per D-21) + add manual DXS measurement. Commit pre/post Phase-2 real-hardware end-to-end number to `docs/release.md`. Post-Phase-2 slower than pre triggers investigation before sign-off.
 
 ### Claude's Discretion (research makes concrete recommendations)
 
