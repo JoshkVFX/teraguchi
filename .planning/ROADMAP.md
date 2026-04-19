@@ -82,7 +82,19 @@ This is brownfield. A working vibe-coded prototype already covers the happy path
   3. Wacom pen pressure, tilt, eraser, tablet-side buttons, and proximity events round-trip with sub-1% pressure quantization error on Intuos Pro Large AND Cintiq Pro 24, on macOS Sonoma AND Sequoia (4-cell hardware matrix passing)
   4. Input-to-photon latency on LAN measures sub-20ms with the Phase-1 instrumentation; CI benchmark fails the build if the number drifts above 25ms
   5. Modifiers release cleanly on `WindowDeactivate` (no more stuck-Ctrl after Cmd+Tab) and on reconnect — verified by automated focus-stress and reconnect-stress tests
-**Plans**: TBD
+**Plans**: 12 plans
+  - [ ] 02-01-PLAN.md — Wave 0 gap closure: 10-bit ramp fixture, 8 test skeletons, pytest markers, CI wiring
+  - [ ] 02-02-PLAN.md — common/messages.py extensions: KEY_RESET_MODIFIERS / TextCommit / PenProximity / KeyEvent lock bits / ServerColorCaps
+  - [ ] 02-03-PLAN.md — common/keymap.py Qt→Mac VK + Cmd↔Ctrl swap + FLAME_CRITICAL_CHORDS + ~2000-case exhaustive matrix
+  - [ ] 02-04-PLAN.md — server/capability_probe.py + ENCODER_DEFS main10/422/444 flags + client 10-bit badge
+  - [ ] 02-05-PLAN.md — server/mac_video_encoder.py VTCompressionSession wrapper + SCK .hdrLocalDisplay config
+  - [ ] 02-06-PLAN.md — Linux hevc_nvenc Main10 command line + NvFBC 10-bit surface + 9-checkpoint cp.2-4
+  - [ ] 02-07-PLAN.md — client/viewer.py QRhiWidget Metal P010 blit + BT.709 shader (biggest client-side change)
+  - [ ] 02-08-PLAN.md — client/video_decoder.py P010 format assertion + hw_backend property + docs/build-pyav-macos.md
+  - [ ] 02-09-PLAN.md — modifier discipline: 4 release-all triggers + bookmark swap UI + Caps/Num/Scroll + TextCommit + xset r off
+  - [ ] 02-10-PLAN.md — INPUT-08 IOHIDUserDevice spike + mac_pen_injector (branches on D-07 outcome) + PenFSM + proximity re-synth
+  - [ ] 02-11-PLAN.md — INPUT-04 crazy-hotkeys integration + Wacom setup tab with TCC detection (D-20)
+  - [ ] 02-12-PLAN.md — 4-cell Wacom matrix + RMS analysis + DXS pre/post latency measurement + docs/release.md seed
 **Size**: L
 **UI hint**: no
 
