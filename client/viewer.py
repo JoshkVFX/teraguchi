@@ -39,6 +39,7 @@ from PySide6.QtGui import (
     QColor,
     QCursor,
     QImage,
+    QInputMethodEvent,
     QKeyEvent,
     QMouseEvent,
     QPainter,
@@ -417,6 +418,20 @@ class RemoteViewer(QWidget):
     request_full_frame = Signal()
     paste_requested = Signal()  # Ctrl+V or Cmd+V detected — push clipboard
     files_dropped = Signal(list)  # list of file paths dropped onto viewer
+    # Phase 2 D-11 — release-all-modifiers trigger.
+    # Reason values: "focus_out" (focusOutEvent), "panic_f9" (F9 panic
+    # shortcut), "reconnect" (ConnectionSupervisor post-auth hook —
+    # emitted from connection_supervisor.py, not from this widget),
+    # "periodic" (server-side timer — does not pass through this signal).
+    # Plumbed through client/session.py::_wire_viewer to ClientProtocol
+    # which serializes a KeyResetModifiersMsg(reason=...) on the wire.
+    reset_modifiers_requested = Signal(str)
+    # Phase 2 D-15 — IME / dead-key commit string passthrough. Fired from
+    # inputMethodEvent when commitString() is non-empty. Empty (preedit-
+    # only) events are suppressed because synthesizing them as keycodes
+    # would mangle dead-key composition (the anti-pattern that REQ-INPUT-05
+    # exists to forbid).
+    text_commit = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -865,6 +880,37 @@ class RemoteViewer(QWidget):
                 return Qt.Key_Control   # Command → Control_L
             # Physical Control already maps to Qt.Key_Control — no change needed
         return key
+
+    # --- Phase 2 D-11 / D-15: focus-out + IME passthrough ---
+
+    def focusOutEvent(self, event):
+        """Phase 2 D-11 trigger #1: viewer loses focus (e.g. Cmd-Tab away).
+
+        Fires the reset_modifiers_requested signal with reason='focus_out'
+        BEFORE chaining to super() so the signal is emitted even if a
+        parent handler wants to short-circuit the rest of the focus-out
+        propagation. The signal is connected up in client/session.py
+        and ultimately turned into a KeyResetModifiersMsg on the wire.
+
+        Fixes the canonical "Ctrl stuck after Cmd-Tab" PCoIP-class bug.
+        """
+        self.reset_modifiers_requested.emit("focus_out")
+        super().focusOutEvent(event)
+
+    def inputMethodEvent(self, event: QInputMethodEvent):
+        """Phase 2 D-15: forward IME commit strings as TextCommit, not keys.
+
+        Empty commit strings (pre-edit composition mid-flow) are
+        intentionally suppressed — synthesizing them as keycodes is the
+        anti-pattern that mangles dead-key composition across US/UK/DE/JP
+        layouts (REQ-INPUT-05). Only the final composed string crosses
+        the wire.
+        """
+        commit = event.commitString()
+        if commit:
+            self.text_commit.emit(commit)
+        super().inputMethodEvent(event)
+        event.accept()
 
     # --- Helpers ---
 

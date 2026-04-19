@@ -109,11 +109,44 @@ class BookmarkManager:
             try:
                 with open(self._bookmarks_file) as f:
                     data = json.load(f)
+                migrated = False
                 for bid, pdata in data.items():
                     self._profiles[bid] = ConnectionProfile.from_dict(pdata)
+                    # Phase 2 D-10 migration — pre-Phase-2 bookmarks did not
+                    # carry destination_kind / swap_cmd_ctrl. The dataclass
+                    # default lands swap_cmd_ctrl=True (correct for Linux),
+                    # but if the saved JSON omits the field entirely AND the
+                    # destination is a Mac, the default is wrong. We can't
+                    # actually tell Linux from Mac just from the host string
+                    # so we honor the saved file and default to Linux/swap-on
+                    # — which matches the v1 plan where the Flame production
+                    # server is Rocky Linux. The user can flip the per-bookmark
+                    # checkbox in the editor if they want Mac-server behavior.
+                    if "swap_cmd_ctrl" not in pdata or "destination_kind" not in pdata:
+                        migrated = True
+                        # Re-apply defaults consistent with the destination kind.
+                        prof = self._profiles[bid]
+                        if prof.destination_kind == "mac":
+                            prof.swap_cmd_ctrl = pdata.get("swap_cmd_ctrl", False)
+                        else:
+                            prof.swap_cmd_ctrl = pdata.get("swap_cmd_ctrl", True)
                 logger.info("Loaded %d bookmarks", len(self._profiles))
+                if migrated:
+                    self._save()
             except Exception as e:
                 logger.error("Failed to load bookmarks: %s", e)
+
+    @staticmethod
+    def default_swap_for_destination(destination_kind: str) -> bool:
+        """Phase 2 D-10 default-swap policy for new bookmarks.
+
+        Mac client → Linux server: Cmd↔Ctrl swap ON by default so Flame
+        on Rocky sees Ctrl+S where the artist pressed Cmd+S.
+
+        Mac client → Mac server: swap OFF by default — no translation
+        needed because the destination interprets Cmd natively.
+        """
+        return destination_kind != "mac"
 
     def _save(self):
         """Save bookmarks to disk."""
@@ -135,6 +168,16 @@ class BookmarkManager:
         bid = str(uuid.uuid4())[:8]
         now = time.strftime("%Y-%m-%d %H:%M:%S")
 
+        # Phase 2 D-10 — if the caller specified destination_kind but did
+        # NOT explicitly pass swap_cmd_ctrl, set the swap default from the
+        # destination policy. Lets the connection dialog stay simple
+        # (just pick Linux vs Mac, swap follows automatically) while still
+        # letting power users pass an explicit override.
+        if "destination_kind" in kwargs and "swap_cmd_ctrl" not in kwargs:
+            kwargs["swap_cmd_ctrl"] = self.default_swap_for_destination(
+                kwargs["destination_kind"]
+            )
+
         profile = ConnectionProfile(
             name=name,
             host=host,
@@ -147,7 +190,8 @@ class BookmarkManager:
         )
         self._profiles[bid] = profile
         self._save()
-        logger.info("Bookmark added: %s (%s:%d)", name, host, port)
+        logger.info("Bookmark added: %s (%s:%d, swap_cmd_ctrl=%s)",
+                    name, host, port, profile.swap_cmd_ctrl)
         return bid
 
     def update(self, bookmark_id: str, **kwargs):

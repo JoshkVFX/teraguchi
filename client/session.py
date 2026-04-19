@@ -124,7 +124,8 @@ class Session(QObject):
 
     def connect(self, host: str, port: int, username: str = "",
                 password: str = "", use_tls: bool = True,
-                auto_reconnect: bool = True, bookmark_id: str = ""):
+                auto_reconnect: bool = True, bookmark_id: str = "",
+                swap_cmd_ctrl: bool = False):
         self._host = host
         self._port = port
         self._username = username
@@ -133,6 +134,11 @@ class Session(QObject):
 
         self.status_changed.emit("connecting")
         self.title_changed.emit(self.display_name)
+
+        # Phase 2 D-10 — propagate per-bookmark Cmd↔Ctrl swap state into
+        # the protocol layer BEFORE the connect kicks off so the very first
+        # outbound key event is rewritten correctly.
+        self.protocol.set_swap_cmd_ctrl(swap_cmd_ctrl)
 
         self.protocol.disconnect()
         self.protocol.connect(
@@ -259,6 +265,13 @@ class Session(QObject):
         v.pen_event.connect(self._send_pen_event)
         v.paste_requested.connect(self._push_clipboard_for_paste)
         v.files_dropped.connect(self.send_files)
+        # Phase 2 D-11 / D-15 — viewer-emitted modifier-release + IME signals
+        # bridge directly to the wire helpers in client/protocol.py. See
+        # client/viewer.py focusOutEvent + inputMethodEvent for emission
+        # sites; client/main_window.py wires the F9 panic shortcut to
+        # the same reset_modifiers_requested signal with reason='panic_f9'.
+        v.reset_modifiers_requested.connect(self.protocol.send_reset_modifiers)
+        v.text_commit.connect(self.protocol.send_text_commit)
 
     # ── Input Sending ────────────────────────────
 
@@ -274,9 +287,10 @@ class Session(QObject):
                                    "dx": dx, "dy": dy, "x": x, "y": y})
 
     def _send_key_event(self, qt_key, scan_code, pressed, mods):
-        self.protocol.send_input({"type": MsgType.KEY_EVENT,
-                                   "key": "", "scan_code": qt_key,
-                                   "pressed": pressed, "modifiers": mods})
+        # Phase 2 D-10 / D-14 — delegate to ClientProtocol.send_key_event
+        # which (a) applies the per-bookmark Cmd↔Ctrl swap when active and
+        # (b) attaches caps_lock_on / num_lock_on / scroll_lock_on bits.
+        self.protocol.send_key_event(qt_key, scan_code, pressed, mods)
 
     def _send_pen_event(self, data):
         data["type"] = MsgType.PEN_EVENT

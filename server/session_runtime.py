@@ -86,6 +86,42 @@ if TYPE_CHECKING:
 logger = logging.getLogger("teraguchi.server.session_runtime")
 
 
+# ---------------------------------------------------------------------------
+# Phase 2 D-11 — periodic safety-net predicate.
+#
+# Module-level so tests can import it directly without standing up a full
+# SessionRuntime. The "10s elapsed AND no chord held" combo is the
+# exact precondition Pitfall 6 calls out: NEVER fire while the artist
+# is mid-Ctrl+Shift+drag, OR every long Flame paint stroke would have
+# its modifiers ripped out from under it.
+#
+# Boundary policy: the >=10.0 inclusive threshold matches CONTEXT.md
+# D-11; tests in tests/server/test_modifier_dispatch.py pin this.
+# ---------------------------------------------------------------------------
+
+PERIODIC_RESET_QUIET_S: float = 10.0
+
+
+def _should_fire_periodic_reset(now: float, last_event: float,
+                                last_had_modifiers: bool) -> bool:
+    """Phase 2 D-11 / Pitfall 6 precondition for the periodic safety net.
+
+    Returns True iff:
+      * The last keyboard event was at least PERIODIC_RESET_QUIET_S
+        seconds ago, AND
+      * That last event did NOT have any modifiers held (so we know the
+        client isn't mid-chord — a held chord is a common Flame
+        muscle-memory pattern that this safety net must not break).
+
+    Pure function; no side effects. Server-side caller in
+    SessionRuntime.handle_input updates last_event + last_had_modifiers
+    every key event.
+    """
+    if last_had_modifiers:
+        return False
+    return (now - last_event) >= PERIODIC_RESET_QUIET_S
+
+
 class SessionRuntime:
     """
     Runtime state for one user's remote desktop session.
@@ -205,6 +241,24 @@ class SessionRuntime:
         self._streaming = False
         self._running = True
 
+        # Phase 2 D-11 — periodic safety-net state. ``_last_key_event_at``
+        # is the monotonic-clock timestamp of the most recent KEY_EVENT;
+        # ``_last_key_event_had_modifiers`` records whether the client
+        # reported any modifier bit on that event. Together they feed
+        # ``_should_fire_periodic_reset`` (module-level) every ~2s. The
+        # period itself runs as ``_modifier_periodic_safety_loop`` started
+        # from ``_start_streaming``.
+        self._last_key_event_at: float = time.monotonic()
+        self._last_key_event_had_modifiers: bool = False
+        self._modifier_safety_task: Optional[asyncio.Task] = None
+        # Phase 2 D-14 — server's view of virtual-display lock state.
+        # Default False matches a freshly-spawned X session; the wire
+        # bits flip these to True/False as needed via
+        # ``_sync_lock_state_from_wire``.
+        self._caps_lock_on: bool = False
+        self._num_lock_on: bool = False
+        self._scroll_lock_on: bool = False
+
         # D-11 / Plan 01-10: stream + health + hotplug loops are now sub-
         # objects. SessionRuntime remains the owner of shared state (capture,
         # encoder, clients, health); the loops only hold the run-flag + task
@@ -304,7 +358,129 @@ class SessionRuntime:
         if self.cursor_tracker is not None:
             self.cursor_tracker.start(self._on_cursor_shape_change)
 
+        # Phase 2 D-11 — start the periodic safety-net loop. Bound to
+        # the asyncio event loop set via set_event_loop(); we schedule
+        # the task there so the loop runs alongside the rest of the
+        # session's async surface. Skip if no loop is wired (e.g. unit
+        # tests construct SessionRuntime without an event loop).
+        if self._event_loop is not None and self._modifier_safety_task is None:
+            try:
+                self._modifier_safety_task = asyncio.run_coroutine_threadsafe(
+                    self._spawn_modifier_safety_loop(),
+                    self._event_loop,
+                ).result(timeout=2.0)
+            except Exception as e:
+                logger.warning(
+                    "[%s] periodic-safety loop failed to start: %s",
+                    self.username, e,
+                )
+                self._modifier_safety_task = None
+
         logger.info("[%s] Streaming started (%d fps)", self.username, fps)
+
+    async def _spawn_modifier_safety_loop(self) -> asyncio.Task:
+        """Schedule the periodic-safety coroutine onto the running loop.
+
+        Returning the Task object via run_coroutine_threadsafe lets the
+        synchronous _start_streaming caller hold a handle for cancellation
+        in stop().
+        """
+        return asyncio.create_task(self._modifier_periodic_safety_loop())
+
+    async def _modifier_periodic_safety_loop(self) -> None:
+        """Phase 2 D-11 — every ~2s, fire reset_modifiers if Pitfall 6 OK.
+
+        The 2s tick is intentional — far below the 10s quiet threshold
+        so we always catch the first tick after the threshold is met
+        without imposing any meaningful CPU cost. ``_should_fire_periodic_reset``
+        owns the precondition decision (no modifiers held + ≥10s quiet).
+        """
+        try:
+            while self._running and self._streaming:
+                await asyncio.sleep(2.0)
+                if not (self._running and self._streaming):
+                    break
+                now = time.monotonic()
+                if _should_fire_periodic_reset(
+                    now,
+                    self._last_key_event_at,
+                    self._last_key_event_had_modifiers,
+                ):
+                    try:
+                        if hasattr(self.injector, "reset_modifiers"):
+                            self.injector.reset_modifiers()
+                        logger.info(
+                            "input.periodic_reset_modifiers quiet_s=%.2f",
+                            now - self._last_key_event_at,
+                        )
+                    except Exception as e:
+                        logger.debug("periodic reset failed: %s", e)
+                    # Bump the timer so we don't immediately re-fire on
+                    # the next tick — gives the safety net a clean slate.
+                    self._last_key_event_at = now
+        except asyncio.CancelledError:
+            return
+
+    def _sync_lock_state_from_wire(self, msg: dict) -> None:
+        """Phase 2 D-14 — auto-correct virtual display lock state.
+
+        For every KEY_EVENT we receive, compare the wire's caps_lock_on /
+        num_lock_on / scroll_lock_on bits to our local cache. On mismatch
+        we update the cache and (best-effort) toggle the corresponding
+        scan code so the X server's lock state catches up. The toggle
+        path is only run on Linux; Mac handles lock state via the OS
+        and CGEventCreateKeyboardEvent doesn't expose a lock-toggle.
+        """
+        # Extract bits with explicit defaults — older clients may not
+        # send them, in which case we leave server-side state alone.
+        wire_caps = msg.get("caps_lock_on")
+        wire_num = msg.get("num_lock_on")
+        wire_scroll = msg.get("scroll_lock_on")
+
+        # Linux scan codes for lock keys.
+        LOCK_SCANCODES = {
+            "caps": 58,    # KEY_CAPSLOCK
+            "num": 69,     # KEY_NUMLOCK
+            "scroll": 70,  # KEY_SCROLLLOCK
+        }
+
+        # Only XTest / uinput injectors expose toggles meaningfully on
+        # Linux. The Mac injector path is documented as not toggling
+        # locks via this channel.
+        if IS_MACOS:
+            # Just track wire state for diagnostics; no toggle path.
+            if wire_caps is not None:
+                self._caps_lock_on = bool(wire_caps)
+            if wire_num is not None:
+                self._num_lock_on = bool(wire_num)
+            if wire_scroll is not None:
+                self._scroll_lock_on = bool(wire_scroll)
+            return
+
+        for name, wire_bit, cache_attr in (
+            ("caps", wire_caps, "_caps_lock_on"),
+            ("num", wire_num, "_num_lock_on"),
+            ("scroll", wire_scroll, "_scroll_lock_on"),
+        ):
+            if wire_bit is None:
+                continue
+            wire_bit = bool(wire_bit)
+            current = getattr(self, cache_attr)
+            if wire_bit != current:
+                # Toggle the lock key — press + release of the lock
+                # scan code flips the lock state on most X servers.
+                code = LOCK_SCANCODES[name]
+                try:
+                    if hasattr(self.injector, "keyboard"):
+                        self.injector.keyboard.key_event(code, True)
+                        self.injector.keyboard.key_event(code, False)
+                except Exception:
+                    pass
+                setattr(self, cache_attr, wire_bit)
+                logger.debug(
+                    "input.lock_state_toggled lock=%s wire=%s",
+                    name, wire_bit,
+                )
 
     # ── Encoder callbacks ────────────────────────────────────
 
@@ -468,6 +644,23 @@ class SessionRuntime:
         t0 = time.time()
 
         if msg_type == MsgType.KEY_EVENT:
+            # Phase 2 D-11 — record activity for the periodic safety net
+            # BEFORE we dispatch so a stuck dispatcher doesn't poison the
+            # last_event timer. last_had_modifiers is derived from the wire
+            # modifiers bitmask: any non-zero modifier value means the
+            # client thinks at least one chord key is held, and the
+            # periodic safety net must NOT fire while that's true.
+            self._last_key_event_at = time.monotonic()
+            self._last_key_event_had_modifiers = bool(msg.get("modifiers", 0))
+            # Phase 2 D-14 — server-side lock-state auto-correct. The wire
+            # carries caps_lock_on / num_lock_on / scroll_lock_on bits on
+            # every KeyEvent. If the server's view of any lock state
+            # disagrees with the client, schedule a corrective release
+            # toggle. Best-effort: failures here must not block input.
+            try:
+                self._sync_lock_state_from_wire(msg)
+            except Exception as e:
+                logger.debug("input.lock_sync_failed: %s", e)
             if isinstance(self.injector, XTestInputInjector):
                 # XTest uses Qt key codes directly
                 self.injector.handle_message(msg)
@@ -478,6 +671,42 @@ class SessionRuntime:
                     return
                 msg["scan_code"] = linux_code
                 self.injector.handle_message(msg)
+
+        elif msg_type == MsgType.KEY_RESET_MODIFIERS:
+            # Phase 2 D-11 — release every held modifier on the server side.
+            # Per threat T-02-04: reason is informational only; the server
+            # always performs the same idempotent reset regardless. Empty
+            # / unknown reason strings round-trip as "unknown" in logs.
+            reason = msg.get("reason", "unknown")
+            try:
+                if hasattr(self.injector, "reset_modifiers"):
+                    self.injector.reset_modifiers()
+                logger.info(
+                    "input.reset_modifiers reason=%s client_id=%s",
+                    reason, session.client_id,
+                )
+            except Exception as e:
+                logger.debug("input.reset_modifiers_failed: %s", e)
+            # A reset clears modifier state — record that for the
+            # periodic safety net so we don't immediately re-fire.
+            self._last_key_event_at = time.monotonic()
+            self._last_key_event_had_modifiers = False
+
+        elif msg_type == MsgType.TEXT_COMMIT:
+            # Phase 2 D-15 — IME / dead-key passthrough. Server injects as
+            # the desktop user's keystrokes (xdotool on Linux,
+            # CGEventKeyboardSetUnicodeString on Mac). Per threat T-02-24
+            # this is no more privileged than any focused-window typing.
+            text = msg.get("text", "")
+            if text and hasattr(self.injector, "text_commit"):
+                try:
+                    self.injector.text_commit(text)
+                    logger.info(
+                        "input.text_commit char_count=%d client_id=%s",
+                        len(text), session.client_id,
+                    )
+                except Exception as e:
+                    logger.debug("input.text_commit_failed: %s", e)
 
         elif msg_type in (MsgType.MOUSE_MOVE, MsgType.MOUSE_BUTTON,
                           MsgType.MOUSE_SCROLL, MsgType.PEN_EVENT):
@@ -562,6 +791,14 @@ class SessionRuntime:
 
     def stop(self):
         self._running = False
+        # Phase 2 D-11 — cancel the periodic safety-net task before tearing
+        # down the injector so we don't race a fire-during-teardown.
+        if self._modifier_safety_task is not None:
+            try:
+                self._modifier_safety_task.cancel()
+            except Exception:
+                pass
+            self._modifier_safety_task = None
         # D-11 / Plan 01-10: delegate loop + encoder teardown to the
         # sub-objects. Each sub-loop owns its own task cancellation;
         # encoder_lifecycle.stop() keeps the back-compat self.encoder

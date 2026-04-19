@@ -21,7 +21,7 @@ import logging
 from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer, Signal, QEvent, QSize
-from PySide6.QtGui import QAction, QKeySequence, QColor, QFont
+from PySide6.QtGui import QAction, QKeySequence, QColor, QFont, QShortcut
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QToolBar,
@@ -95,6 +95,16 @@ class ConnectionDialog(QDialog):
         self.auto_reconnect_check.setChecked(True)
         layout.addRow(self.auto_reconnect_check)
 
+        # Phase 2 D-10 — per-bookmark Cmd<->Ctrl swap. Default ON for the
+        # Linux-server case (the v1 Flame production path). Persisted on
+        # the ConnectionProfile so the protocol layer reads the correct
+        # state per session.
+        self.swap_cmd_ctrl_check = QCheckBox(
+            "Swap Cmd/Ctrl for this server (Mac client → Linux Flame)"
+        )
+        self.swap_cmd_ctrl_check.setChecked(True)
+        layout.addRow(self.swap_cmd_ctrl_check)
+
         self.save_bookmark_check = QCheckBox("Save as bookmark")
         layout.addRow(self.save_bookmark_check)
 
@@ -151,6 +161,10 @@ class ConnectionDialog(QDialog):
     def save_bookmark(self): return self.save_bookmark_check.isChecked()
     @property
     def bookmark_name(self): return self.bookmark_name_input.text().strip()
+    @property
+    def swap_cmd_ctrl(self) -> bool:
+        """Phase 2 D-10 — per-bookmark Cmd↔Ctrl swap toggle."""
+        return self.swap_cmd_ctrl_check.isChecked()
 
 
 # ════════════════════════════════════════════════════
@@ -410,7 +424,9 @@ class BookmarkPanel(QWidget):
             name = dialog.bookmark_name or f"{dialog.host}:{dialog.port}"
             self._mgr.add(name=name, host=dialog.host, port=dialog.port,
                           username=dialog.username, password=dialog.password,
-                          use_tls=dialog.use_tls)
+                          use_tls=dialog.use_tls,
+                          # Phase 2 D-10 — persist Cmd<->Ctrl swap state.
+                          swap_cmd_ctrl=dialog.swap_cmd_ctrl)
             self._refresh()
 
     def _edit_bookmark(self, bid):
@@ -427,11 +443,14 @@ class BookmarkPanel(QWidget):
         dialog.username_input.setText(profile.username)
         dialog.password_input.setText(self._mgr.get_password(bid))
         dialog.tls_check.setChecked(profile.use_tls)
+        # Phase 2 D-10 — reflect existing per-bookmark swap state.
+        dialog.swap_cmd_ctrl_check.setChecked(profile.swap_cmd_ctrl)
         if dialog.exec() == QDialog.Accepted:
             self._mgr.update(bid, name=dialog.bookmark_name or profile.name,
                              host=dialog.host, port=dialog.port,
                              username=dialog.username, password=dialog.password,
-                             use_tls=dialog.use_tls)
+                             use_tls=dialog.use_tls,
+                             swap_cmd_ctrl=dialog.swap_cmd_ctrl)
             self._refresh()
 
     def _delete_bookmark(self, bid):
@@ -688,16 +707,36 @@ class MainWindow(QMainWindow):
         view_menu.addSeparator()
         view_menu.addAction(self._action(
             "Fullscreen", "F11", self._toggle_fullscreen, icons.icon_fullscreen()))
+        # Phase 2 D-11 (Plan 02-09 Rule 3 deviation): F9 was previously
+        # bound to Health Overlay. F9 is reserved as the canonical Flame
+        # panic-release-all-modifiers shortcut (FLAME_CRITICAL_CHORDS in
+        # common/keymap.py + CONTEXT.md D-11), so Health Overlay moves to
+        # Ctrl+Alt+H. Conflict resolution preserves muscle memory: F9 is
+        # the keymap-locked panic key.
         view_menu.addAction(self._action(
-            "Health Overlay", "F9", self._toggle_health, icons.icon_health()))
+            "Health Overlay", "Ctrl+Alt+H", self._toggle_health, icons.icon_health()))
         view_menu.addSeparator()
         view_menu.addAction(self._action(
             "Key Diagnostic", "F10", self._show_key_diagnostic, icons.icon_keyboard()))
 
         # Help menu
         help_menu = mb.addMenu("&Help")
+        # Phase 2 D-11 trigger #4 — client-side panic shortcut. F9 is the
+        # documented "release all stuck modifiers" key (FLAME_CRITICAL_CHORDS
+        # entry 19, CONTEXT.md D-11). Surfaced in the Help menu so artists
+        # can find it discoverable. The shortcut itself is registered as a
+        # QShortcut on the main window so it fires regardless of which tab
+        # has focus.
+        help_menu.addAction(self._action(
+            "Release stuck modifiers (F9)", "", self._panic_release_modifiers))
         help_menu.addAction(self._action(
             "About Teraguchi", "", self._show_about))
+
+        # Window-scope F9 shortcut so the panic fires no matter which
+        # widget currently has focus inside the active tab.
+        self._panic_shortcut = QShortcut(QKeySequence("F9"), self)
+        self._panic_shortcut.setContext(Qt.ApplicationShortcut)
+        self._panic_shortcut.activated.connect(self._panic_release_modifiers)
 
         # ── Toolbar ──
         tb = QToolBar("Main")
@@ -717,8 +756,10 @@ class MainWindow(QMainWindow):
             icons.icon_refresh()))
         tb.addAction(self._action(
             "Fullscreen", "F11", self._toggle_fullscreen, icons.icon_fullscreen()))
+        # Phase 2 D-11: F9 reserved for panic-release-modifiers; toolbar
+        # button uses Ctrl+Alt+H to match the menu.
         tb.addAction(self._action(
-            "Health", "F9", self._toggle_health, icons.icon_health()))
+            "Health", "Ctrl+Alt+H", self._toggle_health, icons.icon_health()))
         tb.addAction(self._action(
             "Key Diagnostic", "F10", self._show_key_diagnostic, icons.icon_keyboard()))
         tb.addSeparator()
@@ -770,7 +811,8 @@ class MainWindow(QMainWindow):
 
     def _new_session_and_connect(self, host, port, username, password,
                                   use_tls=True, auto_reconnect=True,
-                                  bookmark_id="", mode="direct"):
+                                  bookmark_id="", mode="direct",
+                                  swap_cmd_ctrl: bool = True):
         session = Session(self)
         view = SessionView(session, self)
         idx = self._tab_manager.add_tab(view, session.display_name)
@@ -787,6 +829,15 @@ class MainWindow(QMainWindow):
         session.broker_machine_needed.connect(
             lambda machines, s=session: self._on_broker_machine_needed(s, machines))
 
+        # Phase 2 D-10 — when launching from a bookmark, the saved
+        # ConnectionProfile carries the per-server swap_cmd_ctrl preference.
+        # Override the default-True for the broker path (broker assigns
+        # downstream Linux Flames; default-on is correct).
+        if bookmark_id:
+            profile = self._bookmarks.get(bookmark_id)
+            if profile is not None:
+                swap_cmd_ctrl = bool(profile.swap_cmd_ctrl)
+
         if mode == "broker":
             logger.info("Connecting via broker to %s:%d", host, port)
             session.connect_broker(host, port, username, password,
@@ -794,7 +845,8 @@ class MainWindow(QMainWindow):
         else:
             session.connect(host, port, username, password,
                             use_tls=use_tls, auto_reconnect=auto_reconnect,
-                            bookmark_id=bookmark_id)
+                            bookmark_id=bookmark_id,
+                            swap_cmd_ctrl=swap_cmd_ctrl)
 
         session.apply_quality(self._quality_panel.settings)
 
@@ -866,13 +918,16 @@ class MainWindow(QMainWindow):
                 bid = self._bookmarks.add(
                     name=name, host=dialog.host, port=dialog.port,
                     username=dialog.username, password=dialog.password,
-                    use_tls=dialog.use_tls, mode=mode)
+                    use_tls=dialog.use_tls, mode=mode,
+                    # Phase 2 D-10 — persist the dialog's swap state.
+                    swap_cmd_ctrl=dialog.swap_cmd_ctrl)
                 self._bookmark_panel._refresh()
 
             self._new_session_and_connect(
                 dialog.host, dialog.port, dialog.username, dialog.password,
                 use_tls=dialog.use_tls, auto_reconnect=dialog.auto_reconnect,
-                bookmark_id=bid, mode=mode)
+                bookmark_id=bid, mode=mode,
+                swap_cmd_ctrl=dialog.swap_cmd_ctrl)
 
     def _connect_bookmark(self, bookmark_id):
         profile = self._bookmarks.get(bookmark_id)
@@ -997,6 +1052,24 @@ class MainWindow(QMainWindow):
         s = self._active_session
         if s:
             s.overlay.toggle()
+
+    def _panic_release_modifiers(self):
+        """Phase 2 D-11 trigger #4 — F9 client-side panic release-all.
+
+        Forwards a synthetic ``RemoteViewer.reset_modifiers_requested``
+        emit to the active session's viewer with reason='panic_f9'.
+        ``client/session.py::_wire_viewer`` catches the signal and the
+        protocol layer turns it into a ``KeyResetModifiersMsg`` on the
+        wire. No-op when no session is active.
+        """
+        s = self._active_session
+        if s is None:
+            return
+        try:
+            s.viewer.reset_modifiers_requested.emit("panic_f9")
+            logger.info("main_window.panic_release_modifiers: emitted")
+        except Exception as e:
+            logger.warning("main_window.panic_release_modifiers_failed: %s", e)
 
     def _show_key_diagnostic(self):
         from client.key_diagnostic import KeyDiagnosticDialog

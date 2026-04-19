@@ -56,6 +56,7 @@ try:
         CGEventCreateMouseEvent,
         CGEventCreateKeyboardEvent,
         CGEventCreateScrollWheelEvent,
+        CGEventKeyboardSetUnicodeString,
         CGEventPost,
         CGEventSetType,
         CGEventSetIntegerValueField,
@@ -350,6 +351,68 @@ class MacInputInjector:
             CGEventPost(kCGHIDEventTap, event)
         except Exception as e:
             logger.debug("Key event failed: %s", e)
+
+    # ------------------------------------------------------------------
+    # Phase 2 D-11 / D-15 — modifier release + IME commit string
+    # ------------------------------------------------------------------
+
+    # Mac virtual key codes for every modifier we care about. Mirrors the
+    # Linux InputInjector._MODIFIER_SCAN_CODES surface area so the two
+    # platform paths satisfy the same "release every modifier" contract.
+    # Source: Carbon HIToolbox/Events.h
+    _MAC_MODIFIER_KEYS = (
+        0x37,  # kVK_Command (Cmd)
+        0x36,  # kVK_RightCommand
+        0x38,  # kVK_Shift
+        0x3C,  # kVK_RightShift
+        0x3A,  # kVK_Option (Alt)
+        0x3D,  # kVK_RightOption
+        0x3B,  # kVK_Control
+        0x3E,  # kVK_RightControl
+        0x3F,  # kVK_Function (fn)
+        # CapsLock release is a documented no-op on Mac CGEventPost
+        # (Caps state is a system toggle, not a held modifier) but we
+        # include it for parity. Caps state syncing happens via the
+        # KeyEventMsg lock-bit channel (D-14), not this path.
+        0x39,  # kVK_CapsLock
+    )
+
+    def reset_modifiers(self) -> None:
+        """Phase 2 D-11 — release every modifier key on Mac.
+
+        Idempotent. Called from server-side dispatch in response to
+        KEY_RESET_MODIFIERS wire messages. Per threat T-02-04 the client-
+        provided reason is informational only — the action is the same
+        regardless of trigger.
+        """
+        for vk in self._MAC_MODIFIER_KEYS:
+            try:
+                ev = CGEventCreateKeyboardEvent(None, vk, False)
+                CGEventPost(kCGHIDEventTap, ev)
+            except Exception as e:
+                logger.debug("reset_modifiers: release vk=0x%x failed: %s", vk, e)
+        logger.info("input.reset_modifiers (mac)")
+
+    def text_commit(self, text: str) -> None:
+        """Phase 2 D-15 — IME / dead-key commit passthrough on macOS.
+
+        Posts a key-down + key-up event pair both carrying the Unicode
+        commit string via ``CGEventKeyboardSetUnicodeString``. The
+        virtual key code is 0 (kVK_ANSI_A as a stand-in) which most
+        focused apps ignore in favor of the unicode payload — same
+        pattern as Karabiner Elements / Hammerspoon.
+
+        Empty strings are ignored so callers can pump unconditionally.
+        """
+        if not text:
+            return
+        try:
+            for is_press in (True, False):
+                ev = CGEventCreateKeyboardEvent(None, 0, is_press)
+                CGEventKeyboardSetUnicodeString(ev, len(text), text)
+                CGEventPost(kCGHIDEventTap, ev)
+        except Exception as e:
+            logger.debug("text_commit failed: %s", e)
 
     # ------------------------------------------------------------------
     # Pen / tablet (downgraded to mouse for Phase 1)

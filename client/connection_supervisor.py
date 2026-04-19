@@ -16,6 +16,14 @@ resets backoff and exits; when it raises, the supervisor increments
 the retry count, waits ``_next_delay()`` seconds, and calls the factory
 again.
 
+Phase 2 D-11 addition: ``post_auth_hook`` is an awaitable callback the
+supervisor invokes immediately after the wrapped factory establishes a
+fresh authenticated transport on a RECONNECT (not the first connect).
+Use it to send a ``KeyResetModifiersMsg(reason="reconnect")`` as the
+first post-auth message on the new connection — this kills the
+"network-stall repeat-runaway" failure mode where the server still
+holds modifier state from before the drop.
+
 Unit tests live in ``tests/client/test_connection_supervisor.py`` and
 the integration reconnect test in
 ``tests/integration/test_reconnect.py``.
@@ -35,6 +43,12 @@ logger = logging.getLogger(__name__)
 
 
 TransportFactory = Callable[[], Awaitable[None]]
+PostAuthHook = Callable[[str], Awaitable[None]]
+"""Phase 2 D-11 — async callback invoked after a reconnect's authenticated
+transport is established. Argument is the reconnect reason ("reconnect"
+on the wire). Owners typically wrap a ``ws.send(KeyResetModifiersMsg(...))``
+call. The supervisor only invokes the hook on RECONNECTs, never on the
+first connect (``self._retry_count > 0`` predicate)."""
 
 
 class ConnectionSupervisor:
@@ -58,6 +72,7 @@ class ConnectionSupervisor:
         base_delay: float = 1.0,
         max_delay: float = 30.0,
         jitter_pct: float = 0.25,
+        post_auth_hook: Optional[PostAuthHook] = None,
     ):
         self._factory = transport_factory
         self.fsm: ClientFSM = fsm if fsm is not None else ClientFSM()
@@ -65,6 +80,9 @@ class ConnectionSupervisor:
         self.base_delay = float(base_delay)
         self.max_delay = float(max_delay)
         self.jitter_pct = float(jitter_pct)
+        # Phase 2 D-11 — invoked after a successful RECONNECT to send the
+        # release-all-modifiers wire message before any other input.
+        self._post_auth_hook: Optional[PostAuthHook] = post_auth_hook
 
         self._closing = False
         self._retry_count = 0
@@ -120,6 +138,27 @@ class ConnectionSupervisor:
 
     # ── Main loop ─────────────────────────────────────────────
 
+    async def _fire_post_auth_hook(self, reason: str) -> None:
+        """Phase 2 D-11 — invoke the post-auth reconnect hook.
+
+        Wrapped in try/except so a hook failure can never bring down the
+        reconnect loop. Documented contract: hook owners are responsible
+        for their own logging on failure.
+        """
+        if self._post_auth_hook is None:
+            return
+        try:
+            await self._post_auth_hook(reason)
+            logger.info(
+                "supervisor.post_auth_hook_invoked reason=%s retry=%d",
+                reason, self._retry_count,
+            )
+        except Exception as e:
+            logger.warning(
+                "supervisor.post_auth_hook_failed reason=%s err=%s",
+                reason, e,
+            )
+
     async def connect(self) -> None:
         """Run the supervised connect/retry loop until closed or capped.
 
@@ -127,10 +166,21 @@ class ConnectionSupervisor:
         exits. On exception — emits ``transport_lost`` to the FSM, waits
         ``_next_delay()`` seconds, and retries, up to ``max_retries`` times.
         After the cap, emits ``max_retries`` (FSM → 'closed') and exits.
+
+        Phase 2 D-11: when a RECONNECT (``self._retry_count > 0``) lands a
+        fresh authenticated transport, the post-auth hook fires with
+        reason='reconnect' BEFORE we wait on the factory body. Hook
+        failures are logged but never abort the loop.
         """
         while not self._closing:
             self._fsm_send_safe("connect_requested")
             logger.info("supervisor.connect_attempt retry=%d", self._retry_count)
+            # D-11 — fire the reconnect hook for retries (not first connect).
+            # The hook runs concurrently with the factory; the factory call
+            # below is what actually owns the I/O loop. Splitting this out
+            # avoids needing the hook to embed itself inside the factory.
+            if self._retry_count > 0:
+                await self._fire_post_auth_hook("reconnect")
             try:
                 await self._factory()
             except asyncio.CancelledError:
@@ -172,4 +222,4 @@ class ConnectionSupervisor:
         self._fsm_send_safe("user_quit")
 
 
-__all__ = ["ConnectionSupervisor", "TransportFactory"]
+__all__ = ["ConnectionSupervisor", "TransportFactory", "PostAuthHook"]
