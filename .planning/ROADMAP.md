@@ -14,8 +14,8 @@ This is brownfield. A working vibe-coded prototype already covers the happy path
 
 ## Phases
 
-- [ ] **Phase 1: Stability + CI + Test Baseline** — Fix the critical bugs (`send_queue`, TLS-off, monolithic `main.py`), add CI, add pytest, instrument observability so all later phases have a measurement substrate
-- [ ] **Phase 2: Input + Color Fidelity** — 10-bit end-to-end verified, IOHIDUserDevice pen pressure on Mac server, modifier-chord and Wacom round-trips proven against real hardware
+- [x] **Phase 1: Stability + CI + Test Baseline** — Fix the critical bugs (`send_queue`, TLS-off, monolithic `main.py`), add CI, add pytest, instrument observability so all later phases have a measurement substrate (completed 2026-04-19)
+- [x] **Phase 2: Input + Color Fidelity** — 10-bit end-to-end verified, IOHIDUserDevice pen pressure on Mac server, modifier-chord and Wacom round-trips proven against real hardware (completed 2026-04-19; HUMAN-UAT pending DXS hardware checkpoints)
 - [ ] **Phase 3: Display + Multi-Monitor + Clipboard** — Per-session monitor mode selector, mixed-DPI math, hot-plug handlers, image clipboard
 - [ ] **Phase 4: Audio** — Opus 48kHz full-duplex on both server platforms, mac_audio_capture, watchdog + 60-min continuity
 - [ ] **Phase 5: Network, Transport, Side-Channels** — QUIC promoted to primary, FEC, SESSION_RESUME, file transfer hardening, USB/IP control surfaces (incl. mac-server spike)
@@ -251,7 +251,7 @@ For scope discipline (single maintainer):
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Stability + CI + Test Baseline | 17/17 | Complete | 2026-04-19 |
-| 2. Input + Color Fidelity | 0/0 | Not started | — |
+| 2. Input + Color Fidelity | 12/12 | Complete | 2026-04-19 |
 | 3. Display + Multi-Monitor + Clipboard | 0/0 | Not started | — |
 | 4. Audio | 0/0 | Not started | — |
 | 5. Network, Transport, Side-Channels | 0/0 | Not started | — |
