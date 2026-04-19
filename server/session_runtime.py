@@ -76,6 +76,7 @@ from server.stream_loop import StreamLoop
 from server.health_loop import HealthLoop
 from server.encoder_lifecycle import EncoderLifecycle
 from server.monitor_hotplug import MonitorHotplug
+from server.pipelines import CaptureQueue, EncoderQueue
 
 if TYPE_CHECKING:
     from server.client_session import ClientSession
@@ -210,6 +211,26 @@ class SessionRuntime:
         self._stream_loop = StreamLoop(self)
         self._health_loop = HealthLoop(self)
         self._hotplug = MonitorHotplug(self)
+
+        # STAB-07 / Plan 01-13 — bounded pipeline queues with drop-OLDEST
+        # policy. Instantiated here so the queue classes are reachable for
+        # Plan 01-14 telemetry (OBS-03 drop counters via the on_drop hook)
+        # and for the future capture-rate decoupling path. Today the
+        # synchronous capture → encoder.feed_frame handoff in StreamLoop is
+        # fast enough that these queues stay empty; wiring them through
+        # StreamLoop would require refactoring the synchronous capture
+        # call, which is out of scope for Plan 01-13. The per-client
+        # send_queue (maxsize=4, drop-oldest + IDR-on-drop) stays in
+        # ClientSession — its drop handling depends on session-local state
+        # (_drops_since_keyframe) so it must not be hoisted here.
+        self._capture_queue = CaptureQueue(
+            maxsize=2,
+            on_drop=self.health.record_frame_dropped,
+        )
+        self._encoder_queue = EncoderQueue(
+            maxsize=3,
+            on_drop=self.health.record_frame_dropped,
+        )
 
         logger.info("[%s] Session runtime ready on %s (%dx%d)",
                     username, display, self.capture.width, self.capture.height)

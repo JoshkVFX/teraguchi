@@ -205,24 +205,30 @@ async def test_input_queue_blocks_on_full():
     assert q.qsize() == 2
 
 
-@pytest.mark.asyncio
-async def test_session_runtime_exposes_pipeline_queues():
+def test_session_runtime_exposes_pipeline_queues():
     """SessionRuntime must instantiate both pipeline queues so callers
     (Plan 14 telemetry + future capture-rate decoupling) can reach them
-    without digging into internals."""
+    without digging into internals.
+
+    We inspect the source file directly (not ``inspect.getsource(module)``)
+    so this test stays runnable on CI nodes that don't have the full
+    capture stack installed — importing ``server.session_runtime`` drags
+    in PIL / CoreGraphics / Xlib bindings that aren't available in the
+    unit-test environment. The wiring contract is purely textual: the
+    module must import both classes and instantiate them on the runtime.
+    """
     from server.pipelines import CaptureQueue, EncoderQueue
 
-    # Lightweight check: the pipeline module is importable + the
-    # SessionRuntime module references both queue classes by name, which
-    # proves the wiring is in place without needing a full runtime spin-up
-    # (which requires real capture/encoder hardware).
-    import server.session_runtime as sr_mod
-    import inspect
-    src = inspect.getsource(sr_mod)
-    assert "CaptureQueue" in src, (
-        "SessionRuntime must import/instantiate CaptureQueue (STAB-07)")
-    assert "EncoderQueue" in src, (
-        "SessionRuntime must import/instantiate EncoderQueue (STAB-07)")
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parents[2]
+           / "server" / "session_runtime.py").read_text()
+
+    assert "from server.pipelines import CaptureQueue, EncoderQueue" in src, (
+        "SessionRuntime must import CaptureQueue + EncoderQueue (STAB-07)")
+    assert "CaptureQueue(" in src, (
+        "SessionRuntime must instantiate CaptureQueue (STAB-07)")
+    assert "EncoderQueue(" in src, (
+        "SessionRuntime must instantiate EncoderQueue (STAB-07)")
 
     # Sanity: the classes are importable and have the expected defaults.
     assert CaptureQueue().maxsize == 2
