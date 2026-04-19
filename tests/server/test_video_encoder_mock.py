@@ -210,7 +210,7 @@ def test_encoder_feed_frame_is_noop_when_stopped(mock_popen, empty_available_enc
 # Phase 02-06 — Linux 10-bit (p010le / Main10 / 4:2:2 opt-in)
 # ============================================================
 
-def _make_settings(codec: str = "h265") -> "QualitySettings":
+def _make_settings(codec: str = "h265") -> QualitySettings:
     """Phase 2 helper — minimal QualitySettings tuned for the hevc_nvenc
     Main10 path. Codec defaults to h265 because Main10 only meaningfully
     plumbs through the HEVC pipeline (NVENC h264 has no Main10 profile).

@@ -179,6 +179,18 @@ class VideoEncoder:
         # Phase 2 D-04: Mac direct-VT delegate (set in start()).
         self._mac_vt_delegate = None
         self._using_mac_direct_vt: bool = False
+        # Phase 2 D-03 / D-05: negotiated server-side color caps. Set by
+        # bootstrap (build_color_caps()) on the live server; defaults to
+        # None which means "no Main10 advertisement" — _build_ffmpeg_cmd
+        # then takes the legacy 8-bit BGRA branch (no silent downgrade
+        # because it never claimed otherwise). Tests inject directly.
+        self._color_caps = None
+        # Phase 2 D-07 (VIDEO-07) — reconfigure-without-restart state.
+        # Snapshot the initial bitrate / fps so reconfigure() can update
+        # them without having to mutate `settings` (which would also flip
+        # update_settings()'s needs_restart heuristic).
+        self._target_bps: int = int(settings.max_bandwidth_mbps * 1_000_000)
+        self._fps: int = settings.effective_fps()
 
     @property
     def active_encoder_name(self) -> str:
@@ -261,26 +273,75 @@ class VideoEncoder:
                      enc.name, enc.backend, enc.supports_444, enc.supports_lossless)
         return enc
 
-    def _build_ffmpeg_cmd(self) -> list:
-        """Build the FFmpeg command line based on current settings and best encoder."""
+    def _build_ffmpeg_cmd(self, encoder: Optional[HWEncoder] = None) -> list:
+        """Build the FFmpeg command line.
+
+        Phase 2 (VIDEO-03/-05): when ``self._color_caps`` advertises Main10
+        AND the chosen ``encoder`` reports ``supports_main10``, the input
+        rawvideo format flips from ``bgra`` to ``p010le`` and the output
+        gets ``-profile:v main10`` + ``-pix_fmt p010le`` (or
+        ``yuv422p10le`` + ``main422-10`` when the 4:2:2 opt-in is also
+        confirmed). This closes downgrade points #2 and #3 from
+        CLAUDE.md's "9 silent 10-bit downgrade points" list.
+
+        Args:
+            encoder: optional HWEncoder to use. When ``None`` (the live
+                production call from ``_start_ffmpeg``), the best encoder
+                is auto-selected via ``_select_encoder()``. Tests pass an
+                explicit encoder so the 10-bit branch can be exercised
+                without depending on local FFmpeg's encoder enumeration.
+        """
         s = self.settings
-        self._active_encoder = self._select_encoder()
+        if encoder is None:
+            self._active_encoder = self._select_encoder()
+        else:
+            self._active_encoder = encoder
         enc = self._active_encoder
         fps = s.effective_fps()
 
+        # Phase 2 D-03 / D-05: derive 10-bit / 4:2:2 from caps.
+        caps = self._color_caps
+        want_main10 = bool(
+            caps is not None
+            and getattr(caps, "main10", False)
+            and getattr(enc, "supports_main10", False)
+        )
+        want_422 = bool(
+            want_main10
+            and getattr(caps, "chroma_422", False)
+            and getattr(enc, "supports_422", False)
+        )
+
         # Determine pixel format
         chroma = s.effective_chroma()
-        if chroma == ChromaSubsampling.YUV444:
-            if enc.supports_444:
-                pix_fmt_out = "yuv444p"
-            else:
-                # Hardware encoder doesn't support 4:4:4 — downgrade
-                pix_fmt_out = "yuv420p"
-                logger.warning("Encoder %s doesn't support YUV444, falling back to YUV420", enc.name)
-        elif chroma == ChromaSubsampling.YUV422:
-            pix_fmt_out = "yuv422p"
+        if want_main10 and want_422:
+            # 4:2:2 Main10 (Blackwell NVENC + M3+/M4 VT only). Both
+            # input AND output are yuv422p10le; main422-10 is the HEVC
+            # profile name FFmpeg expects.
+            pix_fmt_in: Optional[str] = "yuv422p10le"
+            pix_fmt_out: Optional[str] = "yuv422p10le"
+        elif want_main10:
+            # 4:2:0 Main10 baseline — the v1 default Main10 path on any
+            # Turing+ NVIDIA / M1+ Mac.
+            pix_fmt_in = "p010le"
+            pix_fmt_out = "p010le"
         else:
-            pix_fmt_out = "yuv420p"
+            # Phase 1 8-bit BGRA → YUV path. Chroma policy unchanged.
+            pix_fmt_in = "bgra"
+            if chroma == ChromaSubsampling.YUV444:
+                if enc.supports_444:
+                    pix_fmt_out = "yuv444p"
+                else:
+                    # Hardware encoder doesn't support 4:4:4 — downgrade
+                    pix_fmt_out = "yuv420p"
+                    logger.warning(
+                        "Encoder %s doesn't support YUV444, falling back to YUV420",
+                        enc.name,
+                    )
+            elif chroma == ChromaSubsampling.YUV422:
+                pix_fmt_out = "yuv422p"
+            else:
+                pix_fmt_out = "yuv420p"
 
         cmd = [
             "ffmpeg",
@@ -293,10 +354,10 @@ class VideoEncoder:
             drm_device = self._find_vaapi_device()
             cmd.extend(["-vaapi_device", drm_device])
 
-        # Input: raw BGRA frames from pipe
+        # Input: raw frames from pipe — pixel_format depends on Main10 negotiation.
         cmd.extend([
             "-f", "rawvideo",
-            "-pixel_format", "bgra",
+            "-pixel_format", pix_fmt_in,
             "-video_size", f"{self.width}x{self.height}",
             "-framerate", str(fps),
             "-i", "pipe:0",
@@ -309,9 +370,13 @@ class VideoEncoder:
             ])
             pix_fmt_out = None  # Don't set pix_fmt for VAAPI
 
-        # Encoder-specific arguments
+        # Encoder-specific arguments. Pass want_main10 / want_422 down to
+        # NVENC so it can wire the matching -profile:v Main10 / Main422-10
+        # selector — the only backend that grew a 10-bit branch in this plan.
         if enc.backend == "nvenc":
-            cmd.extend(self._nvenc_args(enc, fps, pix_fmt_out))
+            cmd.extend(self._nvenc_args(enc, fps, pix_fmt_out,
+                                        want_main10=want_main10,
+                                        want_422=want_422))
         elif enc.backend == "vaapi":
             cmd.extend(self._vaapi_args(enc, fps))
         elif enc.backend == "amf":
@@ -344,7 +409,18 @@ class VideoEncoder:
 
     # ---- NVENC (NVIDIA) ----
 
-    def _nvenc_args(self, enc: HWEncoder, fps: int, pix_fmt: Optional[str]) -> list:
+    def _nvenc_args(self, enc: HWEncoder, fps: int, pix_fmt: Optional[str],
+                    want_main10: bool = False,
+                    want_422: bool = False) -> list:
+        """Build NVENC encoder arguments.
+
+        Phase 2 D-03 / D-05: ``want_main10`` flips the HEVC profile to
+        ``main10`` (or ``main422-10`` when ``want_422`` is also set) and
+        skips the ``-rc constqp`` constant-QP path in favor of an explicit
+        bitrate target. NVENC requires Main10 to be paired with a 10-bit
+        input pixel format (the caller already set ``pix_fmt`` to
+        ``p010le`` / ``yuv422p10le``).
+        """
         s = self.settings
         args = ["-c:v", enc.name]
 
@@ -378,7 +454,15 @@ class VideoEncoder:
                 else:
                     args.extend(["-profile:v", "high"])
             elif enc.codec == "h265":
-                if pix_fmt == "yuv444p":
+                # Phase 2: HEVC profile selection.
+                #   want_422 + want_main10 -> Main 4:2:2 10  (Blackwell)
+                #   want_main10            -> Main10         (Turing+)
+                #   pix_fmt yuv444p        -> rext           (existing path)
+                if want_main10 and want_422:
+                    args.extend(["-profile:v", "main422-10"])
+                elif want_main10:
+                    args.extend(["-profile:v", "main10"])
+                elif pix_fmt == "yuv444p":
                     args.extend(["-profile:v", "rext"])
 
         # Low-latency settings
@@ -390,9 +474,14 @@ class VideoEncoder:
             "-delay", "0",
         ])
 
-        # Bitrate cap
-        max_bitrate = int(s.max_bandwidth_mbps * 1000)
-        args.extend(["-maxrate", f"{max_bitrate}k", "-bufsize", f"{max_bitrate}k"])
+        # Bitrate cap. Phase 2 reconfigure-without-restart (VIDEO-07)
+        # consults self._target_bps; settings.max_bandwidth_mbps remains
+        # the construction-time default so initial value comes from the
+        # CLI / quality slider, but a live reconfigure() updates this
+        # cap on the next IDR without tearing down the subprocess.
+        max_bitrate_kbps = max(1, self._target_bps // 1000)
+        args.extend(["-maxrate", f"{max_bitrate_kbps}k",
+                     "-bufsize", f"{max_bitrate_kbps}k"])
 
         return args
 
@@ -831,6 +920,46 @@ class VideoEncoder:
             callback = self._on_encoded_frame
             self.stop()
             self.start(callback)
+
+    def reconfigure(self, new_bitrate_bps: int,
+                    new_fps: Optional[int] = None) -> None:
+        """VIDEO-07: mid-session bitrate / fps change WITHOUT pipeline restart.
+
+        FFmpeg + NVENC pick up a new bitrate target on the next keyframe;
+        we stash the new values into ``self._target_bps`` / ``self._fps``
+        so subsequent ``_build_ffmpeg_cmd`` invocations (and any encoder
+        re-init that happens for unrelated reasons) emit them. The Mac
+        VTCompressionSession path overrides this with a runtime
+        ``VTSessionSetProperty`` call on
+        ``kVTCompressionPropertyKey_AverageBitRate`` so the property
+        change applies immediately rather than on the next IDR.
+
+        We deliberately do NOT call ``stop()`` + ``start()`` here —
+        that would tear down the subprocess + reset the wire format
+        handshake (drop frames, force a new IDR sequence, restart the
+        reader thread). The whole point of this method is to be the
+        cheap mid-session knob.
+        """
+        self._target_bps = int(new_bitrate_bps)
+        if new_fps is not None:
+            self._fps = int(new_fps)
+        # Mac VT path can apply bitrate live via VTSessionSetProperty.
+        if self._using_mac_direct_vt and self._mac_vt_delegate is not None:
+            mac_reconfigure = getattr(self._mac_vt_delegate,
+                                      "reconfigure", None)
+            if callable(mac_reconfigure):
+                try:
+                    mac_reconfigure(self._target_bps, self._fps)
+                except Exception as e:
+                    logger.warning(
+                        "video_encoder.reconfigure mac delegate failed: %s",
+                        e,
+                    )
+        logger.info(
+            "video_encoder.reconfigure target_bps=%d fps=%d "
+            "(no subprocess restart; NVENC picks up on next IDR)",
+            self._target_bps, self._fps,
+        )
 
     def request_keyframe(self):
         """Force the encoder to emit a keyframe.
