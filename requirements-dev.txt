@@ -20,3 +20,8 @@ freezegun           # time-mocking for broker/tokens.py TTL tests
 
 # Build
 pyinstaller>=6.11,<7
+
+# Wacom RMS analysis tooling (Plan 02-12 / D-18 — tools/wacom_quant_analysis.py)
+matplotlib>=3.8
+scipy>=1.14
+numpy>=2.1

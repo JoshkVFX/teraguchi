@@ -98,6 +98,177 @@ Lands on both spike branches per `02-10-PLAN.md` Task 3:
   handlers are mandatory in the new module per the Plan 02-10 Task 1
   acceptance criteria.
 
+## Phase 2 Wacom matrix ritual (per-release)
+
+Run before tagging any `v*` release. Requires DXS lab access — a
+laptop / autonomous executor cannot satisfy this gate, only a real
+Wacom + real Cintiq + real Mac/Rocky workstation in the DXS lab can.
+
+The ritual exercises the D-17 6-step protocol against four cells of
+the Wacom × macOS matrix. Cells:
+
+1. Intuos Pro Large + macOS Sonoma
+2. Intuos Pro Large + macOS Sequoia
+3. Cintiq Pro 24 + macOS Sonoma
+4. Cintiq Pro 24 + macOS Sequoia
+
+For each cell:
+
+1. **Pressure ramp** (INPUT-12): pen draws a slow 0→max stroke over
+   ~5 seconds. Confirm client-side log captures ≥ 200
+   `event="wacom_matrix"` pressure samples with
+   `client_pressure ∈ (0, 1.0]`.
+
+2. **Eraser flip** (INPUT-10): turn pen over, stroke. Confirm client
+   log shows events with `client_pointer_type == "eraser"` and
+   `client_pressure > 0`.
+
+3. **Tilt test**: hold pen tilted while stroking. Confirm at least
+   one event has `|client_tilt_x| > 10` or `|client_tilt_y| > 10`.
+
+4. **Proximity cycle** (INPUT-11): lift pen out of range and back
+   in. Confirm server `structlog` shows PenFSM transition
+   `out_of_proximity → in_proximity` AND
+   `in_proximity → out_of_proximity`.
+
+5. **Tablet-side buttons** (INPUT-10): press each side button while
+   stroking. Confirm server `structlog` has button-press events for
+   both side buttons at least once.
+
+6. **Reconnect mid-stroke**: during step 1, disconnect the
+   WebSocket; reconnect within 5 seconds. Confirm post-reconnect:
+   server PenFSM is `out_of_proximity`; no orphaned `TeraguchiTablet`
+   in `ioreg -l -c IOHIDUserDevice`; first post-auth message was
+   `KEY_RESET_MODIFIERS(reason="reconnect")`.
+
+7. **RMS analysis** (D-18): for each cell, run
+
+   ```bash
+   python tools/wacom_quant_analysis.py \
+       --client-log artifacts/client_<cell>.jsonl \
+       --server-log artifacts/server_<cell>.jsonl \
+       --cell <cell> \
+       --out-svg artifacts/rms_<cell>.svg \
+       --pass-threshold 0.01
+   ```
+
+   Must exit `0` (RMS < 1%). Exit `1` blocks the release. Exit `2`
+   means the operator captured malformed logs — re-run the cell.
+
+8. **Record video** of each cell's session; link below.
+
+9. **Flame qualitative sign-off** (MANDATORY per D-17): a Flame
+   artist draws a standard paint stroke on the Cintiq Pro 24 +
+   Sequoia cell and signs off that quantization artifacts are not
+   visible. This step is non-negotiable — it is the qualitative half
+   of the D-17 hybrid pass criterion.
+
+**Pass gate:** ALL 4 cells pass ALL 6 automated steps + RMS < 1%
+per cell + qualitative sign-off on the Cintiq Pro 24 + Sequoia cell.
+
+**T-02-34 mitigation:** the raw `client_<cell>.jsonl` /
+`server_<cell>.jsonl` artifacts contain raw pressure / tilt samples
+and **must not** be committed to the public repository. Only the SVG
+plot + the summary numbers in the table below make it into git.
+
+### Phase 2 matrix results
+
+Matrix execution date: `<DEFERRED — Randy to execute at DXS>`
+
+| Cell                       | RMS                                          | Pass / Fail                                  | Video                                        |
+| -------------------------- | -------------------------------------------- | -------------------------------------------- | -------------------------------------------- |
+| Intuos Pro Large + Sonoma  | `<DEFERRED — Randy to execute at DXS>`       | `<DEFERRED — Randy to execute at DXS>`       | `<DEFERRED — Randy to execute at DXS>`       |
+| Intuos Pro Large + Sequoia | `<DEFERRED — Randy to execute at DXS>`       | `<DEFERRED — Randy to execute at DXS>`       | `<DEFERRED — Randy to execute at DXS>`       |
+| Cintiq Pro 24 + Sonoma     | `<DEFERRED — Randy to execute at DXS>`       | `<DEFERRED — Randy to execute at DXS>`       | `<DEFERRED — Randy to execute at DXS>`       |
+| Cintiq Pro 24 + Sequoia    | `<DEFERRED — Randy to execute at DXS>`       | `<DEFERRED — Randy to execute at DXS>`       | `<DEFERRED — Randy to execute at DXS>`       |
+
+Flame artist sign-off: `<DEFERRED — Randy to execute at DXS>`
+(name + date, on the Cintiq Pro 24 + Sequoia cell only)
+
+> **Note for the operator (Randy):** the matrix has not yet been
+> executed because Plan 02-12 was run from an autonomous worktree
+> without physical Wacom / Cintiq / Mac / Rocky access. When the
+> matrix runs at DXS, replace each `<DEFERRED — Randy to execute at
+> DXS>` cell with the captured RMS value (e.g. `0.0042`), pass / fail
+> verdict, and a link to the recorded video. Phase 2 sign-off is
+> blocked on this table being fully populated.
+
+## Phase 2 latency measurement (D-21)
+
+One-shot real-hardware end-to-end input-to-photon latency
+measurement on DXS, comparing HEAD-of-Phase-1-verification (pre-
+Phase-2) against HEAD-of-Phase-2 (post). The CI gate (Phase 1
+D-08 / D-09 synthetic p99 < 25 ms) is unchanged per D-21; this
+table records the real-hardware comparison that the CI gate cannot
+make on its own.
+
+### Procedure
+
+1. On a DXS Mac client + Rocky Flame workstation server, both on the
+   same LAN Tailscale tailnet, with a real Wacom + Cintiq attached:
+   - Check out the
+     `HEAD-of-Phase-1-verification-complete` commit (see
+     `.planning/phases/01-stability-ci-test-baseline/01-VERIFICATION.md`
+     for the exact ref).
+   - Start Teraguchi server + client.
+   - Run **3 trial sessions**, each ~60 seconds of typical Flame
+     interaction (pen strokes, hotkeys, viewport navigation), with
+     `structlog` per-stage latency telemetry (Phase 1 OBS-02)
+     enabled.
+   - Record p50 / p95 / p99 end-to-end input-to-photon latencies.
+
+2. Check out Phase 2 HEAD. Repeat step 1 verbatim. Record the same
+   metrics.
+
+3. Compute the median p99 across the 3 trials, pre and post. Fill
+   in the table below.
+
+4. **Regression gate (D-21):** if post-Phase-2 p99 > pre-Phase-2 p99
+   × 1.15, DO NOT sign off the phase. Triage. Common culprits:
+   QRhiWidget blit cost, VTCompressionSession lifecycle overhead,
+   capability-probe startup cost (one-shot; shouldn't affect
+   per-frame).
+
+5. **Bonus check** (VIDEO-11 happy path): on at least one trial,
+   confirm post-Phase-2 p99 < 20 ms on a compatible-hardware Wacom +
+   good Tailscale LAN. If it does NOT, document as a known caveat —
+   the CI gate still cites Phase 1 synthetic p99 < 25 ms (D-08 /
+   D-09; unchanged in Phase 2 per D-21). Real-hardware DXS target
+   remains sub-20 ms per `CLAUDE.md` core value, but CI pass / fail
+   is the 25 ms number.
+
+### Results
+
+Latency measurement date: `<DEFERRED — Randy to execute at DXS>`
+
+| Metric                   | Pre-Phase-2 (Phase 1 HEAD)             | Post-Phase-2                           | Delta                                  |
+| ------------------------ | -------------------------------------- | -------------------------------------- | -------------------------------------- |
+| p50 input-to-photon (ms) | `<DEFERRED — Randy to execute at DXS>` | `<DEFERRED — Randy to execute at DXS>` | `<DEFERRED — Randy to execute at DXS>` |
+| p95 input-to-photon (ms) | `<DEFERRED — Randy to execute at DXS>` | `<DEFERRED — Randy to execute at DXS>` | `<DEFERRED — Randy to execute at DXS>` |
+| p99 input-to-photon (ms) | `<DEFERRED — Randy to execute at DXS>` | `<DEFERRED — Randy to execute at DXS>` | `<DEFERRED — Randy to execute at DXS>` |
+
+Synthetic-stage CI gate (Phase 1 D-08 / D-09 p99 < 25 ms; unchanged
+per D-21): **green** at HEAD-of-Phase-2.
+
+> **Note for the operator (Randy):** like the matrix, this table is
+> deferred to a manual session at DXS. Replace each `<DEFERRED —
+> Randy to execute at DXS>` cell with the measured ms value (e.g.
+> `12.4`) and the delta as a percentage (e.g. `+3.2%`). Phase 2
+> sign-off is blocked on this table being fully populated **and** the
+> +15 % regression gate being clean.
+
+## Phase 2 known v1 caveats
+
+Caveats emerging from the Phase 2 matrix / latency / spike sessions
+will be appended here once the manual checkpoints execute. Known
+caveats so far:
+
+- **Mac-server pen pressure:** silently downgraded to a mouse click
+  in v1. See "Phase 2 IOHIDUserDevice spike outcome" above. The
+  production path for Flame artists is the Rocky Linux server.
+  Re-evaluate in v1.1 if a real studio commits to Flame-on-Mac as
+  load-bearing.
+
 ---
 
-*Last updated: 2026-04-19 (Phase 2, Plan 02-10 — D-07 spike FAIL recorded; INPUT-08 re-scoped to v1 known-limitation).*
+*Last updated: 2026-04-19 (Phase 2, Plan 02-12 — Wacom matrix ritual + matrix results table + latency table + spike outcome assembled; matrix and latency rows DEFERRED to manual DXS execution).*
