@@ -15,7 +15,8 @@ from typing import TYPE_CHECKING, Optional
 from common.messages import HealthPong
 
 if TYPE_CHECKING:
-    from server.main import SessionRuntime
+    # D-11 / Plan 01-11 Task 2: SessionRuntime moved to server/session_runtime.py
+    from server.session_runtime import SessionRuntime
 
 
 logger = logging.getLogger("teraguchi.server.health_loop")
