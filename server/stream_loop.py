@@ -28,7 +28,10 @@ from typing import TYPE_CHECKING, Optional
 from common.messages import FrameType, encode_jpeg_header
 
 if TYPE_CHECKING:
-    from server.main import SessionRuntime
+    # D-11 / Plan 01-11 Task 2: SessionRuntime now lives in
+    # server/session_runtime.py. server/main.py re-exports it for backward
+    # compat, but type-hint imports should go to the canonical home.
+    from server.session_runtime import SessionRuntime
 
 
 logger = logging.getLogger("teraguchi.server.stream_loop")

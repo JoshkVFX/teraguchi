@@ -31,7 +31,8 @@ from typing import TYPE_CHECKING, Optional
 from server.video_encoder import VideoEncoder, JpegFallbackEncoder
 
 if TYPE_CHECKING:
-    from server.main import SessionRuntime
+    # D-11 / Plan 01-11 Task 2: SessionRuntime moved to server/session_runtime.py
+    from server.session_runtime import SessionRuntime
 
 
 logger = logging.getLogger("teraguchi.server.encoder_lifecycle")
