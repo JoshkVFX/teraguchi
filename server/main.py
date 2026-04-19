@@ -49,6 +49,7 @@ from common.messages import (
     ClipboardMsg, encode_video_header, encode_jpeg_header, encode_audio_header,
     AudioCodec, parse_message, generate_challenge,
 )
+from common.session_fsm import ServerFSM, is_state_pair_allowed
 from common.logging import configure as _configure_logging
 from common.keymap import qt_key_to_linux_scancode
 from server.platform_backends import (
@@ -329,12 +330,19 @@ class SessionRuntime:
             if not self.clients:
                 continue
             seq = self.health.next_ping_sequence()
-            ping_json = HealthPing(sequence=seq).to_json()
             stats_json = self.health.get_stats().to_json()
             for ws, cs in list(self.clients.items()):
                 if cs.authenticated:
                     try:
-                        await cs.enqueue(ping_json)
+                        # STAB-06 / Plan 01-08: server emits HealthPong (the
+                        # message stamped with server_state) — direction
+                        # inversion. Pong is now broadcast on the server's
+                        # 2s tick; the client originates HealthPing.
+                        pong = HealthPong(
+                            sequence=seq,
+                            server_state=cs.fsm.current_state.id,
+                        )
+                        await cs.enqueue(pong.to_json())
                         await cs.enqueue(stats_json)
                     except Exception:
                         pass
@@ -560,6 +568,25 @@ class SessionRuntime:
             self.health.record_pong(msg.get("sequence", 0),
                                     msg.get("ping_timestamp_ms", 0))
 
+        elif msg_type == MsgType.HEALTH_PING:
+            # STAB-06 / Plan 01-08 — client now originates HealthPing and
+            # stamps it with client_state from its ClientFSM. Server reads
+            # the state, checks the (client_state, server_state) pair
+            # against ALLOWED_PAIRS, and flags disagreements. Structured
+            # ERROR logging of the disagreement event is wired in Plan 01-17.
+            incoming_client_state = msg.get("client_state", "")
+            session.last_reported_client_state = incoming_client_state
+            try:
+                if incoming_client_state and not is_state_pair_allowed(
+                    incoming_client_state, session.fsm.current_state.id,
+                ):
+                    logger.warning(
+                        "fsm.state_disagreement client_state=%s server_state=%s",
+                        incoming_client_state, session.fsm.current_state.id,
+                    )
+            except Exception:
+                pass
+
         elif msg_type == MsgType.CLIPBOARD_SEND:
             if self.clipboard:
                 self.clipboard.set_clipboard(msg.get("data", ""))
@@ -585,6 +612,11 @@ class SessionRuntime:
             session.client_screen_width = msg.get("screen_width", 0)
             session.client_screen_height = msg.get("screen_height", 0)
             logger.info("Client screen: %dx%d", session.client_screen_width, session.client_screen_height)
+            # STAB-06 / Plan 01-08 — capability_exchange → streaming.
+            try:
+                session.fsm.send("client_hello")
+            except Exception:
+                pass
 
         elapsed_ms = (time.time() - t0) * 1000
         self.health.record_input_latency(elapsed_ms)
@@ -642,6 +674,12 @@ class ClientSession:
         self.send_queue: asyncio.Queue = asyncio.Queue(maxsize=4)
         self._drops_since_keyframe = 0
         self._send_task: Optional[asyncio.Task] = None
+        # STAB-06 / Plan 01-08: per-session FSM. current_state.id is stamped
+        # onto every outbound HealthPong (see _health_ping_loop). The
+        # last_reported_client_state field caches the most recent ping so
+        # Plan 01-17 observability can log disagreement pairs.
+        self.fsm = ServerFSM()
+        self.last_reported_client_state: str = ""
 
     def start_sender(self):
         self._send_task = asyncio.create_task(self._send_loop())
@@ -731,6 +769,14 @@ async def handle_client(websocket: WebSocketServerProtocol):
     runtime = None
 
     try:
+        # STAB-06 / Plan 01-08 — FSM enters `authenticating` as soon as the
+        # websocket is open (TLS + WS handshake already passed). Guarded so
+        # an unexpected state (e.g. reconnect) doesn't crash the session.
+        try:
+            session.fsm.send("tls_ok")
+        except Exception:
+            pass
+
         # ── Authentication ───────────────────────────────────
         if auth.enabled:
             if auth.mode == "pam":
@@ -777,6 +823,11 @@ async def handle_client(websocket: WebSocketServerProtocol):
                 session.client_screen_width = msg.get("screen_width", 0)
                 session.client_screen_height = msg.get("screen_height", 0)
                 logger.info("Client screen: %dx%d", session.client_screen_width, session.client_screen_height)
+                # STAB-06 / Plan 01-08 — auth succeeded → capability_exchange.
+                try:
+                    session.fsm.send("auth_ok")
+                except Exception:
+                    pass
 
             else:
                 # Local mode: challenge-response
@@ -807,9 +858,20 @@ async def handle_client(websocket: WebSocketServerProtocol):
                 session.client_screen_width = msg.get("screen_width", 0)
                 session.client_screen_height = msg.get("screen_height", 0)
                 logger.info("Client screen: %dx%d", session.client_screen_width, session.client_screen_height)
+                # STAB-06 / Plan 01-08 — local-mode auth succeeded.
+                try:
+                    session.fsm.send("auth_ok")
+                except Exception:
+                    pass
         else:
             session.authenticated = True
             session.username = "anonymous"
+            # STAB-06 / Plan 01-08 — no-auth mode short-circuits through
+            # authenticating into capability_exchange.
+            try:
+                session.fsm.send("auth_ok")
+            except Exception:
+                pass
 
         # ── Get or create session runtime ────────────────────
         if auth.mode == "pam" and session_mgr is not None:
@@ -909,6 +971,11 @@ async def handle_client(websocket: WebSocketServerProtocol):
     except Exception as e:
         logger.error("Client error %s: %s", addr, e)
     finally:
+        # STAB-06 / Plan 01-08 — drive FSM to draining/closed on disconnect.
+        try:
+            session.fsm.send("ws_closed")
+        except Exception:
+            pass
         session.stop()
         if runtime:
             runtime.remove_client(websocket)

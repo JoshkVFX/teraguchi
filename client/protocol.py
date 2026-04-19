@@ -28,6 +28,7 @@ from common.messages import (
     HealthPing, HealthPong, QualitySettings,
     AuthResponse, parse_message,
 )
+from common.session_fsm import ClientFSM
 
 
 class _BrokerRedirect(Exception):
@@ -107,6 +108,16 @@ class ClientProtocol:
         self.on_broker_assign: Optional[Callable] = None  # broker_assign with redirect info
         self.on_broker_machine_needed: Optional[Callable] = None  # prompts user to pick a machine
         self.on_cursor_update: Optional[Callable] = None  # cursor shape change
+
+        # STAB-06 / Plan 01-08: per-connection FSM. current_state.id is
+        # stamped onto every outbound HealthPing (see _client_health_ping_loop).
+        # Transitions are driven from the connect / auth / hello / disconnect
+        # lifecycle hooks below. Guarded sends — python-statemachine raises
+        # TransitionNotAllowed on out-of-order events and we don't want that
+        # to crash the I/O thread.
+        self.fsm = ClientFSM()
+        self.last_reported_server_state: str = ""
+        self._ping_seq: int = 0
 
     @property
     def connected(self) -> bool:
@@ -253,6 +264,14 @@ class ClientProtocol:
                             self.on_error(str(e))
 
                 self._connected = False
+                # STAB-06 / Plan 01-08: any exit from _connect_and_receive
+                # without an explicit user-quit means the transport dropped.
+                # FSM: streaming / degraded / handshaking / authenticating /
+                # capability_exchange → reconnecting.
+                try:
+                    self.fsm.send("transport_lost")
+                except Exception:
+                    pass
                 if self.on_disconnected and not self._closing:
                     self.on_disconnected("Connection lost")
 
@@ -304,6 +323,12 @@ class ClientProtocol:
         uri = f"{scheme}://{host}:{port}"
         logger.info("Connecting to %s", uri)
 
+        # STAB-06 / Plan 01-08: disconnected → handshaking.
+        try:
+            self.fsm.send("connect_requested")
+        except Exception:
+            pass
+
         ssl_context = None
         if self._use_tls:
             from common.tls_opt_out import build_client_ssl_context
@@ -321,6 +346,12 @@ class ClientProtocol:
             ) as ws:
                 self._ws = ws
                 logger.info("Connected to server")
+                # STAB-06 / Plan 01-08: handshaking → authenticating (TLS + WS
+                # handshake is complete the moment websockets.connect returns).
+                try:
+                    self.fsm.send("tls_ok")
+                except Exception:
+                    pass
 
                 first_msg = await ws.recv()
                 if isinstance(first_msg, str):
@@ -353,6 +384,11 @@ class ClientProtocol:
 
                 if self._hybrid and self._hybrid.state.udp_confirmed:
                     asyncio.ensure_future(self._udp_stats_loop(ws))
+
+                # STAB-06 / Plan 01-08 — client-side HealthPing emitter.
+                # Direction inversion: client now originates HealthPing,
+                # stamped with self.fsm.current_state.id.
+                asyncio.ensure_future(self._client_health_ping_loop(ws))
 
                 async for message in ws:
                     if self._closing:
@@ -498,6 +534,11 @@ class ClientProtocol:
                                     result.get("message", ""))
             if not result.get("success", False):
                 return
+            # STAB-06 / Plan 01-08: authenticating → capability_exchange.
+            try:
+                self.fsm.send("auth_ok")
+            except Exception:
+                pass
 
         hello_raw = await ws.recv()
         hello = parse_message(hello_raw)
@@ -554,6 +595,11 @@ class ClientProtocol:
                                     result.get("message", ""))
             if not result.get("success", False):
                 return
+            # STAB-06 / Plan 01-08: authenticating → capability_exchange.
+            try:
+                self.fsm.send("auth_ok")
+            except Exception:
+                pass
 
         # Receive server hello (or broker hello if connected to a broker)
         hello_raw = await ws.recv()
@@ -656,6 +702,28 @@ class ClientProtocol:
                 except Exception:
                     break
 
+    async def _client_health_ping_loop(self, ws):
+        """STAB-06 / Plan 01-08 — client-originated HealthPing emitter.
+
+        Ticks every 2s (matches the pre-Plan-08 server cadence) and sends a
+        HealthPing stamped with the current ClientFSM state. The server's
+        handle_input branch consumes client_state and runs disagreement
+        detection via common.session_fsm.is_state_pair_allowed.
+        """
+        while self._connected and not self._closing:
+            await asyncio.sleep(2.0)
+            if not self._connected or self._closing:
+                break
+            try:
+                self._ping_seq += 1
+                ping = HealthPing(
+                    sequence=self._ping_seq,
+                    client_state=self.fsm.current_state.id,
+                )
+                await ws.send(ping.to_json())
+            except Exception:
+                break
+
     def _on_udp_video(self, flags: int, timestamp_ms: int, data: bytes):
         is_keyframe = bool(flags & FLAG_KEYFRAME)
         if self._jitter_buffer:
@@ -685,8 +753,14 @@ class ClientProtocol:
                 self.on_audio_frame(0, timestamp_ms, data)
 
     def _handle_server_hello(self, msg: dict):
-        if msg.get("type") == MsgType.SERVER_HELLO and self.on_server_hello:
-            self.on_server_hello(msg)
+        if msg.get("type") == MsgType.SERVER_HELLO:
+            # STAB-06 / Plan 01-08: capability_exchange → streaming.
+            try:
+                self.fsm.send("hello_received")
+            except Exception:
+                pass
+            if self.on_server_hello:
+                self.on_server_hello(msg)
 
     def _handle_json(self, data: str):
         try:
@@ -701,11 +775,13 @@ class ClientProtocol:
                             msg.get("udp_rtt_ms", 0))
             elif msg_type == TransportMsg.UDP_FALLBACK:
                 logger.warning("Server: UDP fallback - %s", msg.get("reason", ""))
-            elif msg_type == MsgType.HEALTH_PING:
-                pong = HealthPong(
-                    ping_timestamp_ms=msg.get("timestamp_ms", 0),
-                    sequence=msg.get("sequence", 0))
-                self.send_input(json.loads(pong.to_json()))
+            elif msg_type == MsgType.HEALTH_PONG:
+                # STAB-06 / Plan 01-08 — server now originates HealthPong
+                # stamped with server_state. Client caches the pair for
+                # Plan 01-17 observability + potential UI signalling.
+                self.last_reported_server_state = msg.get("server_state", "")
+                if self.on_health_ping:
+                    self.on_health_ping(msg)
             elif msg_type == MsgType.HEALTH_STATS:
                 if self.on_health_stats:
                     self.on_health_stats(msg)
