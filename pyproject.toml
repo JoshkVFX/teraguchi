@@ -43,7 +43,14 @@ timeout = 30
 markers = [
     "latency_bench: synthetic-stage-time latency benchmark (D-08 gate; slow, excluded from PR test suite)",
     "smoke_1h: STAB-09 1-hour synthetic smoke harness (D-17; nightly-only via .github/workflows/smoke-nightly.yml)",
+    "flame_critical: Flame-artist critical hotkey chord subset (INPUT-04)",
+    "wacom_hw: real Wacom hardware required - DESELECTED from default suite (INPUT-09..12)",
+    "ten_bit_smoke: 10-bit pipeline 9-checkpoint harness (VIDEO-01/02)",
+    "gpu: requires real GPU - DESELECTED from GHA (VIDEO-01/02 cp.7-9)",
 ]
+# Phase 2 Wave 0 (02-01 Task 3) - deselect wacom_hw by default. Every
+# other marker remains opt-in via -m flag on the relevant CI job.
+addopts = "-m 'not wacom_hw'"
 # filterwarnings ratchet — see RESEARCH Pitfall 6 + Pitfall 9.
 # Start permissive; tighten dep-bump-by-dep-bump.
 filterwarnings = [

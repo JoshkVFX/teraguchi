@@ -59,7 +59,11 @@ jobs:
         # `latency-bench` job so PR turnaround doesn't pay its ~25 s cost.
         # `-m "not smoke_1h"` excludes the STAB-09 1-hour smoke harness
         # (Plan 01-17) — that runs only in the nightly `smoke-nightly.yml` cron.
-        run: python3.12 -m pytest -v --timeout=60 -m "not latency_bench and not smoke_1h"
+        # `-m "not wacom_hw"` excludes Phase 2 (02-01) real-Wacom tests — those
+        # are gated in the per-release manual ritual per D-16, never in GHA.
+        # `-m "not gpu"` excludes Phase 2 GPU-required 10-bit checkpoints 7-9
+        # (D-01 cp.8 manual-verified-once + cp.9 display state).
+        run: python3.12 -m pytest -v --timeout=60 -m "not latency_bench and not smoke_1h and not wacom_hw and not gpu"
 
   test-macos:
     name: Tests (macOS 14 / Apple Silicon)
@@ -85,9 +89,11 @@ jobs:
         # (Plan 01-16) — that runs in the dedicated `latency-bench` job on
         # Rocky 9 only. `-m "not smoke_1h"` excludes the STAB-09 1-hour smoke
         # harness (Plan 01-17) — that runs only in `smoke-nightly.yml`.
+        # `-m "not wacom_hw"` + `not gpu` — see test-linux job rationale
+        # (Phase 2 02-01 Task 3; D-16 + D-01 cp.8-9).
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python3 -m pytest -v --timeout=60 -m "not latency_bench and not smoke_1h"
+        run: python3 -m pytest -v --timeout=60 -m "not latency_bench and not smoke_1h and not wacom_hw and not gpu"
 
   # Synthetic harness-math gate per D-09. Real-hardware latency is measured
   # manually on DXS workstations pre-release.
