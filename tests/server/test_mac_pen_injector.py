@@ -91,3 +91,80 @@ def test_release_notes_document_d07_spike_outcome():
         "docs/release.md must explicitly record the D-07 spike outcome "
         "(FAIL or PASS), not leave it ambiguous."
     )
+
+
+# =====================================================================
+# INPUT-10 server-side injection-half coverage (Plan 02-11 Task 2 Step D)
+#
+# These three tests cover the *injection* half of INPUT-10 (eraser flag
+# + side-button-1 + side-button-2 dispatch through the platform-backends
+# InputInjector facade). The *hardware* half remains the manual 4-cell
+# Wacom matrix in 02-12.
+#
+# FAIL-branch fallback: 02-10 recorded the IOHIDUserDevice spike as
+# FAIL (per docs/release.md), so server/mac_pen_injector.py does not
+# exist on this branch. ``pytest.importorskip`` skips these three tests
+# cleanly with the documented v1-limitation reason. If a future commit
+# lands the PASS branch, the importorskip becomes a no-op and the tests
+# auto-activate against the real MacPenInjector + IOKit mock.
+# =====================================================================
+
+
+def test_inputinjector_dispatches_eraser_flag_through_platform_backend():
+    """INPUT-10: pen_type='eraser' on the platform_backends.InputInjector
+    facade reaches MacPenInjector with the eraser flag set in the HID
+    report flags byte (bit 0x02).
+    """
+    pytest.importorskip(
+        "server.mac_pen_injector",
+        reason=(
+            "SPIKE FAIL per 02-10 Task 2; INPUT-10 injection through "
+            "MacPenInjector is a documented v1 limitation. The Mac "
+            "server uses the mouse-click downgrade fallback in "
+            "mac_input_injector.pen_event; full pen pressure / "
+            "eraser / side-button injection is v1.1+ work."
+        ),
+    )
+    # PASS branch: the test body lives in the next plan's executor;
+    # this skeleton documents the assertion shape so the scope is
+    # locked. Fail loudly if we somehow reach this point on the FAIL
+    # branch (importorskip should have skipped above).
+    pytest.fail(
+        "server.mac_pen_injector imported successfully but the FAIL-"
+        "branch test body has not been replaced. See Plan 02-10 Task 1 "
+        "for the PASS-branch test body sketch."
+    )
+
+
+def test_inputinjector_dispatches_side_button_1_through_platform_backend():
+    """INPUT-10: side-button-1 press dispatches through to the
+    MacPenInjector report (bit 0x04 in the flags byte).
+    """
+    pytest.importorskip(
+        "server.mac_pen_injector",
+        reason=(
+            "SPIKE FAIL per 02-10 Task 2; INPUT-10 injection through "
+            "MacPenInjector is a documented v1 limitation."
+        ),
+    )
+    pytest.fail(
+        "server.mac_pen_injector imported but FAIL-branch test body "
+        "not replaced. See Plan 02-10 Task 1 for the PASS-branch sketch."
+    )
+
+
+def test_inputinjector_dispatches_side_button_2_through_platform_backend():
+    """INPUT-10: side-button-2 press dispatches through to the
+    MacPenInjector report (bit 0x08 in the flags byte).
+    """
+    pytest.importorskip(
+        "server.mac_pen_injector",
+        reason=(
+            "SPIKE FAIL per 02-10 Task 2; INPUT-10 injection through "
+            "MacPenInjector is a documented v1 limitation."
+        ),
+    )
+    pytest.fail(
+        "server.mac_pen_injector imported but FAIL-branch test body "
+        "not replaced. See Plan 02-10 Task 1 for the PASS-branch sketch."
+    )
