@@ -83,10 +83,10 @@ This is brownfield. A working vibe-coded prototype already covers the happy path
   4. Input-to-photon latency on LAN measures sub-20ms with the Phase-1 instrumentation; CI benchmark fails the build if the number drifts above 25ms
   5. Modifiers release cleanly on `WindowDeactivate` (no more stuck-Ctrl after Cmd+Tab) and on reconnect — verified by automated focus-stress and reconnect-stress tests
 **Plans**: 12 plans
-  - [ ] 02-01-PLAN.md — Wave 0 gap closure: 10-bit ramp fixture, 8 test skeletons, pytest markers, CI wiring
-  - [ ] 02-02-PLAN.md — common/messages.py extensions: KEY_RESET_MODIFIERS / TextCommit / PenProximity / KeyEvent lock bits / ServerColorCaps
-  - [ ] 02-03-PLAN.md — common/keymap.py Qt→Mac VK + Cmd↔Ctrl swap + FLAME_CRITICAL_CHORDS + ~2000-case exhaustive matrix
-  - [ ] 02-04-PLAN.md — server/capability_probe.py + ENCODER_DEFS main10/422/444 flags + client 10-bit badge
+  - [x] 02-01-PLAN.md — Wave 0 gap closure: 10-bit ramp fixture, 8 test skeletons, pytest markers, CI wiring
+  - [x] 02-02-PLAN.md — common/messages.py extensions: KEY_RESET_MODIFIERS / TextCommit / PenProximity / KeyEvent lock bits / ServerColorCaps
+  - [x] 02-03-PLAN.md — common/keymap.py Qt→Mac VK + Cmd↔Ctrl swap + FLAME_CRITICAL_CHORDS + ~2000-case exhaustive matrix
+  - [x] 02-04-PLAN.md — server/capability_probe.py + ENCODER_DEFS main10/422/444 flags + client 10-bit badge
   - [ ] 02-05-PLAN.md — server/mac_video_encoder.py VTCompressionSession wrapper + SCK .hdrLocalDisplay config
   - [ ] 02-06-PLAN.md — Linux hevc_nvenc Main10 command line + NvFBC 10-bit surface + 9-checkpoint cp.2-4
   - [ ] 02-07-PLAN.md — client/viewer.py QRhiWidget Metal P010 blit + BT.709 shader (biggest client-side change)
