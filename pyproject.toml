@@ -35,6 +35,14 @@ include = ["server*", "client*", "common*"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 timeout = 30
+# Registered markers — unknown markers otherwise emit PytestUnknownMarkWarning.
+# latency_bench: D-08 synthetic-stage-time accumulator (Plan 01-16); slow
+# (~25 s for 1000 iterations), excluded from the regular PR test suite via
+# `-m "not latency_bench"` and run only in the dedicated `latency-bench`
+# CI job.
+markers = [
+    "latency_bench: synthetic-stage-time latency benchmark (D-08 gate; slow, excluded from PR test suite)",
+]
 # filterwarnings ratchet — see RESEARCH Pitfall 6 + Pitfall 9.
 # Start permissive; tighten dep-bump-by-dep-bump.
 filterwarnings = [
