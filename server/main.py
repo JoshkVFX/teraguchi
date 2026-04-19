@@ -69,6 +69,10 @@ from common.udp_transport import UDPMediaServer, BandwidthEstimator, CHANNEL_VID
 from common.hybrid_transport import HybridServerTransport, TransportMsg, TransportMode
 from common.quic_transport import QUICTransportServer, quic_available
 from server.usb_passthrough import USBForwardingManager
+from server.stream_loop import StreamLoop
+from server.health_loop import HealthLoop
+from server.encoder_lifecycle import EncoderLifecycle
+from server.monitor_hotplug import MonitorHotplug
 
 logger = logging.getLogger("teraguchi.server")
 
@@ -138,29 +142,18 @@ class SessionRuntime:
             else:
                 os.environ.pop("DISPLAY", None)
 
-        # Video encoder
+        # Video encoder — lifecycle is owned by the EncoderLifecycle helper
+        # (D-11 Plan 01-10 Task 2). self.encoder stays as a back-compat
+        # attribute (ClientSession.enqueue + tests/server/test_pipelines.py
+        # reach it via ``runtime.encoder``) and is kept fresh by
+        # EncoderLifecycle.spawn()/restart()/stop().
         self.encoder: Optional[VideoEncoder] = None
         self.jpeg_encoder: Optional[JpegFallbackEncoder] = None
         self.use_h264 = False
         self.ffmpeg_caps = ffmpeg_caps
         self.available_encoders = available_encoders
-
-        codec = quality.codec
-        if codec in ("h264", "h265", "av1") and ffmpeg_caps.get(codec, False):
-            self.use_h264 = True
-            enc_list = available_encoders
-            if sw_only:
-                enc_list = {}
-                for c, encs in available_encoders.items():
-                    enc_list[c] = [e for e in encs if e.backend == "software"]
-            self.encoder = VideoEncoder(self.capture.width, self.capture.height,
-                                        quality, available_encoders=enc_list)
-            self.encoder.start(self._on_encoded_frame)
-            logger.info("[%s] Encoder: %s (%s) %s", username, codec.upper(),
-                        self.encoder.active_backend, quality.chroma.upper())
-        else:
-            self.jpeg_encoder = JpegFallbackEncoder(quality=jpeg_quality)
-            logger.info("[%s] Using JPEG fallback encoder", username)
+        self.encoder_lifecycle = EncoderLifecycle(self)
+        self.encoder_lifecycle.spawn(sw_only=sw_only, jpeg_quality=jpeg_quality)
 
         # Health monitor
         self.health = HealthMonitor(target_fps=quality.effective_fps())
@@ -205,10 +198,15 @@ class SessionRuntime:
 
         # Streaming state
         self._streaming = False
-        self._stream_task: Optional[asyncio.Task] = None
-        self._health_task: Optional[asyncio.Task] = None
-        self._hotplug_task: Optional[asyncio.Task] = None
         self._running = True
+
+        # D-11 / Plan 01-10: stream + health + hotplug loops are now sub-
+        # objects. SessionRuntime remains the owner of shared state (capture,
+        # encoder, clients, health); the loops only hold the run-flag + task
+        # handle and reach shared state via the back-reference.
+        self._stream_loop = StreamLoop(self)
+        self._health_loop = HealthLoop(self)
+        self._hotplug = MonitorHotplug(self)
 
         logger.info("[%s] Session runtime ready on %s (%dx%d)",
                     username, display, self.capture.width, self.capture.height)
@@ -264,13 +262,13 @@ class SessionRuntime:
         self._streaming = True
         fps = self.quality.effective_fps()
 
-        if self.use_h264 and self.encoder:
-            self._stream_task = asyncio.ensure_future(self._stream_h264(fps))
-        else:
-            self._stream_task = asyncio.ensure_future(self._stream_jpeg(fps))
-
-        self._health_task = asyncio.ensure_future(self._health_ping_loop())
-        self._hotplug_task = asyncio.ensure_future(self._monitor_hotplug_loop())
+        # D-11 / Plan 01-10: stream + health + hotplug loops all live in
+        # their own modules. The loops read shared state off this
+        # SessionRuntime via back-reference; wiring stays a pure module
+        # split with zero behavior change.
+        self._stream_loop.start(fps)
+        self._health_loop.start()
+        self._hotplug.start()
 
         if self.audio and self.audio.available and self.quality.enable_audio:
             self.audio.start(self._on_audio_frame)
@@ -282,85 +280,6 @@ class SessionRuntime:
             self.cursor_tracker.start(self._on_cursor_shape_change)
 
         logger.info("[%s] Streaming started (%d fps)", self.username, fps)
-
-    async def _stream_h264(self, fps: int):
-        interval = 1.0 / fps
-        while self._running:
-            start = time.time()
-            if self.clients and self.encoder:
-                try:
-                    t0 = time.time()
-                    raw = self.capture.capture_raw_bgra()
-                    self.health.record_capture_time((time.time() - t0) * 1000)
-                    self.encoder.feed_frame(raw)
-                except Exception as e:
-                    logger.error("[%s] H264 capture error: %s", self.username, e)
-            elapsed = time.time() - start
-            await asyncio.sleep(max(interval - elapsed, 0.001))
-
-    async def _stream_jpeg(self, fps: int):
-        interval = 1.0 / fps
-        while self._running:
-            start = time.time()
-            if self.clients:
-                try:
-                    t0 = time.time()
-                    regions = self.capture.capture_dirty_regions()
-                    self.health.record_capture_time((time.time() - t0) * 1000)
-                    for x, y, w, h, jpeg_data in regions:
-                        ft = (FrameType.VIDEO_FULL
-                              if (x == 0 and y == 0 and
-                                  w == self.capture.width and h == self.capture.height)
-                              else FrameType.VIDEO_PARTIAL)
-                        header = encode_jpeg_header(ft, x, y, w, h)
-                        data = header + jpeg_data
-                        self.health.record_frame_sent(len(data))
-                        for ws, cs in list(self.clients.items()):
-                            if cs.authenticated:
-                                if not await cs.enqueue(data):
-                                    self.health.record_frame_dropped()
-                except Exception as e:
-                    logger.error("[%s] JPEG capture error: %s", self.username, e)
-            elapsed = time.time() - start
-            await asyncio.sleep(max(interval - elapsed, 0.001))
-
-    async def _health_ping_loop(self):
-        while self._running:
-            await asyncio.sleep(2.0)
-            if not self.clients:
-                continue
-            seq = self.health.next_ping_sequence()
-            stats_json = self.health.get_stats().to_json()
-            for ws, cs in list(self.clients.items()):
-                if cs.authenticated:
-                    try:
-                        # STAB-06 / Plan 01-08: server emits HealthPong (the
-                        # message stamped with server_state) — direction
-                        # inversion. Pong is now broadcast on the server's
-                        # 2s tick; the client originates HealthPing.
-                        pong = HealthPong(
-                            sequence=seq,
-                            server_state=cs.fsm.current_state.id,
-                        )
-                        await cs.enqueue(pong.to_json())
-                        await cs.enqueue(stats_json)
-                    except Exception:
-                        pass
-
-    async def _monitor_hotplug_loop(self):
-        while self._running:
-            await asyncio.sleep(5.0)
-            if self.capture and self.capture.detect_hotplug():
-                monitors = [asdict(m) for m in self.capture.list_monitors()]
-                msg_json = MonitorListMsg(monitors=monitors).to_json()
-                for ws, cs in list(self.clients.items()):
-                    if cs.authenticated:
-                        try:
-                            await cs.enqueue(msg_json)
-                        except Exception:
-                            pass
-                if self.encoder:
-                    self._restart_encoder()
 
     # ── Encoder callbacks ────────────────────────────────────
 
@@ -433,7 +352,7 @@ class SessionRuntime:
            self.ffmpeg_caps.get(self.quality.codec, False):
             if not self.use_h264:
                 self.use_h264 = True
-                self._restart_encoder()
+                self.encoder_lifecycle.restart()
             elif self.encoder:
                 self.encoder.update_settings(self.quality)
         else:
@@ -478,7 +397,7 @@ class SessionRuntime:
                 capture_output=True, text=True, timeout=5, env=env)
             if result.returncode == 0:
                 self.capture.reinit(width, height)
-                self._restart_encoder()
+                self.encoder_lifecycle.restart()
                 logger.info("Resized to %dx%d", width, height)
                 return
 
@@ -504,25 +423,13 @@ class SessionRuntime:
                             capture_output=True, text=True, timeout=5, env=env)
                         if result.returncode == 0:
                             self.capture.reinit(width, height)
-                            self._restart_encoder()
+                            self.encoder_lifecycle.restart()
                             logger.info("Resized to %dx%d", width, height)
                             return
                         else:
                             logger.warning("Resize failed: %s", result.stderr)
         except Exception as e:
             logger.warning("Resize error: %s", e)
-
-    def _restart_encoder(self):
-        if self.encoder:
-            old_available = self.encoder._available
-            self.encoder.stop()
-        else:
-            old_available = None
-        self.encoder = VideoEncoder(self.capture.width, self.capture.height,
-                                     self.quality,
-                                     available_encoders=old_available)
-        self.encoder.start(self._on_encoded_frame)
-        self.health.current_resolution = f"{self.capture.width}x{self.capture.height}"
 
     # ── Input handling ───────────────────────────────────────
 
@@ -562,7 +469,7 @@ class SessionRuntime:
 
         elif msg_type == MsgType.SELECT_MONITOR:
             self.capture.switch_monitor(msg.get("monitor_id", 1))
-            self._restart_encoder()
+            self.encoder_lifecycle.restart()
 
         elif msg_type == MsgType.HEALTH_PONG:
             self.health.record_pong(msg.get("sequence", 0),
@@ -625,11 +532,14 @@ class SessionRuntime:
 
     def stop(self):
         self._running = False
-        for task in (self._stream_task, self._health_task, self._hotplug_task):
-            if task:
-                task.cancel()
-        if self.encoder:
-            self.encoder.stop()
+        # D-11 / Plan 01-10: delegate loop + encoder teardown to the
+        # sub-objects. Each sub-loop owns its own task cancellation;
+        # encoder_lifecycle.stop() keeps the back-compat self.encoder
+        # handle in sync (sets it to None alongside its internal handle).
+        self._stream_loop.stop()
+        self._health_loop.stop()
+        self._hotplug.stop()
+        self.encoder_lifecycle.stop()
         if self.audio:
             self.audio.stop()
         if self.clipboard:
