@@ -34,6 +34,7 @@ def qapp():
 def test_show_event_emits_pen_proximity(qapp):
     """showEvent → pen_proximity with in_proximity=True (D-19)."""
     from PySide6.QtGui import QShowEvent
+
     from client.viewer import RemoteViewer
     v = RemoteViewer()
     received: list[dict] = []
@@ -54,6 +55,7 @@ def test_focus_in_after_prior_proximity_emits_pen_proximity(qapp):
     """focusInEvent emits pen_proximity only if _pen_was_in_proximity was True."""
     from PySide6.QtCore import QEvent
     from PySide6.QtGui import QFocusEvent
+
     from client.viewer import RemoteViewer
 
     v = RemoteViewer()
@@ -85,6 +87,7 @@ def test_focus_in_without_prior_proximity_does_not_emit(qapp):
     """
     from PySide6.QtCore import QEvent
     from PySide6.QtGui import QFocusEvent
+
     from client.viewer import RemoteViewer
 
     v = RemoteViewer()

@@ -194,6 +194,45 @@ class ServerFSM(StateMachine):
     last_frame_sent = draining.to(closed)
 
 
+# ── Pen-proximity FSM (Phase 2 D-19) ─────────────────────────────────
+class PenFSM(StateMachine):
+    """Pen proximity sub-state, orthogonal to ClientFSM / ServerFSM.
+
+    Per RESEARCH §"Claude's Discretion #6" pen state lives in
+    ``common/session_fsm.py`` for discoverability — it's wholly
+    independent of the session lifecycle but uses the same declarative
+    ``python-statemachine`` idiom and serializes the same way
+    (``fsm.current_state.id`` → ``"in_proximity"`` / ``"out_of_proximity"``).
+
+    **Idempotency is load-bearing** (D-19 wire contract):
+
+    The client re-synthesizes a ``PenProximityMsg(in_proximity=True)`` on
+    every ``focusInEvent`` and ``showEvent`` to recover from Cmd-Tab,
+    lockscreen, and minimize/restore cycles where the OS may swallow the
+    real proximity-leave event (PITFALLS #3 "proximity event eaten by
+    lockscreen"). The server's PenFSM therefore MUST tolerate duplicate
+    enter and leave transitions as no-ops — both
+    ``in_proximity → in_proximity`` and ``out_of_proximity → out_of_proximity``
+    are explicitly allowed self-transitions.
+
+    Wire-contract reminder: ``pen_state`` is telemetry-only; do NOT embed
+    it in every ``PenEventMsg`` (that would waste bandwidth at 200+
+    samples/sec). The PenProximityMsg is the explicit transition trigger.
+    """
+
+    out_of_proximity = State("out_of_proximity", initial=True)
+    in_proximity = State("in_proximity")
+
+    enter_proximity = (
+        out_of_proximity.to(in_proximity)
+        | in_proximity.to(in_proximity)  # idempotent per D-19
+    )
+    leave_proximity = (
+        in_proximity.to(out_of_proximity)
+        | out_of_proximity.to(out_of_proximity)  # idempotent per D-19
+    )
+
+
 __all__ = [
     "CLIENT_STATES",
     "SERVER_STATES",
@@ -201,4 +240,5 @@ __all__ = [
     "is_state_pair_allowed",
     "ClientFSM",
     "ServerFSM",
+    "PenFSM",
 ]

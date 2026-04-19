@@ -432,6 +432,13 @@ class RemoteViewer(QWidget):
     # would mangle dead-key composition (the anti-pattern that REQ-INPUT-05
     # exists to forbid).
     text_commit = Signal(str)
+    # Phase 2 D-19 — pen-proximity re-synth on focusIn / showEvent. Emitted
+    # as a dict {"in_proximity": bool, "pen_type": "pen"|"eraser"} so the
+    # protocol layer can serialize a PenProximityMsg without this widget
+    # importing common/messages. Idempotent on the server PenFSM —
+    # duplicate emissions after Cmd-Tab / lockscreen / restore cycles are
+    # safe by construction (D-19 PITFALLS #3 mitigation).
+    pen_proximity = Signal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -462,6 +469,19 @@ class RemoteViewer(QWidget):
 
         # Track whether we're using pen or mouse to avoid duplicate events
         self._pen_active = False
+
+        # Phase 2 D-19 — pen-proximity re-synth bookkeeping. ``True`` while
+        # the pen has been in tablet range; flipped on TabletLeaveProximity.
+        # Read by ``focusInEvent`` to decide whether to synthesize a
+        # PenProximityMsg(in_proximity=True) on focus return — we only re-
+        # sync when the pen *was* in-proximity before focus loss, so a
+        # fresh-focus where the user never touched the tablet doesn't
+        # spam the wire (D-19 wire-traffic guard).
+        self._pen_was_in_proximity = False
+        # Last observed pen type — "pen" or "eraser". Echoed back in the
+        # re-synth PenProximityMsg so the server's pen FSM can route to
+        # the right device shape after focus return.
+        self._last_pen_type = "pen"
 
         # macOS transforms Control+LeftClick into a RightButton event at
         # the OS level BEFORE Qt sees it. When the user is doing a
@@ -787,6 +807,17 @@ class RemoteViewer(QWidget):
 
         self.pen_event.emit(pen_data)
 
+        # Phase 2 D-19 — track proximity for focusInEvent re-synth. Qt's
+        # TabletEnterProximity / TabletLeaveProximity event types are the
+        # authoritative trigger; other tablet-event types (move / press /
+        # release) all imply in-proximity. Cache the pen type so the re-
+        # synth knows whether to route back as "pen" or "eraser".
+        if event_type == QTabletEvent.TabletLeaveProximity:
+            self._pen_was_in_proximity = False
+        else:
+            self._pen_was_in_proximity = True
+            self._last_pen_type = pen_type
+
         # Mark pen inactive after release + leave
         if event_type == QTabletEvent.TabletRelease:
             self._pen_active = False
@@ -896,6 +927,56 @@ class RemoteViewer(QWidget):
         """
         self.reset_modifiers_requested.emit("focus_out")
         super().focusOutEvent(event)
+
+    def focusInEvent(self, event):
+        """Phase 2 D-19: re-synth pen proximity when focus returns.
+
+        Only fires the proximity re-synth if the pen WAS in-proximity
+        before focus was lost (``_pen_was_in_proximity`` bookkeeping
+        from ``tabletEvent``). This avoids spamming the wire when the
+        user is plain mouse-only — a fresh focus on the viewer where
+        the pen never approached the tablet doesn't need a synthetic
+        proximity event (the server PenFSM is idempotent either way,
+        but the wire traffic + telemetry would be noise).
+
+        The synthesized event flows out through ``pen_proximity`` →
+        client/protocol.py → PenProximityMsg on the wire → server
+        PenFSM.send("enter_proximity"). PenFSM is idempotent on
+        in_proximity → in_proximity transitions per D-19, so duplicate
+        emissions across rapid focus-cycle storms are safe.
+        """
+        if self._pen_was_in_proximity:
+            self._emit_pen_proximity(in_proximity=True,
+                                     pen_type=self._last_pen_type)
+        super().focusInEvent(event)
+
+    def showEvent(self, event):
+        """Phase 2 D-19: re-synth pen proximity when widget is shown.
+
+        Catches lockscreen wake, minimize/restore, virtual-desktop
+        switches, and the initial show after connect — none of which
+        necessarily fire focusInEvent. Always emits ``in_proximity=True``
+        because by the time the widget is visible the user may have
+        their pen hovering and the server FSM should converge to
+        in_proximity proactively (idempotent on the server, so over-
+        emitting is safe per D-19).
+        """
+        self._emit_pen_proximity(in_proximity=True,
+                                 pen_type=self._last_pen_type)
+        super().showEvent(event)
+
+    def _emit_pen_proximity(self, in_proximity: bool, pen_type: str) -> None:
+        """Phase 2 D-19: package + emit a pen_proximity dict.
+
+        Centralized so future callers (CLI panic handler, reconnect
+        hook) can fire the same shape without duplicating the dict
+        construction. Server-side PenFSM idempotency contract lives in
+        common/session_fsm.py::PenFSM.
+        """
+        self.pen_proximity.emit({
+            "in_proximity": bool(in_proximity),
+            "pen_type": pen_type or "pen",
+        })
 
     def inputMethodEvent(self, event: QInputMethodEvent):
         """Phase 2 D-15: forward IME commit strings as TextCommit, not keys.
