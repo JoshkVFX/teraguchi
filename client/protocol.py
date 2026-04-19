@@ -622,7 +622,11 @@ class ClientProtocol:
             # 3. Else fall back to auto-assign (empty machine_name).
             selected_name = self._preferred_machine
             if not selected_name and self.on_broker_machine_needed:
-                self._machine_selection_future = asyncio.get_event_loop().create_future()
+                # Phase 2 WR-02: get_event_loop() is deprecated on 3.12+
+                # and racy in threaded contexts. We're already inside a
+                # coroutine (this whole method is awaited), so the running
+                # loop is the right reference.
+                self._machine_selection_future = asyncio.get_running_loop().create_future()
                 try:
                     self.on_broker_machine_needed(machines)
                 except Exception as e:
@@ -766,7 +770,9 @@ class ClientProtocol:
             # Prompt the user to pick a machine (same flow as broker mode)
             selected_name = self._preferred_machine
             if not selected_name and self.on_broker_machine_needed:
-                self._machine_selection_future = asyncio.get_event_loop().create_future()
+                # Phase 2 WR-02: get_event_loop() is deprecated on 3.12+;
+                # we are already in an awaited coroutine.
+                self._machine_selection_future = asyncio.get_running_loop().create_future()
                 try:
                     self.on_broker_machine_needed(machines)
                 except Exception as e:
