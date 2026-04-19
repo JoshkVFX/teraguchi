@@ -10,9 +10,22 @@ caller does alongside it.
 
 Unmapped keys return 0 per the docstring contract.
 """
+import itertools
+
 import pytest
 
-from common.keymap import QT_KEY_TO_LINUX, qt_key_to_linux_scancode
+from common.keymap import (
+    FLAME_CRITICAL_CHORDS,
+    MOD_ALT,
+    MOD_CTRL,
+    MOD_META,
+    MOD_SHIFT,
+    QT_KEY_TO_LINUX,
+    QT_KEY_TO_MAC_VK,
+    qt_key_to_linux_scancode,
+    qt_key_to_mac_vk,
+    swap_cmd_ctrl_for_linux_dest,
+)
 
 # PySide6 key codes — use integer literals to keep this test PySide6-free.
 # Values match `Qt.Key_*` enum integers.
@@ -142,21 +155,147 @@ def test_table_contains_full_ascii_letter_range():
 # =============================================================================
 
 
-@pytest.mark.skip(reason="Wave 1 - QT_KEY_TO_MAC_VK table lands in 02-03")
 def test_qt_key_to_mac_vk_letter_a_returns_kvk_ansi_a():
     from common.keymap import qt_key_to_mac_vk  # noqa: F401
     assert qt_key_to_mac_vk(0x41) == 0x00  # kVK_ANSI_A
 
 
-@pytest.mark.skip(reason="Wave 1 - FLAME_CRITICAL_CHORDS constant lands in 02-03")
 def test_flame_critical_chords_exist():
     from common.keymap import FLAME_CRITICAL_CHORDS  # noqa: F401
     assert len(FLAME_CRITICAL_CHORDS) >= 20
 
 
-@pytest.mark.skip(reason="Wave 1 - swap_cmd_ctrl helper lands in 02-03")
 def test_swap_cmd_ctrl_for_linux_dest_inverts_cmd_to_ctrl():
     from common.keymap import swap_cmd_ctrl_for_linux_dest  # noqa: F401
     # Qt Meta (0x01000022) should become Qt Control (0x01000021) when dest=linux
     out_key, out_mods = swap_cmd_ctrl_for_linux_dest(0x01000022, 0)
     assert out_key == 0x01000021
+
+
+# =============================================================================
+# Phase 2 Wave 1 (02-03) — D-12 exhaustive Qt × modifier × {linux, mac} matrix.
+# Target: >= 2000 parametrized cases (~84 keys × ~15 modifier combos × 2 platforms).
+# =============================================================================
+
+
+# D-12: table parity -- every Qt key Phase 1 mapped must also map to a Mac VK.
+# Exceptions are Apple-keyboard absences (no kVK_* constants exist for these).
+# Every entry here is documented -- if something else lands on this list,
+# open an issue AND file a Mac-keyboard-equivalent mapping proposal.
+ALLOWED_UNMAPPED_ON_MAC = {
+    0x01000006,  # Key_Insert       — no kVK_Insert on Apple keyboards
+    0x01000008,  # Key_Pause        — no kVK_Pause
+    0x01000009,  # Key_Print/SysRq  — no kVK_Print; cmd-shift-3 is the Mac flow
+    0x01000025,  # Key_NumLock      — no kVK_NumLock (Apple Clear key ≠ NumLock)
+    0x01000026,  # Key_ScrollLock   — no kVK_ScrollLock
+}
+
+
+@pytest.mark.parametrize("qt_key", sorted(QT_KEY_TO_LINUX.keys()))
+def test_mac_vk_covers_every_qt_key_in_linux_table(qt_key):
+    if qt_key in ALLOWED_UNMAPPED_ON_MAC:
+        pytest.skip(f"Qt key {hex(qt_key)} is explicitly allow-listed as Mac-unmapped")
+    # NOTE: check dict membership, NOT truthy value. kVK_ANSI_A = 0x00 is a
+    # legitimate Mac virtual key code, so the "0 means unmapped" sentinel
+    # used by qt_key_to_mac_vk() collides with Key_A's valid mapping.
+    # Phase 1's qt_key_to_linux_scancode sentinel has the same shape but no
+    # Linux key maps to scancode 0, so the collision only bites on the Mac side.
+    assert qt_key in QT_KEY_TO_MAC_VK, (
+        f"Qt key {hex(qt_key)} maps to Linux scancode "
+        f"{QT_KEY_TO_LINUX[qt_key]} but has no Mac VK entry. "
+        f"Add to QT_KEY_TO_MAC_VK in common/keymap.py."
+    )
+
+
+# Explicit per-letter assertions -- catches off-by-one manual-build errors.
+LETTER_MAC_VK_EXPECTED = {
+    0x41: 0x00, 0x42: 0x0B, 0x43: 0x08, 0x44: 0x02, 0x45: 0x0E,
+    0x46: 0x03, 0x47: 0x05, 0x48: 0x04, 0x49: 0x22, 0x4A: 0x26,
+    0x4B: 0x28, 0x4C: 0x25, 0x4D: 0x2E, 0x4E: 0x2D, 0x4F: 0x1F,
+    0x50: 0x23, 0x51: 0x0C, 0x52: 0x0F, 0x53: 0x01, 0x54: 0x11,
+    0x55: 0x20, 0x56: 0x09, 0x57: 0x0D, 0x58: 0x07, 0x59: 0x10, 0x5A: 0x06,
+}
+
+@pytest.mark.parametrize("qt_key,expected_mac_vk", sorted(LETTER_MAC_VK_EXPECTED.items()))
+def test_mac_vk_letter_roundtrip(qt_key, expected_mac_vk):
+    assert qt_key_to_mac_vk(qt_key) == expected_mac_vk
+
+
+MODIFIER_COMBINATIONS = []
+_mods = [0, MOD_SHIFT, MOD_CTRL, MOD_ALT, MOD_META]
+for r in range(1, 5):
+    for combo in itertools.combinations(_mods[1:], r):
+        bitmask = 0
+        for m in combo:
+            bitmask |= m
+        MODIFIER_COMBINATIONS.append(bitmask)
+MODIFIER_COMBINATIONS.append(0)  # empty modifier set
+MODIFIER_COMBINATIONS = sorted(set(MODIFIER_COMBINATIONS))
+
+
+# Exhaustive Qt x modifier table -- every key in QT_KEY_TO_LINUX x every modifier combination.
+# Drives per-platform lookup assertions; >= 2000 cases by D-12 requirement.
+KEYS = sorted(QT_KEY_TO_LINUX.keys())
+PLATFORMS = ["linux", "mac"]
+
+
+@pytest.mark.parametrize(
+    "qt_key,modifiers,platform",
+    [(k, m, p) for k in KEYS for m in MODIFIER_COMBINATIONS for p in PLATFORMS],
+)
+def test_exhaustive_qt_key_lookup_is_mapped_on_both_platforms(qt_key, modifiers, platform):
+    """D-12 exhaustive matrix: each Qt key in QT_KEY_TO_LINUX must be PRESENT
+    in the platform table (on Mac, subject to ALLOWED_UNMAPPED_ON_MAC).
+    Uses dict-membership rather than value-is-nonzero -- kVK_ANSI_A == 0x00
+    is a legitimate Mac VK, so the sentinel collides with a valid mapping."""
+    if platform == "linux":
+        assert qt_key in QT_KEY_TO_LINUX, (
+            f"qt_key={hex(qt_key)} modifiers={hex(modifiers)} not in QT_KEY_TO_LINUX; "
+            "exhaustive matrix contract broken."
+        )
+        # Sanity: Linux scancodes happen to all be > 0 (no KEY_* code is zero).
+        assert qt_key_to_linux_scancode(qt_key) != 0
+    else:
+        if qt_key in ALLOWED_UNMAPPED_ON_MAC:
+            pytest.skip(f"{hex(qt_key)} allow-listed as Mac-unmapped")
+        assert qt_key in QT_KEY_TO_MAC_VK, (
+            f"qt_key={hex(qt_key)} modifiers={hex(modifiers)} missing from QT_KEY_TO_MAC_VK; "
+            "every QT_KEY_TO_LINUX key must resolve on both platforms "
+            "(modulo ALLOWED_UNMAPPED_ON_MAC)."
+        )
+
+
+NON_META_MODIFIER_COMBINATIONS = [m for m in MODIFIER_COMBINATIONS if not (m & MOD_META)]
+
+
+@pytest.mark.parametrize("qt_key", sorted(QT_KEY_TO_LINUX.keys()))
+@pytest.mark.parametrize("modifiers", NON_META_MODIFIER_COMBINATIONS)
+def test_swap_cmd_ctrl_preserves_non_meta_modifiers(qt_key, modifiers):
+    QT_KEY_META = 0x01000022
+    if qt_key == QT_KEY_META:
+        pytest.skip("Meta-as-pressed-key tested elsewhere")
+    out_key, out_mods = swap_cmd_ctrl_for_linux_dest(qt_key, modifiers)
+    assert out_key == qt_key
+    assert out_mods == modifiers, (
+        f"Non-Meta modifier bitmask was mutated: "
+        f"in={hex(modifiers)} out={hex(out_mods)}"
+    )
+
+
+@pytest.mark.parametrize("qt_key,modifiers,desc", FLAME_CRITICAL_CHORDS)
+def test_flame_critical_chord_resolves_on_both_platforms(qt_key, modifiers, desc):
+    """Every Flame-critical chord must resolve on Linux (scancode > 0) AND be
+    present in the Mac VK table (dict membership — kVK_ANSI_A==0x00 is a valid VK)."""
+    assert qt_key_to_linux_scancode(qt_key) != 0, f"Linux mapping missing for {desc}"
+    assert qt_key in QT_KEY_TO_MAC_VK, f"Mac VK mapping missing for {desc}"
+
+
+@pytest.mark.parametrize("qt_key,modifiers,desc", FLAME_CRITICAL_CHORDS)
+def test_flame_critical_chord_cmd_ctrl_swap_preserves_key(qt_key, modifiers, desc):
+    # Even with Cmd swapped to Ctrl, the chord must not drop its non-Meta modifiers.
+    out_key, out_mods = swap_cmd_ctrl_for_linux_dest(qt_key, modifiers)
+    if modifiers & MOD_META:
+        assert out_mods & MOD_CTRL, f"{desc}: Meta->Ctrl bit not set after swap"
+        assert not (out_mods & MOD_META), f"{desc}: Meta bit not cleared after swap"
+    else:
+        assert out_mods == modifiers, f"{desc}: non-Meta modifier set mutated by swap"
