@@ -125,6 +125,11 @@ class MsgType:
     KEY_EVENT = "key_event"
     PEN_EVENT = "pen_event"
 
+    # Phase 2 additions (D-11, D-15, D-19):
+    KEY_RESET_MODIFIERS = "key_reset_modifiers"
+    TEXT_COMMIT = "text_commit"
+    PEN_PROXIMITY = "pen_proximity"
+
     # --- Handshake ---
     CLIENT_HELLO = "client_hello"
     SERVER_HELLO = "server_hello"
@@ -509,6 +514,66 @@ class PenEventMsg:
     pressed: bool = False
     hovering: bool = False
     pen_type: str = "pen"
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self))
+
+
+# Phase 2 additions (D-11, D-15, D-19) — release-all-modifiers,
+# IME commit-string passthrough, and pen-proximity re-synthesis.
+# These mirror the PenEventMsg dataclass shape (type field + to_json
+# using json.dumps(asdict(self))) established in Phase 1.
+
+
+@dataclass
+class KeyResetModifiersMsg:
+    """Client → Server: release all held modifiers on the server side (D-11).
+
+    Fired on 4 triggers: focusOutEvent / WindowDeactivate (fixes
+    "Ctrl stuck after Cmd-Tab"), ConnectionSupervisor reconnect
+    (fixes network-stall repeat-runaway), server-periodic safety
+    net (~10s belt-and-suspenders), and F9 client-side panic shortcut.
+
+    Server dispatches to InputInjector.reset_modifiers() idempotently.
+    The ``reason`` field is log-only — per threat T-02-04, the server
+    always performs the same reset regardless of reason, so nothing is
+    exploitable even if an attacker forged the field.
+    """
+    type: str = MsgType.KEY_RESET_MODIFIERS
+    reason: str = "unknown"  # "focus_out" | "reconnect" | "periodic" | "panic_f9" | "unknown"
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self))
+
+
+@dataclass
+class TextCommitMsg:
+    """Client → Server: IME / dead-key commit string passthrough (D-15).
+
+    Forwarded as Unicode text, NOT as synthesized keycodes — synthesizing
+    keycodes mangles dead-key composition across layouts. Server injects
+    via ``xdotool type`` on Linux or ``CGEventKeyboardSetUnicodeString``
+    on macOS. Covers REQ-INPUT-05 (US / UK / DE / JP layouts + IME).
+    """
+    type: str = MsgType.TEXT_COMMIT
+    text: str = ""
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self))
+
+
+@dataclass
+class PenProximityMsg:
+    """Client → Server: pen proximity re-synthesis on focusIn / showEvent (D-19).
+
+    Idempotent on the server side — PenFSM tolerates duplicate
+    proximity-enter transitions as a no-op. Fixes the "proximity event
+    eaten by lockscreen" class of bug after screen lock, minimize/restore,
+    or Cmd-Tab cycles.
+    """
+    type: str = MsgType.PEN_PROXIMITY
+    in_proximity: bool = False
+    pen_type: str = "pen"  # "pen" | "eraser"
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
