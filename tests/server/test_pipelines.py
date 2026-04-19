@@ -8,7 +8,7 @@ import asyncio
 
 import pytest
 
-from server.main import ClientSession
+from server.client_session import ClientSession
 
 
 class _FakeRuntime:
