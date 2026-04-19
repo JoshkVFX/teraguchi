@@ -95,14 +95,32 @@ class ConnectionDialog(QDialog):
         self.auto_reconnect_check.setChecked(True)
         layout.addRow(self.auto_reconnect_check)
 
-        # Phase 2 D-10 — per-bookmark Cmd<->Ctrl swap. Default ON for the
-        # Linux-server case (the v1 Flame production path). Persisted on
-        # the ConnectionProfile so the protocol layer reads the correct
-        # state per session.
+        # Phase 2 D-10 / WR-03 — destination kind picker drives the
+        # per-bookmark Cmd<->Ctrl swap default. Linux server (the v1
+        # Flame production path) gets swap=ON; Mac server gets swap=OFF
+        # so Cmd shortcuts pass through unchanged. The user can override
+        # the resulting swap state with the checkbox below before
+        # accepting the dialog.
+        self.destination_kind_combo = QComboBox()
+        self.destination_kind_combo.addItem(
+            "Linux (Rocky / Flame production)", "linux"
+        )
+        self.destination_kind_combo.addItem(
+            "Mac (macOS server)", "mac"
+        )
+        self.destination_kind_combo.currentIndexChanged.connect(
+            self._on_destination_kind_changed
+        )
+        layout.addRow("Destination:", self.destination_kind_combo)
+
         self.swap_cmd_ctrl_check = QCheckBox(
             "Swap Cmd/Ctrl for this server (Mac client → Linux Flame)"
         )
-        self.swap_cmd_ctrl_check.setChecked(True)
+        # Default follows the destination kind (Linux: ON, Mac: OFF) and
+        # tracks combobox changes via _on_destination_kind_changed below.
+        self.swap_cmd_ctrl_check.setChecked(
+            BookmarkManager.default_swap_for_destination("linux")
+        )
         layout.addRow(self.swap_cmd_ctrl_check)
 
         self.save_bookmark_check = QCheckBox("Save as bookmark")
@@ -141,6 +159,19 @@ class ConnectionDialog(QDialog):
             self.port_input.setValue(443)
             self.username_input.setPlaceholderText("(leave empty if no auth)")
 
+    def _on_destination_kind_changed(self, _index):
+        """Phase 2 WR-03: keep the swap checkbox in sync with destination
+        kind. Linux destinations default swap=ON (Cmd→Ctrl translation
+        for Flame on Rocky); Mac destinations default swap=OFF (the Mac
+        server interprets Cmd natively). The user can still flip the
+        checkbox after the combobox changes if they want a non-default
+        binding for an unusual host.
+        """
+        kind = self.destination_kind
+        self.swap_cmd_ctrl_check.setChecked(
+            BookmarkManager.default_swap_for_destination(kind)
+        )
+
     @property
     def connection_mode(self):
         return "broker" if self.mode_combo.currentIndex() == 1 else "direct"
@@ -165,6 +196,16 @@ class ConnectionDialog(QDialog):
     def swap_cmd_ctrl(self) -> bool:
         """Phase 2 D-10 — per-bookmark Cmd↔Ctrl swap toggle."""
         return self.swap_cmd_ctrl_check.isChecked()
+
+    @property
+    def destination_kind(self) -> str:
+        """Phase 2 WR-03 — chosen destination platform ('linux' or 'mac').
+        Drives the default swap_cmd_ctrl state via the combobox handler.
+        Persisted on the ConnectionProfile so the per-bookmark binding
+        survives reload.
+        """
+        data = self.destination_kind_combo.currentData()
+        return data if data in ("linux", "mac") else "linux"
 
 
 # ════════════════════════════════════════════════════
@@ -425,6 +466,9 @@ class BookmarkPanel(QWidget):
             self._mgr.add(name=name, host=dialog.host, port=dialog.port,
                           username=dialog.username, password=dialog.password,
                           use_tls=dialog.use_tls,
+                          # Phase 2 WR-03 — persist destination kind so
+                          # the swap default is honored on reload.
+                          destination_kind=dialog.destination_kind,
                           # Phase 2 D-10 — persist Cmd<->Ctrl swap state.
                           swap_cmd_ctrl=dialog.swap_cmd_ctrl)
             self._refresh()
@@ -443,13 +487,22 @@ class BookmarkPanel(QWidget):
         dialog.username_input.setText(profile.username)
         dialog.password_input.setText(self._mgr.get_password(bid))
         dialog.tls_check.setChecked(profile.use_tls)
+        # Phase 2 WR-03 — restore destination kind FIRST so its
+        # currentIndexChanged handler doesn't clobber the saved
+        # swap_cmd_ctrl state we set immediately below.
+        kind = getattr(profile, "destination_kind", "linux") or "linux"
+        idx = dialog.destination_kind_combo.findData(kind)
+        if idx >= 0:
+            dialog.destination_kind_combo.setCurrentIndex(idx)
         # Phase 2 D-10 — reflect existing per-bookmark swap state.
+        # (Set AFTER the combobox so we override its default-swap callback.)
         dialog.swap_cmd_ctrl_check.setChecked(profile.swap_cmd_ctrl)
         if dialog.exec() == QDialog.Accepted:
             self._mgr.update(bid, name=dialog.bookmark_name or profile.name,
                              host=dialog.host, port=dialog.port,
                              username=dialog.username, password=dialog.password,
                              use_tls=dialog.use_tls,
+                             destination_kind=dialog.destination_kind,
                              swap_cmd_ctrl=dialog.swap_cmd_ctrl)
             self._refresh()
 
