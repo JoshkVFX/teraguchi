@@ -8,8 +8,8 @@ progress:
   total_phases: 7
   completed_phases: 0
   total_plans: 17
-  completed_plans: 12
-  percent: 70
+  completed_plans: 17
+  percent: 100
 ---
 
 # Teraguchi — Project State
@@ -36,14 +36,14 @@ progress:
 
 ## Current Position
 
-Phase: 1 (stability-ci-test-baseline) — EXECUTING
-Plan: 12 of 17 complete; Waves 1-7 done
+Phase: 1 (stability-ci-test-baseline) — ALL PLANS COMPLETE · AWAITING VERIFICATION
+Plan: 17 of 17 complete; all 10 waves done
 | Field | Value |
 |-------|-------|
 | Milestone | v1.0 |
-| Current phase | Phase 1 — Stability + CI + Test Baseline (Waves 1-7 complete) |
-| Current plan | 01-13 / 01-14 / 01-15 next (pipeline queue audit + per-stage telemetry + diagnostic bundle) — Wave 8 |
-| Status | Wave 7 merged to dev (f57e5fa); 185 pass + 1 xfail; D-11 server split complete (main 1299→540); D-12 client split complete (main 1189→43); ConnectionSupervisor (STAB-08) installed |
+| Current phase | Phase 1 — Stability + CI + Test Baseline (all 17 plans merged) |
+| Current plan | Phase verification next |
+| Status | All 10 waves merged to dev (b1bbc45); 229 non-smoke pass + 1 xfail; smoke harness green @ 30s synthetic. Ready for gsd-verifier goal-backward check. |
 | Phases complete | 0 / 7 |
 | Requirements mapped | 108 / 108 (100% coverage) |
 | Resume file | `.planning/phases/01-stability-ci-test-baseline/01-CONTEXT.md` |
