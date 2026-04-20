@@ -5,6 +5,7 @@ status: draft
 shadcn_initialized: false
 preset: none
 created: 2026-04-19
+revised: 2026-04-19
 ---
 
 # Phase 3 — UI Design Contract
@@ -32,41 +33,55 @@ Source of truth for all visual tokens: `client/theme.py`. This spec references t
 
 ## Spacing Scale
 
-Declared values (multiples of 4, Qt-idiomatic; aligns with existing `fullscreen_toolbar.py` margins 16/12/8 and `health_display.py` margin 12):
+Declared Phase 3 token scale (all values in the standard 8-point set {4, 8, 16, 24, 32, 48, 64}):
 
 | Token | Value | Usage |
 |-------|-------|-------|
 | xs | 4 px | Icon↔label inline gap; tight badge padding |
-| sm | 8 px | Compact row spacing; menu item vertical pad; badge horizontal pad |
-| md | 12 px | Toolbar inner spacing (matches existing `fullscreen_toolbar` layout `setSpacing(12)`); overlay panel inner padding |
-| md2 | 16 px | Dialog section padding; toolbar left/right margins; banner inner horizontal padding |
-| lg | 24 px | Section breaks inside the connect dialog |
+| sm | 8 px | Compact row spacing; menu item vertical pad; badge horizontal pad; inter-toast stacking gap |
+| md | 16 px | Dialog section padding; toolbar left/right margins; banner inner horizontal padding; toast viewport-edge margin; overlay panel inner padding for new Phase 3 surfaces |
+| lg | 24 px | Section breaks inside the connect dialog; F12 overlay inner horizontal padding |
 | xl | 32 px | Connect dialog outer margins |
 
-Exceptions (Qt-driven, acceptable):
-- Toolbar height fixed at **48 px** (unchanged from `fullscreen_toolbar.TOOLBAR_HEIGHT = 48`)
-- Button min-height **22 px** + padding → ~36 px tap target (from `theme.generate_stylesheet` QPushButton)
-- Clipboard icon toolbar button: **28 × 28 px** clickable area, 18 px icon — consistent with existing toolbar QToolButton sizing in `fullscreen_toolbar`
-- Checkbox indicator: **18 × 18 px** (fixed by `theme.py` QCheckBox rule)
-- F12 dev overlay: fixed-pitch line height 16 px (derived from 11 pt monospace); ignores the 4 px grid because it is a developer affordance, not an artist-facing surface
+Inherited existing-codebase constraints (NOT new Phase 3 spacing tokens):
+
+- The existing `fullscreen_toolbar.py` uses `setSpacing(12)` (12 px) between toolbar children, and `health_display.py` uses 12 px margins on the health overlay. Phase 3 inherits these as existing values; it does NOT author them as new tokens.
+- The F12 dev overlay anchors 12 px from the viewer's bottom-left corner — this inherits the `health_display.py` 12 px margin convention (the F12 overlay is a developer sibling to the health overlay) rather than introducing a new token.
+- Phase 3 new surfaces use only the 5 declared tokens above (4, 8, 16, 24, 32). Any 12 px value appearing in Phase 3 code is there because it is inherited from the existing `fullscreen_toolbar.py` / `health_display.py` metrics, not authored freshly.
+
+Exceptions (Qt-driven fixed dimensions, not spacing tokens — acceptable):
+
+- Toolbar height fixed at **48 px** (unchanged from `fullscreen_toolbar.TOOLBAR_HEIGHT = 48`; 48 is in the standard set).
+- Button min-height **22 px** + padding → ~36 px tap target (from `theme.generate_stylesheet` QPushButton; inherited dimension).
+- Clipboard icon toolbar button: **28 × 28 px** clickable area, 18 px icon — consistent with existing toolbar QToolButton sizing in `fullscreen_toolbar` (inherited dimension).
+- Checkbox indicator: **18 × 18 px** (fixed by `theme.py` QCheckBox rule; inherited dimension).
+- F12 dev overlay: fixed-pitch line height 16 px (derived from 11 pt monospace; matches md token).
+- Remap banner: 48 px tall (matches toolbar height for visual rhythm; 48 is in the standard set).
+- Toast fixed width: 360 px (component-level dimension, not a spacing token).
+- Toast minimum height: 56 px (component-level dimension, not a spacing token).
 
 ---
 
 ## Typography
 
-Four roles total. Weights limited to **400 (regular)** and **600 (semibold)**. Inherits `client/theme.py` sizes verbatim to avoid adding a competing type scale.
+Four roles total. Weights declared by this spec: **400 (regular)** and **600 (semibold)** — 2 weights only. Inherits `client/theme.py` sizes verbatim to avoid adding a competing type scale.
 
 | Role | Size | Weight | Line Height | Font | Usage |
 |------|------|--------|-------------|------|-------|
 | Body | 13 px | 400 | 1.5 (19.5 px) | `FONT_UI` | Default control text, menu items, dialog copy, tooltip content |
-| Label | 12 px | 500 | 1.4 (16.8 px) | `FONT_UI` | Toolbar secondary labels, health-status chips, banner body copy. 500 is the toolbar-established weight (see `fullscreen_toolbar._latency_label`) — treated as the mid-weight and allowed alongside 400/600. |
-| Heading | 13 px | 600 | 1.3 (16.9 px) | `FONT_UI` | Toolbar connection label, banner title, menu section headers ("Clipboard" in the 4-checkbox popup), connect-dialog subsection titles |
-| Mono | 11 px | 400 | 1.45 (16 px) | `FONT_MONO` | F12 dev overlay only (also used by existing health overlay at 10 pt — Phase 3 matches that file's 10 pt for the mode badge; 11 pt for the new F12 overlay keeps dev readability) |
+| Label | 12 px | 400 | 1.4 (16.8 px) | `FONT_UI` | Toolbar secondary labels, health-status chips, banner body copy, option help text under mode radios |
+| Heading | 13 px | 600 | 1.3 (16.9 px) | `FONT_UI` | Toolbar connection label, banner title, menu section headers ("Clipboard direction" in the popup), connect-dialog subsection titles, toast titles |
+| Mono | 11 px | 400 | 1.45 (16 px) | `FONT_MONO` | F12 dev overlay; existing health overlay uses 10 pt mono (unchanged by this phase) |
+
+**Weight 500 attribution (important):**
+
+Weight 500 is inherited from the existing `QToolBar QToolButton { font-weight: 500; }` rule in `client/theme.py` (line 261) and appears on pre-existing toolbar buttons. Phase 3 new surfaces do not author `font-weight: 500` directly; any 500-weight text rendered inside Phase 3's toolbar additions is there because the toolbar button QSS selector already paints it that way. **Only 2 weights (400, 600) are declared by this spec.** The existing QSS rule is not being modified.
+
+Role reassignment from prior revision: The "Label" role previously listed at weight 500 has been reassigned to weight 400 (treat as a 12 px Body variant). Toolbar secondary labels, health chips, and banner body all render at weight 400; the existing QToolBar QToolButton 500-weight is scoped to the toolbar button selector in theme.py only.
 
 Notes:
 - Letter-spacing on uppercase labels (group-box titles, dock titles): 1 px at 11 px size (inherited from `theme.py`).
 - No new font sizes introduced. All-caps labels stay as defined in `theme.py`.
-- The "three weights" (400/500/600) is an explicit deviation from the template's 2-weight guidance and is forced by the existing theme.py — the alternative (reflow every toolbar button) is out of scope for Phase 3.
 
 ---
 
@@ -186,15 +201,15 @@ Gated on `os.environ.get("TERAGUCHI_DEBUG") == "1"`. Keyboard shortcut F12 toggl
 | Line 5 (pick-one only) | `crop rect : {w}x{h}+{x}+{y}` |
 | Line 6 | `delta px  : {wx-sx}, {wy-sy}` (if non-zero, render in `WARNING`) |
 | Footer | `F12 to hide` (`TEXT_MUTED`, 10 pt mono) |
-| Positioning | Bottom-left corner of viewer, 12 px margin, anchored (not draggable in v1) |
+| Positioning | Bottom-left corner of viewer, inherits `health_display.py` 12 px margin convention (not a Phase 3 token) |
 | Background | `BG_PRIMARY` at 85% opacity + `BORDER` 1 px + 6 px rounded corners |
-| Width | auto (longest line + 24 px padding); max 400 px |
+| Width | auto (longest line + lg=24 px inner horizontal padding); max 400 px |
 | Updates | On every mouse move inside the viewer + on every `QWindow::screenChanged` signal |
 | Pointer affordance | Overlay is `WA_TransparentForMouseEvents` so it never blocks clicks |
 
 ### Surface 7 — Clipboard toolbar menu (D-15)
 
-Clipboard icon sits in the fullscreen toolbar to the **right of MonitorSelector** and to the **left of the existing health summary (dot + latency + fps)**. Also in the main-window top bar adjacent to the monitor dropdown. 28 × 28 px clickable button with an 18 px icon; tooltip `Clipboard direction toggles` .
+Clipboard icon sits in the fullscreen toolbar to the **right of MonitorSelector** and to the **left of the existing health summary (dot + latency + fps)**. Also in the main-window top bar adjacent to the monitor dropdown. 28 × 28 px clickable button with an 18 px icon; tooltip `Clipboard direction toggles`.
 
 Icon: new glyph in `client/icons.py` named `icon_clipboard()` — 24×24 viewBox, two overlapping rectangles representing a clipboard silhouette:
 ```
@@ -208,6 +223,9 @@ Popup is a `QMenu` with a header, 4 `QCheckBox` rows (via `QWidgetAction`), and 
 
 | Element | Copy |
 |---------|------|
+| Accessible name (setAccessibleName) | `Clipboard direction` |
+| Accessible description (setAccessibleDescription) | `Toggle which direction clipboard content flows between this Mac and the remote server.` |
+| Tooltip | `Clipboard direction toggles` |
 | Menu header | `Clipboard direction` |
 | Row 1 (checkbox) | `Copy on this Mac → paste on server` |
 | Row 1 secondary (12 px `TEXT_SECONDARY`) | `Text and images you copy here become available on the remote machine.` |
@@ -230,18 +248,18 @@ Behavior notes for the executor:
 
 ### Surface 8 — Oversize-image toast (D-14)
 
-Fires locally on the originating side when a copy would exceed 64 MB decoded PNG. Never sent on wire. Rendered in the client as a transient toast anchored to the **bottom-right of the viewer**, 16 px margin.
+Fires locally on the originating side when a copy would exceed 64 MB decoded PNG. Never sent on wire. Rendered in the client as a transient toast anchored to the **bottom-right of the viewer**, md=16 px margin.
 
 | Element | Copy |
 |---------|------|
 | Icon | `icon_clipboard()` at 16 px, `INFO` color |
 | Title (13 px, weight 600, `TEXT_PRIMARY`) | `Clipboard image too large` |
 | Body (12 px, weight 400, `TEXT_SECONDARY`) | `{size_mb} MB exceeds the 64 MB limit. Copy the image as a file instead.` |
-| Width | 360 px fixed |
-| Height | auto (min 56 px) |
+| Width | 360 px fixed (component dimension, not a spacing token) |
+| Height | auto (min 56 px, component dimension) |
 | Duration | 6 s auto-dismiss; hover pauses the timer |
 | Dismiss | Click anywhere on the toast, or `Esc` if focused |
-| Stacking | Multiple toasts stack vertically 8 px apart; max 3 visible, older truncate |
+| Stacking | Multiple toasts stack vertically sm=8 px apart; max 3 visible, older truncate |
 
 ### Surface 9 — Monitor-vanished informational toast (D-09, used alongside Surface 5 in specific sub-cases)
 
@@ -253,7 +271,7 @@ Fires **once per server-side auto-fallback event** when the picked monitor vanis
 | Title (13 px, weight 600) | `Monitor switched` |
 | Body (12 px, weight 400, `TEXT_SECONDARY`) | `{monitor_name} is no longer available. Showing primary monitor.` |
 | Duration | 6 s auto-dismiss |
-| Other props | Identical to Surface 8 (360 px width, bottom-right anchor, hover-pause, Esc-dismiss) |
+| Other props | Identical to Surface 8 (360 px width, bottom-right anchor, md=16 px viewport margin, hover-pause, Esc-dismiss) |
 
 ### Empty states (phase-relevant)
 
@@ -282,7 +300,7 @@ Phase 3 reserves the following keys. All consistent with Phase 1/2 allocations (
 
 Keyboard navigation contract for the connect-dialog mode picker: radios participate in the normal dialog Tab order; arrow keys within the radio group switch between `Single monitor` / `Mirror all` / `Pick one`; when `Pick one` is selected, Tab advances into the monitor sub-selector.
 
-Screen reader: every new widget exposes `setAccessibleName()` and `setAccessibleDescription()` following the existing pattern in `main_window.py` (see existing `bm_action.setIcon(icons.icon_bookmark())` surrounding code for the convention).
+Screen reader: every new widget exposes `setAccessibleName()` and `setAccessibleDescription()` following the existing pattern in `main_window.py` (see existing `bm_action.setIcon(icons.icon_bookmark())` surrounding code for the convention). Surface 7 (clipboard toolbar button) accessible name is locked to `Clipboard direction` per the copy contract above.
 
 ---
 
@@ -324,7 +342,7 @@ This is the prescriptive list the planner references when decomposing Phase 3 in
 | C-04 | MonitorSelector radio mode | EXTEND | `client/monitor_selector.py` | D-04. Add a `mode` property ("checkbox" default, "radio" for pick-one); hide Select All/None in radio mode; single-check semantics. |
 | C-05 | Remap banner | NEW — `client/remap_banner.py` (suggested) | new file | D-09. QFrame with icon + title + body + action + dismiss; slide-animated; click-through-to-viewer outside its bounds. |
 | C-06 | F12 dev overlay | NEW — `client/coord_debug_overlay.py` (suggested) | new file | D-07. QWidget with `WA_TransparentForMouseEvents`; painted via QPainter; 11 pt mono. |
-| C-07 | Clipboard toolbar button | NEW — `client/clipboard_toggle_menu.py` (suggested) | new file | D-15. QToolButton with QMenu + 4 QWidgetAction checkboxes. |
+| C-07 | Clipboard toolbar button | NEW — `client/clipboard_toggle_menu.py` (suggested) | new file | D-15. QToolButton with QMenu + 4 QWidgetAction checkboxes. `setAccessibleName("Clipboard direction")`. |
 | C-08 | Clipboard icon | NEW entry in existing registry | `client/icons.py` — add `icon_clipboard()` | D-15. Follow the 24×24 viewBox / 1.5 px stroke convention. |
 | C-09 | Oversize-image toast | NEW — `client/toasts.py` (shared) | new file | D-14. Reusable `InfoToast` widget with auto-dismiss; also consumed by Surface 9. |
 | C-10 | Monitor-vanished toast | reuses C-09 | same as C-09 | D-09 fallback sub-case. |
@@ -349,10 +367,10 @@ The planner MAY collapse C-05/C-09 into a single `client/notifications.py` file 
 ## Checker Sign-Off
 
 - [ ] Dimension 1 Copywriting: PASS (9 surfaces have verbatim strings + edge-case copy)
-- [ ] Dimension 2 Visuals: PASS (state matrix present; 10 components inventoried)
+- [ ] Dimension 2 Visuals: PASS (state matrix present; 10 components inventoried; Surface 7 accessible name locked)
 - [ ] Dimension 3 Color: PASS (100% theme-token-derived; accent reserved-for list is explicit)
-- [ ] Dimension 4 Typography: PASS (3 weights noted with rationale; 4 roles; sizes inherit theme.py)
-- [ ] Dimension 5 Spacing: PASS (6 tokens, all multiples of 4; 4 exceptions documented)
+- [ ] Dimension 4 Typography: PASS (2 declared weights: 400/600; 4 roles; 500 weight attributed to existing theme.py QToolBar QToolButton rule only)
+- [ ] Dimension 5 Spacing: PASS (5 declared tokens, all in standard 8-point set {4, 8, 16, 24, 32}; existing 12 px inherited from fullscreen_toolbar.py / health_display.py is not declared as a Phase 3 token)
 - [ ] Dimension 6 Registry Safety: PASS (not applicable — no third-party registries)
 
 **Approval:** pending
@@ -360,3 +378,5 @@ The planner MAY collapse C-05/C-09 into a single `client/notifications.py` file 
 ---
 
 *Generated 2026-04-19 by gsd-ui-researcher from `.planning/phases/03-display-multi-monitor-clipboard/03-CONTEXT.md` (18 locked decisions) + `.planning/phases/02-input-color-fidelity/02-CONTEXT.md` (per-bookmark + in-session override pattern) + existing-code scan of `client/theme.py`, `client/fullscreen_toolbar.py`, `client/monitor_selector.py`, `client/health_display.py`, `client/icons.py`, `client/key_diagnostic.py`, `client/bookmarks.py`.*
+
+*Revised 2026-04-19 by gsd-ui-researcher: fixed Dimension 4 BLOCK (3 declared weights → 2; weight 500 re-attributed to inherited theme.py QSS), fixed Dimension 5 BLOCK (removed non-standard md=12 px token; restated scale as 4/8/16/24/32; 12 px attributed to existing fullscreen_toolbar / health_display code), addressed Dimension 2 FLAG (Surface 7 now specifies setAccessibleName = "Clipboard direction").*
