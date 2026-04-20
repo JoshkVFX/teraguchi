@@ -767,37 +767,37 @@ For the 10-bit P010 path (NvFBC YUV420P10LE on Linux, VTCompressionSession on Ma
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Should `SessionConfigureMsg` be a new message or a `ClientHelloMsg` extension?**
    - What we know: D-02 says "extended `ClientHelloMsg` or a new SESSION_CONFIGURE message (planner decides shape)".
    - What's unclear: ClientHello is fired once at connect; if we ever want to support reconnect-with-different-mode (v1.1), `SessionConfigureMsg` is the cleaner shape. But adding a new message to v1 raises the protocol surface.
-   - Recommendation: Extend `ClientHelloMsg` for v1 (simpler, smaller surface). Convert to a separate `SessionConfigureMsg` in v1.1 only if reconnect-with-mode-change is requested.
+   - RESOLVED: Extend `ClientHelloMsg` for v1 (simpler, smaller surface). Convert to a separate `SessionConfigureMsg` in v1.1 only if reconnect-with-mode-change is requested.
 
 2. **CRLF preservation guarantee on macOS clipboard.**
    - What we know: D-16 says "preserve native CRLF/LF/CR; never silently transform".
    - What's unclear: NSPasteboard's `setString_forType_` may itself normalize line endings. PIL Pillow likely does too on read.
-   - Recommendation: Use raw byte set/get on the pasteboard side (`setData_forType_` with NSData + NSPasteboardTypeString), not the high-level `setString_forType_`. Add a fixture that round-trips a known CRLF/LF/CR mix.
+   - RESOLVED: Use raw byte set/get on the pasteboard side (`setData_forType_` with NSData + NSPasteboardTypeString), not the high-level `setString_forType_`. Add a fixture that round-trips a known CRLF/LF/CR mix.
 
 3. **Should the F12 overlay show a "Wave 2 spike pass" indicator?**
    - What we know: D-08 captures the corner-click result in `docs/release.md`.
    - What's unclear: It might be useful for the dev overlay to show a per-corner pass/fail state during the spike.
-   - Recommendation: Out of scope for v1 — the spike is a one-time gate, not an ongoing measurement. F12 overlay shows live coord state only.
+   - RESOLVED: Out of scope for v1 — the spike is a one-time gate, not an ongoing measurement. F12 overlay shows live coord state only.
 
 4. **macOS chunked clipboard receive: how do we surface a stalled assembly to the user?**
    - What we know: D-17 says clipboard chunks get their own queue slot; CHUNK_TIMEOUT_S = 30s drops incomplete sequences.
    - What's unclear: Should the user see a "clipboard image transfer failed" toast?
-   - Recommendation: structlog warning + silent drop for v1. Add toast surfacing if user reports surface-able.
+   - RESOLVED: structlog warning + silent drop for v1. Add toast surfacing if user reports surface-able.
 
 5. **Does the GPU crop path (D-02) need to be CPU NumPy slice or actual GPU shader?**
    - What we know: D-02 calls it "GPU crop" but the codebase is Python NumPy + FFmpeg subprocess.
    - What's unclear: At 4K @ 60fps, NumPy slice + .tobytes() is ~2-4 ms. Acceptable budget?
-   - Recommendation: Start with NumPy slice (Pattern 1). If D-18 latency gate fails, consider passing crop to FFmpeg via `-vf crop=W:H:X:Y` filter inside the existing subprocess (avoids a Python-side copy entirely).
+   - RESOLVED: Start with NumPy slice (Pattern 1). If D-18 latency gate fails, consider passing crop to FFmpeg via `-vf crop=W:H:X:Y` filter inside the existing subprocess (avoids a Python-side copy entirely).
 
 6. **What should happen if pick-one's bookmarked monitor exists by ID but a different monitor now has that name?**
    - What we know: D-04 says "fall back to primary if neither id nor name matches".
    - What's unclear: ID matches but name doesn't (rare; name-by-position changed but ID is stable). Trust ID or trust name?
-   - Recommendation: ID first (more stable); log a warning if names diverge so we can detect environment drift.
+   - RESOLVED: ID first (more stable); log a warning if names diverge so we can detect environment drift.
 
 ---
 
