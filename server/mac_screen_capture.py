@@ -212,6 +212,46 @@ if _HAS_SCK:
                 logger.error("SCK frame handler error: %s", e, exc_info=True)
 
 
+    class _DisplayChangeDelegate(NSObject):
+        """Phase 3 D-11 — push callback for display configuration changes.
+
+        Subscribes via ``NSWorkspace.didChangeScreenParametersNotification``
+        (the canonical pattern per Apple ScreenCaptureKit programming
+        guide; ``SCStreamDelegate`` proper does not expose a screen-list
+        change selector). Sets ``_hotplug_pending = True`` on the
+        capture under ``_lock`` so ``MonitorHotplug.run()`` picks it up
+        on the next iteration without waiting for the 1s poll.
+
+        Every callback is wrapped in try/except — exceptions MUST NOT
+        cross back into Objective-C or the dispatch queue crashes
+        (mirrors ``_StreamOutputHandler.stream_didOutputSampleBuffer_ofType_``
+        discipline at L212).
+        """
+
+        def initWithCapture_(self, capture):
+            self = objc.super(_DisplayChangeDelegate, self).init()
+            if self is None:
+                return None
+            self._capture = capture
+            return self
+
+        # objc selector: screenParametersChanged:
+        def screenParametersChanged_(self, notification):
+            try:
+                lock = getattr(self._capture, "_lock", None)
+                if lock is None:
+                    return
+                with lock:
+                    self._capture._hotplug_pending = True
+                logger.info("SCK display change pushed via NSWorkspace")
+            except Exception as e:
+                # Never let an exception cross back into Objective-C —
+                # mirrors the _StreamOutputHandler discipline.
+                logger.error(
+                    "SCK display-change handler error: %s", e, exc_info=True,
+                )
+
+
 class MacScreenCapture:
     """macOS screen capture using ScreenCaptureKit.
 
@@ -259,6 +299,17 @@ class MacScreenCapture:
         self._stream: Optional[SCStream] = None
         self._handler: Optional[_StreamOutputHandler] = None
 
+        # Phase 3 D-11 — push-based hot-plug flag. The
+        # _DisplayChangeDelegate sets this under _lock when NSWorkspace
+        # fires didChangeScreenParametersNotification; the
+        # MonitorHotplug async poll in server/monitor_hotplug.py checks
+        # the flag on every 1s tick so the handler runs before the 1s
+        # poll's detect_hotplug re-enumeration. Poll stays as safety net
+        # per D-11 (covers sleep/wake transitions where runloop is
+        # suspended and the notification may be missed).
+        self._hotplug_pending: bool = False
+        self._display_observer = None
+
         # Width/height are set by _select_display once we know the
         # target display's pixel size.
         self.width = 0
@@ -267,6 +318,38 @@ class MacScreenCapture:
         self._enumerate_displays()
         self._select_display(monitor_index)
         self._start_stream()
+
+        # Phase 3 D-11 — install the NSWorkspace observer after the
+        # stream is up so we never miss an early configuration change
+        # during SCK boot. Gated inside try/except because the
+        # observer install isn't load-bearing for capture; losing the
+        # push signal just means the 1s poll picks up change
+        # eventually (poll is the safety net per D-11).
+        try:
+            from AppKit import (
+                NSWorkspace,
+                NSWorkspaceDidChangeScreenParametersNotification,
+            )
+            self._display_observer = _DisplayChangeDelegate.alloc().initWithCapture_(self)
+            nc = NSWorkspace.sharedWorkspace().notificationCenter()
+            # The selector on the Obj-C side is "screenParametersChanged:";
+            # PyObjC maps that to our Python method
+            # ``_DisplayChangeDelegate.screenParametersChanged_`` at
+            # L239. Passing the Obj-C form here is the canonical
+            # pattern for addObserver:selector:name:object:.
+            nc.addObserver_selector_name_object_(
+                self._display_observer,
+                "screenParametersChanged:",
+                NSWorkspaceDidChangeScreenParametersNotification,
+                None,
+            )
+            logger.info("SCK display-change observer installed")
+        except Exception as e:
+            logger.warning(
+                "Failed to install SCK display-change observer: %s "
+                "— falling back to poll-only (1s cadence).", e,
+            )
+            self._display_observer = None
 
         logger.info(
             "MacScreenCapture initialized: %dx%d via SCK (display %d, %d fps)",
@@ -566,11 +649,48 @@ class MacScreenCapture:
         return out
 
     def detect_hotplug(self) -> bool:
-        """Check if SCK reports a different number/size of displays."""
+        """Check if SCK reports a different display configuration.
+
+        Phase 3 D-11 — full ``(displayID, width, height, x, y)`` tuple
+        signature per display catches reorder + same-size swap +
+        reposition that today's shallow count+WxH check silently missed
+        (Pitfall 4: SCK delivers stale frame-size after Retina rebuild
+        at the same WxH; encoder feeds wrong-sized buffer and produces
+        corrupt H.265). Mirrors the Linux D-09 upgrade in
+        ``server/screen_capture.py::ScreenCapture.detect_hotplug``.
+        """
         try:
-            old_sig = [(int(d.width()), int(d.height())) for d in self._displays]
+            old_sig = []
+            for d in self._displays:
+                try:
+                    disp_id = int(d.displayID())
+                except Exception:
+                    disp_id = 0
+                try:
+                    frame = d.frame()
+                    ox = int(frame.origin.x)
+                    oy = int(frame.origin.y)
+                except Exception:
+                    ox, oy = 0, 0
+                old_sig.append((
+                    disp_id, int(d.width()), int(d.height()), ox, oy,
+                ))
             self._enumerate_displays()
-            new_sig = [(int(d.width()), int(d.height())) for d in self._displays]
+            new_sig = []
+            for d in self._displays:
+                try:
+                    disp_id = int(d.displayID())
+                except Exception:
+                    disp_id = 0
+                try:
+                    frame = d.frame()
+                    ox = int(frame.origin.x)
+                    oy = int(frame.origin.y)
+                except Exception:
+                    ox, oy = 0, 0
+                new_sig.append((
+                    disp_id, int(d.width()), int(d.height()), ox, oy,
+                ))
             if old_sig != new_sig:
                 logger.info("Display hotplug detected: %s -> %s",
                             old_sig, new_sig)
@@ -785,6 +905,21 @@ class MacScreenCapture:
             "MacScreenCapture.close (frames delivered: %d)", self._frame_count
         )
         self._stop_stream()
+        # Phase 3 D-11 — remove the NSWorkspace display-change observer
+        # before tearing down the displays list so the delegate never
+        # fires on a half-destroyed capture. Best-effort; losing the
+        # unregister is not fatal (observer is weak-ref from AppKit
+        # side on macOS 10.11+).
+        if getattr(self, "_display_observer", None) is not None:
+            try:
+                from AppKit import NSWorkspace
+                nc = NSWorkspace.sharedWorkspace().notificationCenter()
+                nc.removeObserver_(self._display_observer)
+            except Exception as e:
+                logger.debug(
+                    "SCK display-change observer unregister failed: %s", e,
+                )
+            self._display_observer = None
         self._displays = []
         self._selected_display = None
         with self._lock:
