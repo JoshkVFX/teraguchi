@@ -42,7 +42,7 @@ import os
 import subprocess
 import threading
 import time
-from typing import TYPE_CHECKING, Dict, Optional
+from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
 from websockets.server import WebSocketServerProtocol
 
@@ -552,6 +552,201 @@ class SessionRuntime:
                 asyncio.run_coroutine_threadsafe(
                     cs.enqueue(msg_json), self._event_loop)
 
+    # ── Capture-mode plumbing (Phase 3 D-02 / D-09) ──────────
+
+    # Allowed capture modes — T-03-09 STRIDE mitigation: unknown strings
+    # are rejected and silently reset to mirror_all (preserves pre-Phase-3
+    # always-full-virtual-desktop behavior; structlog warning records the
+    # attempt for forensic review).
+    _CAPTURE_MODES = ("single", "mirror_all", "pick_one")
+
+    def apply_capture_mode(
+        self,
+        session: "ClientSession",
+        mode: str,
+        picked_id: int,
+        picked_name: str,
+    ) -> bool:
+        """Phase 3 D-02 — set the per-session capture crop based on mode.
+
+        Args:
+            session: ClientSession-like object with per-session
+                ``capture_mode`` / ``picked_monitor_id`` /
+                ``picked_monitor_name`` / ``crop_rect`` /
+                ``capture_mode_degraded`` attributes.
+            mode: One of ``single``, ``mirror_all``, ``pick_one``. Any
+                other value is treated as mirror_all (T-03-09 mitigation).
+            picked_id: Monitor id from client's ClientHelloMsg, or -1.
+                Preferred over ``picked_name`` when both are supplied
+                (D-04 belt+suspenders: id wins, name fallback).
+            picked_name: Monitor name fallback; used when ``picked_id``
+                is -1 or not present in the current monitor list.
+
+        Returns:
+            True if the requested mode was honored as-asked;
+            False if it was degraded (e.g. pick_one monitor missing →
+            fell back to primary). Plan 05 wires the client-side toast
+            off the degraded=True signal.
+
+        Capture path: this method sets ``session.crop_rect``; the stream
+        loop's ``capture_raw_bgra_with_crop`` wrap reads it on each frame
+        via the single shared ``runtime.capture``. v1 ships single-
+        session-per-host for cropped paths — if two authenticated
+        sessions race to set differing crops, the LATEST
+        apply_capture_mode wins (single-session reality means this is a
+        no-op in practice). Forensic signal per v1.1 backlog is logged
+        via session.multi_session_crop_collision below.
+        """
+        if mode not in self._CAPTURE_MODES:
+            logger.warning(
+                "session.invalid_capture_mode mode=%r → mirror_all", mode,
+            )
+            mode = "mirror_all"
+        session.capture_mode = mode
+        session.capture_mode_degraded = False
+
+        if mode == "mirror_all":
+            # Full-virtual-desktop pass-through; preserves Phase 2
+            # 9-checkpoint 10-bit fixture byte-equality.
+            session.crop_rect = None
+            session.picked_monitor_id = -1
+            session.picked_monitor_name = ""
+            self._warn_if_multi_session_crop_collision(session)
+            logger.info(
+                "session.capture_mode_applied mode=%s crop_rect=%s degraded=%s",
+                mode, session.crop_rect, session.capture_mode_degraded,
+            )
+            return True
+
+        if not self.capture:
+            # Capture not initialized yet (unit test path). Record the
+            # intent; the stream loop will use crop=None until the
+            # capture is wired up.
+            session.crop_rect = None
+            return True
+
+        try:
+            monitors = list(self.capture.list_monitors())
+        except Exception as e:
+            logger.warning(
+                "session.list_monitors_failed mode=%s err=%s", mode, e,
+            )
+            session.crop_rect = None
+            return False
+
+        # Skip virtual-desktop entry (id=0 per screen_capture.py L393).
+        non_virtual = [m for m in monitors if m.id != 0]
+        if not non_virtual:
+            logger.warning(
+                "session.no_monitors_for_capture_mode mode=%s", mode,
+            )
+            session.crop_rect = None
+            session.capture_mode_degraded = True
+            return False
+
+        def _primary() -> Optional[object]:
+            for m in non_virtual:
+                if getattr(m, "primary", False):
+                    return m
+            return non_virtual[0]
+
+        target = None
+        # D-04 belt+suspenders: id wins, name fallback. Only consult
+        # picked_id if it's a real (non-sentinel) value.
+        if picked_id is not None and picked_id >= 0:
+            for m in non_virtual:
+                if m.id == picked_id:
+                    target = m
+                    break
+        if target is None and picked_name:
+            for m in non_virtual:
+                if m.name == picked_name:
+                    target = m
+                    break
+
+        if mode == "single":
+            # "Single monitor" means one monitor, defaulting to primary
+            # if no id/name provided (D-01 semantics).
+            if target is None:
+                target = _primary()
+        elif mode == "pick_one":
+            # pick_one with missing id → fall back to primary + flag degraded
+            # (D-09 foundation; Plan 05 wires the client-side toast).
+            if target is None:
+                target = _primary()
+                session.capture_mode_degraded = True
+                logger.warning(
+                    "session.capture_mode_degraded mode=%s requested_id=%d "
+                    "requested_name=%r → primary=%s",
+                    mode, int(picked_id), picked_name,
+                    getattr(target, "name", "<none>"),
+                )
+
+        if target is None:
+            session.crop_rect = None
+            session.capture_mode_degraded = True
+            return False
+
+        session.crop_rect = (
+            int(target.x), int(target.y),
+            int(target.width), int(target.height),
+        )
+        session.picked_monitor_id = int(target.id)
+        session.picked_monitor_name = str(target.name)
+        self._warn_if_multi_session_crop_collision(session)
+        logger.info(
+            "session.capture_mode_applied mode=%s crop_rect=%s degraded=%s",
+            mode, session.crop_rect, session.capture_mode_degraded,
+        )
+        return not session.capture_mode_degraded
+
+    def _warn_if_multi_session_crop_collision(
+        self, applying_session: "ClientSession",
+    ) -> None:
+        """W-5 forensic guard — log when two authenticated sessions
+        diverge on ``crop_rect``.
+
+        v1 is single-session-per-host for cropped paths (see
+        docs/release.md "Multi-session crop per host (v1.1 follow-up)").
+        The single shared ``runtime.capture`` instance reads
+        ``client_session.crop_rect`` from the one authenticated session;
+        a second concurrent session with a different capture_mode sees
+        the first session's crop until v1.1 wires the per-session
+        encode wrap. Existing PAM per-user X session isolation on Linux
+        prevents cross-tenant capture — this limitation only applies to
+        two sessions on the same X display, which the small-studio
+        deployment model does not require.
+
+        Emits ``session.multi_session_crop_collision`` at WARNING level
+        so the v1.1 forensic signal is machine-greppable.
+        """
+        try:
+            existing_crops = set()
+            for ws, cs in getattr(self, "clients", {}).items():
+                if cs is applying_session:
+                    continue
+                if not getattr(cs, "authenticated", False):
+                    continue
+                rect = getattr(cs, "crop_rect", None)
+                existing_crops.add(rect)
+            if getattr(applying_session, "crop_rect", None) in existing_crops:
+                return  # Same crop — not a collision.
+            if not existing_crops:
+                return  # Only one authenticated session — no collision.
+            logger.warning(
+                "session.multi_session_crop_collision "
+                "applying=%s existing_crops=%s — v1 single-session-per-host "
+                "reality means LATEST apply_capture_mode wins; v1.1 follow-up "
+                "adds per-session encode wrap",
+                getattr(applying_session, "crop_rect", None),
+                list(existing_crops),
+            )
+        except Exception as e:
+            # Never let a forensic-log failure poison the caller.
+            logger.debug(
+                "session.multi_session_crop_collision_log_failed err=%s", e,
+            )
+
     # ── Quality / encoder management ─────────────────────────
 
     def apply_quality(self, session: "ClientSession", msg: dict):
@@ -810,6 +1005,20 @@ class SessionRuntime:
             session.client_screen_width = msg.get("screen_width", 0)
             session.client_screen_height = msg.get("screen_height", 0)
             logger.info("Client screen: %dx%d", session.client_screen_width, session.client_screen_height)
+            # Phase 3 D-02 — read capture_mode + picked_monitor_{id,name}
+            # off the handshake and apply the per-session crop. Defaults
+            # preserve pre-Phase-3 always-full-virtual-desktop behavior.
+            try:
+                capture_mode = str(msg.get("capture_mode", "mirror_all"))
+                picked_id = int(msg.get("picked_monitor_id", -1))
+                picked_name = str(msg.get("picked_monitor_name", ""))
+                self.apply_capture_mode(
+                    session, capture_mode, picked_id, picked_name,
+                )
+            except Exception as e:
+                logger.warning(
+                    "session.apply_capture_mode_failed err=%s", e,
+                )
             # STAB-06 / Plan 01-08 — capability_exchange → streaming.
             try:
                 session.fsm.send("client_hello")

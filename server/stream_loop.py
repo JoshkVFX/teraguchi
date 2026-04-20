@@ -60,9 +60,37 @@ class StreamLoop:
                     # HealthMonitor.record_capture_time call is preserved so
                     # HealthStats.capture_time_ms (client overlay consumer)
                     # still reflects the rolling average.
+                    # Phase 3 D-02 — per-session capture-mode crop. v1 is
+                    # single-session-per-host for cropped paths (see
+                    # docs/release.md "Multi-session crop per host
+                    # (v1.1 follow-up)"); pull crop_rect off the first
+                    # authenticated session. Legacy pre-Phase-3 clients
+                    # default to crop=None → byte-equal to the Phase 2
+                    # always-full-virtual-desktop path (preserves
+                    # 9-checkpoint 10-bit fixture).
+                    crop = None
+                    for _ws, cs in self._runtime.clients.items():
+                        if getattr(cs, "authenticated", False):
+                            crop = getattr(cs, "crop_rect", None)
+                            if crop is not None:
+                                break
+                    # capture_raw_bgra_with_crop is the Phase 3 entry;
+                    # fall back to capture_raw_bgra for older capture
+                    # backends (test stubs, Phase 1 MacScreenCapture
+                    # before its Phase 3 upgrade lands). mirror_all
+                    # (crop=None) is byte-equal to capture_raw_bgra in
+                    # either case — preserves Phase 2 10-bit fixture.
+                    with_crop = getattr(
+                        self._runtime.capture,
+                        "capture_raw_bgra_with_crop",
+                        None,
+                    )
                     t0 = time.time()
                     with StageTimer("capture"):
-                        raw = self._runtime.capture.capture_raw_bgra()
+                        if with_crop is not None:
+                            raw = with_crop(crop)
+                        else:
+                            raw = self._runtime.capture.capture_raw_bgra()
                     self._runtime.health.record_capture_time(
                         (time.time() - t0) * 1000)
                     with StageTimer("encode"):

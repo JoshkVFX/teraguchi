@@ -269,6 +269,38 @@ caveats so far:
   Re-evaluate in v1.1 if a real studio commits to Flame-on-Mac as
   load-bearing.
 
+- **Multi-session crop per host (v1.1 follow-up):** v1 supports one
+  active streaming session per server host with per-session capture
+  crop. When a second concurrent session attaches with a different
+  `capture_mode`, the second session sees the first session's crop
+  until v1.1 wires the per-session encode wrap. Existing PAM per-user
+  X session isolation on Linux prevents cross-tenant capture; this
+  limitation only applies to two sessions on the same X display,
+  which the small-studio deployment model does not require. Forensic
+  signal `event=session.multi_session_crop_collision` is logged at
+  WARNING so the v1.1 work has a grep target.
+
+## Phase 3.5 follow-ups
+
+Deferred items discovered during Phase 3 execution that are not
+blocking the v1 release but should land in v1.1 / Phase 3.5 before
+feature-complete sign-off:
+
+- **P010 raw-capture crop seam.** v1 ships BGRA-only
+  `capture_raw_bgra_with_crop` on `ScreenCapture` / `MacScreenCapture`.
+  When the NvFBC P010 raw-frame Python seam lands (the C-helper carries
+  the `YUV420P10LE` format flag but `nvfbc_backend.py` only exposes
+  `capture_raw_bgra` today), add `capture_raw_p010_with_crop` with
+  even-pixel 4:2:0 alignment per RESEARCH.md Example 5. v1 correctness
+  is preserved because the encoder's internal BGRA→P010 conversion
+  preserves 10-bit fidelity end-to-end through the unchanged Phase 2
+  pipeline; pick_one + single modes pay the BGRA→P010 conversion cost
+  on every cropped frame, but the bandwidth + 10-bit guarantee holds.
+
+- **Multi-session crop per host.** See v1 caveat above — v1.1 wires
+  per-session encoder wrap so two concurrent sessions on the same X
+  display can each request a different `capture_mode`.
+
 ---
 
-*Last updated: 2026-04-19 (Phase 2, Plan 02-12 — Wacom matrix ritual + matrix results table + latency table + spike outcome assembled; matrix and latency rows DEFERRED to manual DXS execution).*
+*Last updated: 2026-04-20 (Phase 3, Plan 03-03 — Phase 3.5 follow-ups for P010 raw-crop seam + multi-session crop per host added).*

@@ -37,10 +37,27 @@ class MonitorHotplug:
         self._task: Optional[asyncio.Task] = None
 
     async def run(self) -> None:
+        # Phase 3 D-11 — cadence tightened from 5s to 1s so the push-
+        # complement check (MacScreenCapture._hotplug_pending on macOS)
+        # has a fast safety net. The 1s poll still covers the case where
+        # the NSWorkspace notification is missed (sleep/wake, runloop
+        # suspension). Linux keeps the same poll cadence; the cost is
+        # one extra mss.mss() probe per 4s on a topology that never
+        # changes, which is negligible.
         while self._running:
-            await asyncio.sleep(5.0)
+            await asyncio.sleep(1.0)
             runtime = self._runtime
-            if runtime.capture and runtime.capture.detect_hotplug():
+            if not runtime.capture:
+                continue
+            pending = getattr(runtime.capture, "_hotplug_pending", False)
+            if pending or runtime.capture.detect_hotplug():
+                if pending:
+                    # Clear the push flag; the delegate will re-set it on
+                    # the next display configuration change.
+                    try:
+                        runtime.capture._hotplug_pending = False
+                    except Exception:
+                        pass
                 monitors = [asdict(m) for m in runtime.capture.list_monitors()]
                 msg_json = MonitorListMsg(monitors=monitors).to_json()
                 for ws, cs in list(runtime.clients.items()):
@@ -51,6 +68,33 @@ class MonitorHotplug:
                             pass
                 if runtime.encoder:
                     runtime.encoder_lifecycle.restart()
+                # Phase 3 D-02 + D-09 prep — re-apply per-session crop
+                # after geometry change so the new topology takes effect
+                # on the next frame. Plan 05 builds the fall-back-to-
+                # primary broadcast on top of this site (apply_capture_mode
+                # returning False flips capture_mode_degraded=True; the
+                # banner toast reads that flag).
+                apply_capture_mode = getattr(
+                    runtime, "apply_capture_mode", None,
+                )
+                if apply_capture_mode is not None:
+                    for ws, cs in list(runtime.clients.items()):
+                        if not getattr(cs, "authenticated", False):
+                            continue
+                        mode = getattr(cs, "capture_mode", "mirror_all")
+                        if mode == "mirror_all":
+                            continue
+                        try:
+                            apply_capture_mode(
+                                cs,
+                                mode,
+                                getattr(cs, "picked_monitor_id", -1),
+                                getattr(cs, "picked_monitor_name", ""),
+                            )
+                        except Exception as e:
+                            logger.debug(
+                                "hotplug.reapply_capture_mode_failed err=%s", e,
+                            )
 
     def start(self) -> None:
         self._running = True

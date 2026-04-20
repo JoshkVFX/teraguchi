@@ -26,6 +26,8 @@ from websockets.server import WebSocketServerProtocol
 from common.messages import QualitySettings
 from common.session_fsm import ServerFSM
 
+from typing import Tuple  # Phase 3 D-02 — crop_rect type hint
+
 if TYPE_CHECKING:
     from server.session_runtime import SessionRuntime
 
@@ -64,6 +66,17 @@ class ClientSession:
         # Plan 01-17 observability can log disagreement pairs.
         self.fsm = ServerFSM()
         self.last_reported_client_state: str = ""
+        # Phase 3 D-02 — per-session capture-mode state. Defaults preserve
+        # pre-Phase-3 behavior (mirror_all ⇔ crop_rect=None ⇔ unchanged
+        # always-full-virtual-desktop capture path). apply_capture_mode
+        # in session_runtime.py flips crop_rect for single / pick_one.
+        # capture_mode_degraded=True signals Plan 05's fall-back-to-primary
+        # toast surface.
+        self.capture_mode: str = "mirror_all"
+        self.picked_monitor_id: int = -1
+        self.picked_monitor_name: str = ""
+        self.crop_rect: Optional[Tuple[int, int, int, int]] = None
+        self.capture_mode_degraded: bool = False
 
     def start_sender(self):
         self._send_task = asyncio.create_task(self._send_loop())

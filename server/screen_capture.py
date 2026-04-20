@@ -17,7 +17,7 @@ import time
 import logging
 import os
 import subprocess
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 import mss
 import numpy as np
@@ -420,25 +420,45 @@ class ScreenCapture:
         """
         Check if monitor configuration has changed.
 
+        Phase 3 D-09 — full ``(id, width, height, x, y)`` tuple
+        signature per monitor catches reorder + same-size swap +
+        repositioning that the prior count+WxH-only check missed
+        (Pitfall 4 fix; mirrors D-11 Mac upgrade in
+        ``mac_screen_capture.py::detect_hotplug``).
+
+        Read-only enumeration per D-10 — zero xrandr SET operations.
+        The NVIDIA driver SIGSEGV on HDMI unplug happens specifically
+        during xrandr set-operations (new/add/change mode); enumerate-
+        only stays safe.
+
         Returns True if monitors changed (caller should re-enumerate).
         """
-        old_count = len(self._sct.monitors)
+        try:
+            old_sig = [
+                (m.id, m.width, m.height, m.x, m.y)
+                for m in self.list_monitors()
+            ]
+        except Exception:
+            old_sig = []
         try:
             new_sct = mss.mss()
-            new_count = len(new_sct.monitors)
-            if new_count != old_count:
-                self._sct = new_sct
-                self._refresh_monitor_info()
-                logger.info("Monitor hotplug detected: %d -> %d monitors",
-                           old_count, new_count)
+            # Swap + refresh so list_monitors() reflects the new topology.
+            try:
+                self._sct.close()
+            except Exception:
+                pass
+            self._sct = new_sct
+            self._refresh_monitor_info()
+            new_sig = [
+                (m.id, m.width, m.height, m.x, m.y)
+                for m in self.list_monitors()
+            ]
+            if old_sig != new_sig:
+                logger.info(
+                    "Monitor hotplug detected: %s -> %s",
+                    old_sig, new_sig,
+                )
                 return True
-            # Also check if resolutions changed
-            for i, (old, new) in enumerate(zip(self._sct.monitors, new_sct.monitors)):
-                if old["width"] != new["width"] or old["height"] != new["height"]:
-                    self._sct = new_sct
-                    self._refresh_monitor_info()
-                    logger.info("Monitor %d resolution changed", i)
-                    return True
         except Exception:
             pass
         return False
@@ -500,6 +520,75 @@ class ScreenCapture:
         self._sync_before_capture()
         sct_img = self._sct.grab(self._monitor)
         return bytes(sct_img.raw)
+
+    # Phase 3 D-02 — server-side GPU crop pre-encode.
+    #
+    # mirror_all: crop=None → identical bytes to capture_raw_bgra (Phase 2
+    # 9-checkpoint 10-bit fixture preserved; no new downgrade points).
+    # single / pick_one: crop=(x,y,w,h) feeds a cropped BGRA frame into
+    # the encoder; the encoder's existing BGRA→P010 conversion preserves
+    # 10-bit fidelity through the unchanged Phase 2 pipeline.
+    #
+    # P010 raw-crop seam DEFERRED to Phase 3.5 (v1.1) — the v1 codebase
+    # has no ``capture_raw_p010`` method on any capture backend
+    # (ScreenCapture / MacScreenCapture / NvFBCBackend expose BGRA only).
+    # See docs/release.md "Phase 3.5 follow-ups" for the backlog item.
+    def capture_raw_bgra_with_crop(
+        self, crop: Optional[Tuple[int, int, int, int]] = None,
+    ) -> bytes:
+        """D-02 — full-virtual-desktop capture + optional BGRA crop.
+
+        Args:
+            crop: ``(x, y, w, h)`` in server physical pixels, or None to
+                pass through (mirror_all path).
+
+        Returns:
+            Cropped BGRA bytes. Degenerate crops (w=0 or h=0 after
+            clamping) return a single black pixel ``b"\\x00\\x00\\x00\\xff"``
+            rather than crashing the encoder feed.
+
+        The crop is clamped to the captured frame's bounds (defense
+        against stale crop_rect after a hot-plug), so pick_one + single
+        modes never array-index out-of-bounds on a shrunken virtual
+        desktop.
+        """
+        raw = self.capture_raw_bgra()
+        if crop is None:
+            return raw
+        x, y, w, h = crop
+        # Clamp origin to [0, width/height]; clamp size to remaining area.
+        x = max(0, min(int(x), self.width))
+        y = max(0, min(int(y), self.height))
+        w = max(0, min(int(w), self.width - x))
+        h = max(0, min(int(h), self.height - y))
+        if w == 0 or h == 0:
+            # Single black pixel — defensive fallback per PATTERNS L720-722.
+            # Empty bytes would crash the encoder feed.
+            return b"\x00\x00\x00\xff"
+        # raw may be width*height*4 bytes (mss) OR a padded buffer if the
+        # backend stride doesn't match width*4. The Phase 1 capture path
+        # always produces a tight buffer; still defensive-decode here.
+        expected = self.width * self.height * 4
+        if len(raw) != expected:
+            # Fall back to byte-slice per-row to preserve alignment.
+            row_stride = len(raw) // self.height if self.height > 0 else 0
+            if row_stride < self.width * 4:
+                # Malformed — return black pixel rather than garbage bytes.
+                logger.warning(
+                    "capture_raw_bgra_with_crop: raw size %d != expected %d "
+                    "and row_stride %d < width*4 %d — returning black",
+                    len(raw), expected, row_stride, self.width * 4,
+                )
+                return b"\x00\x00\x00\xff"
+            out = bytearray(w * h * 4)
+            for row in range(h):
+                src_off = (y + row) * row_stride + x * 4
+                out[row * w * 4:(row + 1) * w * 4] = raw[src_off:src_off + w * 4]
+            return bytes(out)
+        arr = np.frombuffer(raw, dtype=np.uint8).reshape(
+            self.height, self.width, 4,
+        )
+        return arr[y:y + h, x:x + w].tobytes()
 
     def capture_raw_frame(self) -> np.ndarray:
         """Capture and return as numpy BGRA array."""
