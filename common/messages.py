@@ -130,6 +130,10 @@ class MsgType:
     TEXT_COMMIT = "text_commit"
     PEN_PROXIMITY = "pen_proximity"
 
+    # Phase 3 additions (D-02, D-17):
+    SESSION_CONFIGURE = "session_configure"
+    CLIPBOARD_CHUNK = "clipboard_chunk"
+
     # --- Handshake ---
     CLIENT_HELLO = "client_hello"
     SERVER_HELLO = "server_hello"
@@ -450,6 +454,40 @@ class ClipboardMsg:
         return json.dumps(asdict(self))
 
 
+@dataclass
+class ClipboardChunkMsg:
+    """D-17 — chunked transport for clipboard payloads exceeding 1 MB.
+
+    Mirrors :class:`KeyResetModifiersMsg` (Phase 2 D-11) shape — type +
+    payload fields + one-line ``to_json``. Assembler lives in
+    ``common/clipboard_chunks.py`` (added by Plan 06).
+
+    Fields:
+    - ``sequence_id``: per-session monotonic id identifying one logical
+      clipboard payload
+    - ``chunk_index``: 0-indexed position within the payload
+    - ``total_chunks``: expected number of chunks (assembler completes when
+      all indices 0..total_chunks-1 have arrived)
+    - ``content_type``: mime type of the reassembled payload (``text/plain``
+      or ``image/png``)
+    - ``data``: base64-encoded payload chunk (raw UTF-8 text for text/plain
+      chunks, base64 bytes otherwise)
+
+    Threat T-03-03 note: Plan 06's assembler MUST enforce
+    ``total_chunks <= 256`` (≈256 MB cap at the 1 MB/chunk ceiling) so
+    an attacker cannot set ``total_chunks`` to maxint to exhaust memory.
+    """
+    type: str = MsgType.CLIPBOARD_CHUNK
+    sequence_id: int = 0
+    chunk_index: int = 0
+    total_chunks: int = 1
+    content_type: str = "text/plain"
+    data: str = ""
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self))
+
+
 # ============================================================
 # Connection Handshake
 # ============================================================
@@ -468,6 +506,15 @@ class ClientHelloMsg:
     supports_audio: bool = True
     supports_pen: bool = True
     decoder_backend: str = ""  # "cuda", "vaapi", "videotoolbox", "software"
+    # Phase 3 D-02 — capture-mode negotiation. Defaults preserve the
+    # pre-Phase-3 always-full-virtual-desktop behavior — mirror_all
+    # means "ship the whole virtual desktop unchanged" which is what
+    # current servers already do. Threat T-03-02 — server-side
+    # ``apply_capture_mode`` (Plan 03) MUST whitelist-check this string
+    # and fall back to mirror_all + structlog warning on unknown values.
+    capture_mode: str = "mirror_all"   # "single" | "mirror_all" | "pick_one"
+    picked_monitor_id: int = -1
+    picked_monitor_name: str = ""
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -532,6 +579,71 @@ class ServerHelloMsg:
 # ============================================================
 
 @dataclass
+class MouseMoveMsg:
+    """Mouse move event (Phase 3 D-05 — promoted from dict to dataclass).
+
+    Phase 1/2 client callsite (``client/session.py``) emits the raw dict
+    form ``{"type": "mouse_move", "x": float, "y": float}``. The new
+    ``server_x`` / ``server_y`` integer fields carry the client-computed
+    server-physical-pixel coordinates (D-05). Default ``-1`` is the
+    "client did not compute physical px" sentinel — server prefers the
+    integer fields when ``server_x >= 0`` and falls back to the
+    normalized floats otherwise. Pre-Phase-3 clients that omit the
+    fields hit the sentinel default and server behavior is identical.
+    """
+    type: str = MsgType.MOUSE_MOVE
+    x: float = 0.0
+    y: float = 0.0
+    # Phase 3 D-05 — server physical-pixel integer coords.
+    server_x: int = -1
+    server_y: int = -1
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self))
+
+
+@dataclass
+class MouseButtonMsg:
+    """Mouse button event (Phase 3 D-05 — promoted from dict to dataclass).
+
+    ``button`` follows the Phase 1 wire convention (1 = left, 2 = middle,
+    3 = right). ``server_x`` / ``server_y`` default ``-1`` sentinel per
+    D-05 (backward compat for pre-Phase-3 clients).
+    """
+    type: str = MsgType.MOUSE_BUTTON
+    x: float = 0.0
+    y: float = 0.0
+    button: int = 1
+    pressed: bool = False
+    # Phase 3 D-05 — server physical-pixel integer coords.
+    server_x: int = -1
+    server_y: int = -1
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self))
+
+
+@dataclass
+class MouseScrollMsg:
+    """Mouse scroll event (Phase 3 D-05 — promoted from dict to dataclass).
+
+    ``dx`` / ``dy`` are wheel-delta units. ``server_x`` / ``server_y``
+    default ``-1`` sentinel per D-05 (backward compat).
+    """
+    type: str = MsgType.MOUSE_SCROLL
+    x: float = 0.0
+    y: float = 0.0
+    dx: float = 0.0
+    dy: float = 0.0
+    # Phase 3 D-05 — server physical-pixel integer coords.
+    server_x: int = -1
+    server_y: int = -1
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self))
+
+
+@dataclass
 class KeyEventMsg:
     """Keyboard key event (D-14 — promoted from dict to dataclass).
 
@@ -544,6 +656,12 @@ class KeyEventMsg:
     ``scroll_lock_on``; server auto-corrects virtual-display lock state
     on mismatch. State re-converges on the next keystroke, so zero
     round-trip cost.
+
+    Phase 3 D-05 — every KeyEvent also carries the client-computed
+    server-physical-pixel coords (``server_x`` / ``server_y``) so
+    cursor-position-sensitive shortcuts (e.g. Flame's wheel-menus
+    anchored to cursor) land on the correct pixel on mixed-DPI clients.
+    Default ``-1`` sentinel = "client did not compute physical px".
 
     Note: Phase 1 client callsite in ``client/session.py::_send_key_event``
     still emits the dict form with a ``modifiers`` field. Plan 02-09
@@ -558,6 +676,9 @@ class KeyEventMsg:
     caps_lock_on: bool = False
     num_lock_on: bool = False
     scroll_lock_on: bool = False
+    # Phase 3 D-05 — server physical-pixel integer coords.
+    server_x: int = -1
+    server_y: int = -1
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -565,7 +686,12 @@ class KeyEventMsg:
 
 @dataclass
 class PenEventMsg:
-    """Pen/stylus event with full tablet data."""
+    """Pen/stylus event with full tablet data.
+
+    Phase 3 D-05 — ``server_x`` / ``server_y`` carry the client-computed
+    server-physical-pixel coords. Default ``-1`` sentinel = "client did
+    not compute physical px" (pre-Phase-3 wire compat).
+    """
     type: str = MsgType.PEN_EVENT
     x: float = 0.0
     y: float = 0.0
@@ -577,6 +703,9 @@ class PenEventMsg:
     pressed: bool = False
     hovering: bool = False
     pen_type: str = "pen"
+    # Phase 3 D-05 — server physical-pixel integer coords.
+    server_x: int = -1
+    server_y: int = -1
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -710,6 +839,24 @@ class ConnectionProfile:
     # is enforced at construction time by ``BookmarkManager._migrate_swap_default``
     # so existing saved bookmarks pre-Phase-2 get the right default on load.
     swap_cmd_ctrl: bool = True
+
+    # Phase 3 D-01 / D-04 / D-15 — display + clipboard preferences.
+    # All seven fields default to values that preserve pre-Phase-3
+    # behavior: mirror_all matches the legacy always-full-virtual-desktop
+    # capture path (D-02), no picked monitor (-1 / ""), and all four
+    # clipboard directions ON (D-16 "security defaults = all directions
+    # ON"). Pre-Phase-3 bookmark JSON files omit these fields entirely;
+    # ``ConnectionProfile.from_dict`` filters unknown keys through
+    # ``cls.__dataclass_fields__`` so missing-field load is safe
+    # (threat T-03-01 mitigation). Whitelist enforcement on
+    # ``monitor_mode`` deferred to Plan 02 migration block.
+    monitor_mode: str = "mirror_all"   # "single" | "mirror_all" | "pick_one"
+    picked_monitor_id: int = -1
+    picked_monitor_name: str = ""
+    clipboard_text_c2s: bool = True
+    clipboard_text_s2c: bool = True
+    clipboard_image_c2s: bool = True
+    clipboard_image_s2c: bool = True
 
     def to_dict(self) -> dict:
         return asdict(self)
