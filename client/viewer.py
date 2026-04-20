@@ -427,12 +427,18 @@ class RemoteViewer(QWidget):
     including pen/stylus with pressure sensitivity.
     """
 
-    # Signals for input events (emitted to be picked up by the protocol layer)
-    mouse_moved = Signal(float, float)  # x_norm, y_norm
-    mouse_button_changed = Signal(int, bool, float, float)  # button, pressed, x, y
-    mouse_scrolled = Signal(int, int, float, float)  # dx, dy, x, y
+    # Signals for input events (emitted to be picked up by the protocol layer).
+    #
+    # Phase 3 D-05 — mouse signals carry the server-physical-pixel coords
+    # alongside the legacy normalized floats. Arity went from 2/4/4 to
+    # 4/6/6 (x_norm, y_norm, server_x_px, server_y_px). ``pen_event`` is
+    # a dict payload, so ``server_x`` / ``server_y`` join the dict keys
+    # without breaking the signal shape.
+    mouse_moved = Signal(float, float, int, int)  # x_norm, y_norm, server_x, server_y
+    mouse_button_changed = Signal(int, bool, float, float, int, int)  # button, pressed, x, y, sx, sy
+    mouse_scrolled = Signal(int, int, float, float, int, int)  # dx, dy, x, y, sx, sy
     key_changed = Signal(int, int, bool, int)  # qt_key, scan_code, pressed, modifiers
-    pen_event = Signal(dict)  # Full pen event data
+    pen_event = Signal(dict)  # Full pen event data (D-05: dict carries server_x/server_y)
     request_full_frame = Signal()
     paste_requested = Signal()  # Ctrl+V or Cmd+V detected — push clipboard
     files_dropped = Signal(list)  # list of file paths dropped onto viewer
@@ -529,6 +535,29 @@ class RemoteViewer(QWidget):
         # millisecond between connect and the first cursor_update.
         self._remote_cursor_serial: int = -1
         self.setCursor(Qt.BlankCursor)
+
+        # --- Phase 3 D-05 / D-06 / D-07 -----------------------------
+        #
+        # Per-screen devicePixelRatio cache. Refreshed in showEvent via
+        # ``_current_screen_dpr`` and on every QWindow::screenChanged
+        # signal via ``_on_screen_changed``. Used by _widget_to_remote
+        # (D-05) and the F12 dev overlay (D-07) to display the actual
+        # DPR of the widget's current QScreen — NOT the primary's
+        # (Pitfall 1 root cause).
+        self._current_dpr: float = 1.0
+
+        # Phase 3 D-07 / Pitfall 8 — F12 coord debug overlay. Gated on
+        # TERAGUCHI_DEBUG=1 at HANDLER-INSTALL time (per research
+        # Pitfall 8 — gate handler, not visibility). Release builds
+        # leave ``_coord_overlay`` as None and F12 keyPressEvent falls
+        # through to the existing paste-detect + key_changed.emit path.
+        self._coord_overlay = None
+        if os.environ.get("TERAGUCHI_DEBUG") == "1":
+            # Lazy import so production builds never touch the module
+            # even by side-effect.
+            from client.coord_debug_overlay import CoordDebugOverlay
+            self._coord_overlay = CoordDebugOverlay(self)
+            self._coord_overlay.reposition()
 
         logger.info("RemoteViewer initialized")
 
@@ -653,17 +682,36 @@ class RemoteViewer(QWidget):
         self._offset_y = (widget_h - display_h) // 2
 
     def _widget_to_remote(self, x: float, y: float) -> tuple:
-        """Convert widget coordinates to normalized remote coordinates (0.0-1.0).
+        """Phase 3 D-05 — widget coords → (rx_norm, ry_norm, server_x, server_y).
 
-        When monitor regions are active, maps through the composite layout
-        back to full virtual desktop coordinates so XTest moves the cursor
-        to the correct position.
+        Returns a 4-tuple:
+          * ``rx_norm`` / ``ry_norm``: float in [0.0, 1.0] — Phase 1/2
+            wire-compat normalized coords. Older servers consume these.
+          * ``server_x`` / ``server_y``: int in server physical pixels.
+            D-05 preferred wire path — server consumers pick these up
+            when ``server_x >= 0`` and fall back to the normalized
+            floats otherwise.
+
+        When monitor regions are active, maps through the composite
+        layout back to full virtual desktop coordinates so the remote
+        input-injector (XTest / CGEvent / uinput) moves the cursor to
+        the correct pixel.
+
+        Integer server_x / server_y are NOT clamped to [0, width-1];
+        the composite past-last-monitor edge case can produce values
+        outside the visible bounds, and server-side input_injector
+        enforces the final clamp (T-03-15 defense-in-depth per the
+        plan's threat register).
         """
         if not self._monitor_regions:
             # Simple: widget → full remote desktop
             rx = (x - self._offset_x) / (self._scale_x * self._remote_width)
             ry = (y - self._offset_y) / (self._scale_y * self._remote_height)
-            return max(0.0, min(1.0, rx)), max(0.0, min(1.0, ry))
+            rx = max(0.0, min(1.0, rx))
+            ry = max(0.0, min(1.0, ry))
+            sx = int(round(rx * self._remote_width))
+            sy = int(round(ry * self._remote_height))
+            return rx, ry, sx, sy
 
         # Composite mode: find which monitor the click is in
         # Convert widget coords to composite pixel coords
@@ -679,19 +727,135 @@ class RemoteViewer(QWidget):
                 # Click is in this monitor
                 local_x = cx - composite_x
                 local_y = cy
-                # Map back to full virtual desktop
+                # Map back to full virtual desktop (server physical px).
                 desktop_x = region["x"] + local_x
                 desktop_y = region["y"] + local_y
-                rx = desktop_x / self._remote_width
-                ry = desktop_y / self._remote_height
-                return max(0.0, min(1.0, rx)), max(0.0, min(1.0, ry))
+                rx = max(0.0, min(1.0, desktop_x / self._remote_width))
+                ry = max(0.0, min(1.0, desktop_y / self._remote_height))
+                sx = int(round(desktop_x))
+                sy = int(round(desktop_y))
+                return rx, ry, sx, sy
             composite_x += rw
 
         # Past the last monitor — clamp to last monitor's right edge
         last = self._monitor_regions[-1]
-        rx = (last["x"] + last["width"] - 1) / self._remote_width
-        ry = cy / self._remote_height if self._remote_height else 0
-        return max(0.0, min(1.0, rx)), max(0.0, min(1.0, ry))
+        sx = last["x"] + last["width"] - 1
+        sy = int(round(cy))
+        rx = max(0.0, min(1.0, sx / self._remote_width))
+        ry = max(0.0, min(1.0,
+                         cy / self._remote_height if self._remote_height else 0))
+        return rx, ry, sx, sy
+
+    # --- Phase 3 D-06: per-screen DPR helpers + screenChanged hook ---
+
+    def _current_screen_dpr(self) -> float:
+        """D-06 — return DPR of the QScreen the viewer widget is currently on.
+
+        Always look up the CURRENT screen's DPR — never cache the
+        primary's (Pitfall 1 / Mozilla bz #794038). Re-evaluated on
+        QWindow.screenChanged via ``_on_screen_changed``. Falls back to
+        ``devicePixelRatioF()`` when ``windowHandle()`` is None
+        (pre-show / offscreen platform edge cases).
+        """
+        win = self.window().windowHandle() if self.window() else None
+        if win is None:
+            return float(self.devicePixelRatioF())
+        screen = win.screen()
+        if screen is None:
+            return float(self.devicePixelRatioF())
+        return float(screen.devicePixelRatio())
+
+    def _current_screen_name(self) -> str:
+        """D-07 — return the QScreen.name() for the F12 overlay header.
+
+        Defensive None-guards: pre-show / offscreen / stubbed widget →
+        returns "unknown" instead of raising.
+        """
+        try:
+            win = self.window().windowHandle() if self.window() else None
+            if win is None:
+                return "unknown"
+            screen = win.screen()
+            if screen is None:
+                return "unknown"
+            return str(screen.name())
+        except Exception:
+            return "unknown"
+
+    def _current_monitor_under_widget(self, x: float, y: float) -> Optional[dict]:
+        """D-07 — find the server monitor region under widget coord (x, y).
+
+        Used by the F12 overlay to display `monitor: NAME WxH+X+Y`.
+        Returns the first matching region dict from self._monitor_regions,
+        or None when composite mode is inactive / coords fall past the
+        last monitor.
+        """
+        if not self._monitor_regions:
+            return None
+        cx = (x - self._offset_x) / self._scale_x if self._scale_x else 0
+        composite_x = 0
+        for region in self._monitor_regions:
+            rw = region["width"]
+            if cx < composite_x + rw:
+                return region
+            composite_x += rw
+        return None
+
+    def _connect_screen_changed(self):
+        """Wire QWindow.screenChanged → _on_screen_changed after showEvent.
+
+        windowHandle() is None until Qt creates the native window, so
+        this must be called from showEvent (not __init__). Idempotent:
+        safe to call multiple times — disconnects any prior connection
+        before reconnecting.
+        """
+        win = self.window().windowHandle() if self.window() else None
+        if win is None:
+            return
+        try:
+            win.screenChanged.disconnect(self._on_screen_changed)
+        except (TypeError, RuntimeError):
+            # No existing connection, or the underlying C++ object is
+            # gone. Both are benign — proceed to (re)connect.
+            pass
+        try:
+            win.screenChanged.connect(self._on_screen_changed)
+        except (TypeError, RuntimeError):
+            pass
+
+    def _on_screen_changed(self, screen):
+        """D-06 — recompute scaling cache when viewer migrates between screens.
+
+        Symmetric to Phase 2 D-19 focusIn pen-proximity re-synth
+        (Pitfall 2): re-emit ``pen_proximity`` if the pen was in range
+        so the server PenFSM doesn't lose state across the screen
+        change. Idempotent on the server side (PenFSM accepts duplicate
+        enter_proximity transitions).
+        """
+        old_dpr = getattr(self, "_current_dpr", 1.0)
+        self._current_dpr = self._current_screen_dpr()
+        self._update_scaling()
+        screen_name = screen.name() if screen is not None and hasattr(
+            screen, "name") else "unknown"
+        if old_dpr != self._current_dpr:
+            logger.info(
+                "viewer.screen_changed old_dpr=%s new_dpr=%s screen=%s",
+                old_dpr, self._current_dpr, screen_name,
+            )
+        # Pitfall 2 — re-synth pen proximity on screen migration via the
+        # canonical Phase 2 D-19 helper. Same shape as focusInEvent /
+        # showEvent so the server PenFSM sees a consistent proximity
+        # envelope across all re-synth triggers.
+        if getattr(self, "_pen_was_in_proximity", False):
+            self._emit_pen_proximity(
+                in_proximity=True,
+                pen_type=getattr(self, "_last_pen_type", "pen"),
+            )
+        # D-07 — refresh F12 overlay metadata when the screen changes
+        # while the overlay is on. Coords stay the last-known widget
+        # coord; dpr + screen name refresh on the next paintEvent.
+        if self._coord_overlay is not None and self._coord_overlay.isVisible():
+            self._coord_overlay.update_screen(self._current_dpr, screen_name)
 
     # --- Paint ---
     #
@@ -754,6 +918,26 @@ class RemoteViewer(QWidget):
 
     def resizeEvent(self, event: QResizeEvent):
         self._update_scaling()
+        # D-07 — keep the F12 overlay anchored on resize, and refresh
+        # the monitor/crop rows (widget/server px stay last-known until
+        # the next mouseMoveEvent).
+        if self._coord_overlay is not None:
+            self._coord_overlay.reposition()
+            if self._coord_overlay.isVisible():
+                cx = self.width() / 2
+                cy = self.height() / 2
+                mon = self._current_monitor_under_widget(cx, cy)
+                crop = getattr(self, "_active_crop_rect", None)
+                self._coord_overlay.update_coords(
+                    self._coord_overlay._widget_x,
+                    self._coord_overlay._widget_y,
+                    self._coord_overlay._server_x,
+                    self._coord_overlay._server_y,
+                    self._current_dpr,
+                    self._current_screen_name(),
+                    monitor=mon,
+                    crop=crop,
+                )
         super().resizeEvent(event)
 
     # --- Tablet/Pen Events (priority over mouse) ---
@@ -781,7 +965,7 @@ class RemoteViewer(QWidget):
         event.accept()
 
         pos = event.position()
-        nx, ny = self._widget_to_remote(pos.x(), pos.y())
+        nx, ny, sx, sy = self._widget_to_remote(pos.x(), pos.y())
 
         # Determine pen type
         if pointer_type == QTabletEvent.PointerType.Eraser:
@@ -810,9 +994,16 @@ class RemoteViewer(QWidget):
             hovering = True
             button = 0
 
+        # Phase 3 D-05 — pen_data dict carries both the legacy
+        # normalized floats AND the new server physical-pixel ints so
+        # server/mac_input_injector.py + server/input_injector.py can
+        # pick up the integer fields (preferred) with the floats as
+        # Phase 1/2 wire compat fallback.
         pen_data = {
             "x": nx,
             "y": ny,
+            "server_x": sx,
+            "server_y": sy,
             "pressure": event.pressure(),
             "tilt_x": event.xTilt(),
             "tilt_y": event.yTilt(),
@@ -846,14 +1037,27 @@ class RemoteViewer(QWidget):
         if self._pen_active:
             return  # Tablet is handling this
         pos = event.position()
-        nx, ny = self._widget_to_remote(pos.x(), pos.y())
-        self.mouse_moved.emit(nx, ny)
+        nx, ny, sx, sy = self._widget_to_remote(pos.x(), pos.y())
+        # Phase 3 D-05 — signal arity extended with server physical px.
+        self.mouse_moved.emit(nx, ny, sx, sy)
+        # D-07 — refresh F12 overlay on every mouse move when it's visible.
+        if self._coord_overlay is not None and self._coord_overlay.isVisible():
+            mon = self._current_monitor_under_widget(pos.x(), pos.y())
+            crop = getattr(self, "_active_crop_rect", None)
+            self._coord_overlay.update_coords(
+                pos.x(), pos.y(),
+                sx, sy,
+                self._current_dpr,
+                self._current_screen_name(),
+                monitor=mon,
+                crop=crop,
+            )
 
     def mousePressEvent(self, event: QMouseEvent):
         if self._pen_active:
             return
         pos = event.position()
-        nx, ny = self._widget_to_remote(pos.x(), pos.y())
+        nx, ny, sx, sy = self._widget_to_remote(pos.x(), pos.y())
         button = self._qt_button_to_int(event.button())
 
         # macOS Control+click hijack: macOS converts Ctrl+LeftClick into
@@ -868,13 +1072,13 @@ class RemoteViewer(QWidget):
             button = 1  # LeftButton on the wire
             self._mac_ctrl_click_swap = True
 
-        self.mouse_button_changed.emit(button, True, nx, ny)
+        self.mouse_button_changed.emit(button, True, nx, ny, sx, sy)
 
     def mouseReleaseEvent(self, event: QMouseEvent):
         if self._pen_active:
             return
         pos = event.position()
-        nx, ny = self._widget_to_remote(pos.x(), pos.y())
+        nx, ny, sx, sy = self._widget_to_remote(pos.x(), pos.y())
         button = self._qt_button_to_int(event.button())
 
         # Mirror the press-time swap: if the active drag was a macOS
@@ -885,22 +1089,40 @@ class RemoteViewer(QWidget):
             button = 1
             self._mac_ctrl_click_swap = False
 
-        self.mouse_button_changed.emit(button, False, nx, ny)
+        self.mouse_button_changed.emit(button, False, nx, ny, sx, sy)
 
     def wheelEvent(self, event: QWheelEvent):
         pos = event.position()
-        nx, ny = self._widget_to_remote(pos.x(), pos.y())
+        nx, ny, sx, sy = self._widget_to_remote(pos.x(), pos.y())
         delta = event.angleDelta()
         # Convert to discrete scroll steps (120 units = 1 step)
         dx = delta.x() // 120
         dy = delta.y() // 120
-        self.mouse_scrolled.emit(dx, dy, nx, ny)
+        self.mouse_scrolled.emit(dx, dy, nx, ny, sx, sy)
 
     # --- Keyboard Events ---
 
     def keyPressEvent(self, event: QKeyEvent):
         if event.isAutoRepeat():
             return
+
+        # Phase 3 D-07 / Pitfall 8 — F12 dev overlay toggle.
+        #
+        # Handler installation is gated on TERAGUCHI_DEBUG=1 at
+        # __init__ time (Pitfall 8: gate HANDLER installation, not
+        # visibility). Release builds leave ``_coord_overlay = None``;
+        # this branch never fires and F12 falls through to the existing
+        # paste-detect + key_changed.emit pipeline unchanged.
+        if (event.key() == Qt.Key_F12
+                and self._coord_overlay is not None):
+            new_visible = not self._coord_overlay.isVisible()
+            self._coord_overlay.setVisible(new_visible)
+            if new_visible:
+                self._coord_overlay.reposition()
+                self._coord_overlay.raise_()
+            event.accept()
+            return
+
         key = self._remap_key(event.key())
         modifiers = self._qt_modifiers_to_int(event.modifiers())
         logger.debug("Key press: key=0x%x mod=0x%x", key, modifiers)
@@ -973,18 +1195,22 @@ class RemoteViewer(QWidget):
         super().focusInEvent(event)
 
     def showEvent(self, event):
-        """Phase 2 D-19: re-synth pen proximity when widget is shown.
+        """Phase 2 D-19 + Phase 3 D-06: proximity re-synth + screenChanged wiring.
 
-        Catches lockscreen wake, minimize/restore, virtual-desktop
-        switches, and the initial show after connect — none of which
-        necessarily fire focusInEvent. Always emits ``in_proximity=True``
-        because by the time the widget is visible the user may have
-        their pen hovering and the server FSM should converge to
-        in_proximity proactively (idempotent on the server, so over-
-        emitting is safe per D-19).
+        D-19: re-synth pen proximity when widget is shown — catches
+        lockscreen wake, minimize/restore, virtual-desktop switches,
+        and the initial show after connect. Idempotent server-side.
+
+        D-06: the native QWindow is not created until showEvent, so
+        this is the earliest the ``screenChanged`` signal can be
+        connected. Also caches the current screen's DPR for
+        ``_widget_to_remote`` + F12 overlay use.
         """
         self._emit_pen_proximity(in_proximity=True,
                                  pen_type=self._last_pen_type)
+        # Phase 3 D-06 — refresh DPR cache + wire screenChanged.
+        self._current_dpr = self._current_screen_dpr()
+        self._connect_screen_changed()
         super().showEvent(event)
 
     def _emit_pen_proximity(self, in_proximity: bool, pen_type: str) -> None:

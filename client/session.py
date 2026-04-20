@@ -313,16 +313,28 @@ class Session(QObject):
 
     # ── Input Sending ────────────────────────────
 
-    def _send_mouse_move(self, x, y):
-        self.protocol.send_input({"type": MsgType.MOUSE_MOVE, "x": x, "y": y})
+    def _send_mouse_move(self, x, y, server_x=-1, server_y=-1):
+        # Phase 3 D-05 — viewer now emits 4-arg signal carrying
+        # server-physical-pixel ints. Pre-Plan-04 callsites that still
+        # pass 2 args hit the kwarg defaults (server_x/y = -1 sentinel).
+        self.protocol.send_input({
+            "type": MsgType.MOUSE_MOVE, "x": x, "y": y,
+            "server_x": int(server_x), "server_y": int(server_y),
+        })
 
-    def _send_mouse_button(self, btn, pressed, x, y):
-        self.protocol.send_input({"type": MsgType.MOUSE_BUTTON,
-                                   "button": btn, "pressed": pressed, "x": x, "y": y})
+    def _send_mouse_button(self, btn, pressed, x, y, server_x=-1, server_y=-1):
+        self.protocol.send_input({
+            "type": MsgType.MOUSE_BUTTON,
+            "button": btn, "pressed": pressed, "x": x, "y": y,
+            "server_x": int(server_x), "server_y": int(server_y),
+        })
 
-    def _send_mouse_scroll(self, dx, dy, x, y):
-        self.protocol.send_input({"type": MsgType.MOUSE_SCROLL,
-                                   "dx": dx, "dy": dy, "x": x, "y": y})
+    def _send_mouse_scroll(self, dx, dy, x, y, server_x=-1, server_y=-1):
+        self.protocol.send_input({
+            "type": MsgType.MOUSE_SCROLL,
+            "dx": dx, "dy": dy, "x": x, "y": y,
+            "server_x": int(server_x), "server_y": int(server_y),
+        })
 
     def _send_key_event(self, qt_key, scan_code, pressed, mods):
         # Phase 2 D-10 / D-14 — delegate to ClientProtocol.send_key_event
@@ -331,6 +343,9 @@ class Session(QObject):
         self.protocol.send_key_event(qt_key, scan_code, pressed, mods)
 
     def _send_pen_event(self, data):
+        # Phase 3 D-05 — ``data`` dict may carry server_x / server_y
+        # from the viewer's _widget_to_remote 4-tuple. Pass through
+        # unchanged; server prefers integer fields when server_x >= 0.
         data["type"] = MsgType.PEN_EVENT
         self.protocol.send_input(data)
 

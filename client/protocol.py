@@ -29,6 +29,8 @@ from common.messages import (
     AuthResponse, parse_message,
     # Phase 2 D-11 / D-15 wire messages — see common/messages.py.
     KeyResetModifiersMsg, TextCommitMsg,
+    # Phase 3 D-05 — input messages carrying server_x / server_y.
+    MouseMoveMsg, MouseButtonMsg, MouseScrollMsg, PenEventMsg,
 )
 from common.keymap import swap_cmd_ctrl_for_linux_dest
 from common.session_fsm import ClientFSM
@@ -431,7 +433,70 @@ class ClientProtocol:
             "caps_lock_on": caps_on,
             "num_lock_on": num_on,
             "scroll_lock_on": scroll_on,
+            # Phase 3 D-05 — cursor-position-sensitive shortcuts carry
+            # server_x / server_y so the server-side key handler can
+            # route to the right pixel on mixed-DPI clients. KeyEvent's
+            # server_x/y default sentinel is ``-1`` (dataclass default);
+            # inline dict shape mirrors that convention so pre-Phase-3
+            # servers consume the payload unchanged.
+            "server_x": -1,
+            "server_y": -1,
         })
+
+    # ------------------------------------------------------------------
+    # Phase 3 D-05 — mouse / pen / scroll helpers that carry server_x/y.
+    # Session's _send_mouse_* call these (or equivalent inline dicts)
+    # so every outbound input message ships the server-physical-pixel
+    # ints alongside the legacy normalized floats. See D-05 rationale.
+    # ------------------------------------------------------------------
+
+    def send_mouse_move(self, x: float, y: float,
+                        server_x: int = -1, server_y: int = -1) -> None:
+        """Phase 3 D-05 — MouseMove with server physical-pixel ints."""
+        msg = MouseMoveMsg(x=float(x), y=float(y),
+                           server_x=int(server_x), server_y=int(server_y))
+        self.send_input(json.loads(msg.to_json()))
+
+    def send_mouse_button(self, button: int, pressed: bool,
+                          x: float, y: float,
+                          server_x: int = -1, server_y: int = -1) -> None:
+        """Phase 3 D-05 — MouseButton with server physical-pixel ints."""
+        msg = MouseButtonMsg(button=int(button), pressed=bool(pressed),
+                             x=float(x), y=float(y),
+                             server_x=int(server_x), server_y=int(server_y))
+        self.send_input(json.loads(msg.to_json()))
+
+    def send_mouse_scroll(self, dx: float, dy: float,
+                          x: float, y: float,
+                          server_x: int = -1, server_y: int = -1) -> None:
+        """Phase 3 D-05 — MouseScroll with server physical-pixel ints."""
+        msg = MouseScrollMsg(dx=float(dx), dy=float(dy),
+                             x=float(x), y=float(y),
+                             server_x=int(server_x), server_y=int(server_y))
+        self.send_input(json.loads(msg.to_json()))
+
+    def send_pen_event(self, data: dict) -> None:
+        """Phase 3 D-05 — PenEvent dict carries server_x / server_y.
+
+        The viewer's tabletEvent emits a dict with 'server_x' + 'server_y'
+        keys alongside the legacy normalized 'x' / 'y' floats. Build the
+        PenEventMsg so missing keys default to -1 sentinel.
+        """
+        msg = PenEventMsg(
+            x=float(data.get("x", 0.0)),
+            y=float(data.get("y", 0.0)),
+            server_x=int(data.get("server_x", -1)),
+            server_y=int(data.get("server_y", -1)),
+            pressure=float(data.get("pressure", 0.0)),
+            tilt_x=float(data.get("tilt_x", 0.0)),
+            tilt_y=float(data.get("tilt_y", 0.0)),
+            rotation=float(data.get("rotation", 0.0)),
+            button=int(data.get("button", 0)),
+            pressed=bool(data.get("pressed", False)),
+            hovering=bool(data.get("hovering", False)),
+            pen_type=str(data.get("pen_type", "pen")),
+        )
+        self.send_input(json.loads(msg.to_json()))
 
     def _run_loop(self, host: str, port: int):
         self._loop = asyncio.new_event_loop()
