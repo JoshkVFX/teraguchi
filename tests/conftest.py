@@ -103,3 +103,68 @@ def ten_bit_ramp_bytes():
     if not path.exists():
         return None
     return path.read_bytes()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Phase 3 fixtures — display + multi-monitor + clipboard
+#
+# Plan 03-01 Wave 0 scaffolding. Consumed by the 19 new skeleton test
+# files landing in Plan 03-01 Task 2 + the implementation tests that
+# land in Plans 02-06. Kept at the root `tests/conftest.py` level so
+# every nested scope (common / server / client / integration) inherits
+# them without re-authoring.
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@pytest.fixture
+def mock_nsscreen():
+    """Fake NSScreen / QScreen list for D-06 per-screen DPR tests.
+
+    Returns a list of fake screen objects exposing ``devicePixelRatio()``
+    and ``name()`` like Qt's :class:`QScreen`. The two-screen layout
+    mirrors the canonical D-08 mixed-DPI spike topology: a Retina
+    built-in display (DPR 2.0) plus an external 4K monitor (DPR 1.0).
+    """
+    from types import SimpleNamespace
+    screens = [
+        SimpleNamespace(
+            devicePixelRatio=lambda: 2.0,
+            name=lambda: "Built-in Retina Display",
+        ),
+        SimpleNamespace(
+            devicePixelRatio=lambda: 1.0,
+            name=lambda: "DELL U2723QE",
+        ),
+    ]
+    return screens
+
+
+@pytest.fixture
+def fake_mss_monitor_list():
+    """Fake ``mss.mss().monitors`` output for D-02 / D-09 hot-plug tests.
+
+    Per the mss convention the first entry is the full virtual desktop;
+    subsequent entries are individual physical monitors. This layout
+    matches the DXS flame-lab topology (2 × 2560×1600 at 5120×1600).
+    """
+    return [
+        {"left": 0, "top": 0, "width": 5120, "height": 1600},    # virtual desktop
+        {"left": 0, "top": 0, "width": 2560, "height": 1600},    # primary
+        {"left": 2560, "top": 0, "width": 2560, "height": 1600}, # secondary
+    ]
+
+
+@pytest.fixture
+def fixture_png():
+    """Generate a tiny valid 1×1 PNG for clipboard-image tests (D-16).
+
+    Returns raw bytes of a deterministic 1×1 black pixel PNG — the 8-byte
+    magic signature + IHDR + IDAT + IEND — so tests can assert magic-byte
+    validation without depending on Pillow at fixture time. Threat T-03-04
+    disposition: accept — no PII risk in a single black pixel.
+    """
+    import base64
+    return base64.b64decode(
+        b"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4"
+        b"2mNkYPj/HwAEAQH/iZbtCgAAAABJRU5ErkJggg=="
+    )

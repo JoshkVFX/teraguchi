@@ -101,3 +101,22 @@ def test_config_dir_windows(monkeypatch, tmp_path):
     expected = tmp_path / "appdata" / "Teraguchi"
     assert result == expected
     assert result.exists() and result.is_dir()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Phase 3 Wave 0 skeleton (Plan 03-01 Task 2)
+# Implementation in Plan 03-02 (DISP-01 bookmark + migration block)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_monitor_mode_persistence(tmp_path, monkeypatch):
+    """DISP-01 — bookmark stores monitor_mode and reloads (Wave 0 RED).
+
+    Plan 03-02 implements the migration block in BookmarkManager._load so
+    that saved monitor_mode / picked_monitor_id / picked_monitor_name
+    round-trip across client restarts (per D-01 + D-04). The wire-shape
+    contract for the new ConnectionProfile fields already ships in Plan
+    03-01 Task 1; this test stays skipped until Plan 03-02 lands the
+    migration + add() plumbing for the per-session mode picker.
+    """
+    pytest.skip("Wave 0 skeleton — implementation in Plan 03-02 (DISP-01)")
