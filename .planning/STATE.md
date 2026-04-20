@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: In progress (Phase 3)
-last_updated: "2026-04-20T07:45:00.000Z"
+last_updated: "2026-04-20T13:01:50.000Z"
 progress:
   total_phases: 7
   completed_phases: 2
   total_plans: 36
-  completed_plans: 30
-  percent: 83
+  completed_plans: 31
+  percent: 86
 ---
 
 # Teraguchi — Project State
@@ -37,21 +37,21 @@ progress:
 ## Current Position
 
 Phase: 3
-Plan: 03-01 complete; 03-02 + 03-03 next (Wave 1 parallelizable)
+Plan: 03-01 + 03-02 complete; 03-03 next (Wave 1 server crop)
 Phase 1: ✓ COMPLETE · 17 of 17 plans · Verification PASSED · 14/14 must-haves · 14/14 REQ-IDs
 Phase 2: ✓ COMPLETE · 12 of 12 plans · Verification human_needed (5 DXS HW checkpoints) · 24/24 REQ-IDs
-Phase 3: IN PROGRESS · 1 of 7 plans complete (03-01 Wave 0 TDD scaffolding)
+Phase 3: IN PROGRESS · 2 of 7 plans complete (03-01 Wave 0 scaffolding + 03-02 client mode UX)
 | Field | Value |
 |-------|-------|
 | Milestone | v1.0 |
 | Current phase | Phase 3 — Display + Multi-Monitor + Clipboard |
-| Current plan | 03-01 complete; 03-02 + 03-03 next (Wave 1 parallelizable) |
-| Status | 03-01 Wave 0 TDD scaffolding committed: wire-shape contract (D-02 / D-05 / D-13 / D-17 / ConnectionProfile 7 fields) + 19 RED test skeletons + 3 conftest fixtures. 3798 passed / 152 skipped / 0 failed on quick suite. Plans 02-06 have TDD targets ready. |
+| Current plan | 03-02 complete; 03-03 (server crop pipeline) next |
+| Status | 03-02 committed: connect-dialog ModeSelector (UI-SPEC Surface 1 verbatim), MonitorSelector radio mode + monitor_missing signal (D-04), bookmark migration block + T-03-05 whitelist, ClientProtocol.set_capture_mode + ClientHelloMsg push before handshake (D-02), FullscreenToolbar _ModeBadge (UI-SPEC Surface 2). Client+common 3620/0/111; full quick suite 3816 passed / 0 failed / 145 skipped (no regressions). DISP-01 + DISP-07 mark complete. |
 | Phases complete | 2 / 7 |
 | Requirements mapped | 108 / 108 (100% coverage) |
-| Resume file | `.planning/phases/03-display-multi-monitor-clipboard/03-02-PLAN.md` |
+| Resume file | `.planning/phases/03-display-multi-monitor-clipboard/03-03-PLAN.md` |
 
-**Progress bar:** [██▱▱▱▱▱] 2 / 7 phases complete (Phase 3: 1/7 plans)
+**Progress bar:** [██▱▱▱▱▱] 2 / 7 phases complete (Phase 3: 2/7 plans)
 
 ---
 
@@ -167,9 +167,34 @@ None at roadmap-lock time. All five PROJECT.md / SUMMARY.md open questions were 
 
 **Known deviation:** `tests/server/test_clipboard.py` was listed as "existing" in the plan but did not exist in the repo (Phase 2 shipped clipboard code without unit tests). Auto-created as a new file with only the Wave 0 skeleton per Rule 3. Plan 06 fleshes out the real CLIP-01/D-16 tests.
 
+**Phase 3 — 03-02 Wave 1 client mode UX completed (2026-04-20):**
+
+- `8167847` feat(03-02): bookmark migration + ModeSelector widget + MonitorSelector radio mode — 5 files / +745 lines
+- `e354468` feat(03-02): push capture_mode on ClientHelloMsg + toolbar mode badge — 4 files / +384 lines
+
+**Plan 02 delivered:**
+- Connect-dialog ModeSelector widget (UI-SPEC Surface 1 verbatim copy): 3 radios (Single monitor / Mirror all / Pick one) + help text + pick-one sub-selector via MonitorSelector in radio mode (D-04).
+- MonitorSelector gains `set_mode("radio")` single-check semantics, `monitor_missing(name)` signal, `set_picked(id, name)` with id→name→primary fallback, `selected_ids()` / `selected_names()` accessors, and Select All/None visibility toggle. Menu title flips to "Pick one monitor" in radio mode.
+- client/bookmarks.py::_load Phase 3 migration block marks migrated=True when any Phase 3 field is missing, triggering atomic _save() rewrite (Pitfall 9). T-03-05 STRIDE mitigation: monitor_mode whitelist enum check reverts tampered values to mirror_all with structlog warning.
+- client/protocol.py::set_capture_mode setter + ClientHelloMsg construction now carries capture_mode + picked_monitor_id + picked_monitor_name on every connect (D-02). T-03-07 client-side whitelist rejects unknown modes.
+- client/session.py::connect() extended with monitor_mode/picked_monitor_id/picked_monitor_name kwargs. New connect_with_profile() convenience. Capture-mode push lands BEFORE protocol.connect so the first handshake carries the user's mode.
+- client/fullscreen_toolbar.py _ModeBadge (UI-SPEC Surface 2): Mode: single | mirror | pick: {name} | pick → primary verbatim copy, ACCENT/WARNING underline, GOLD locked dot, tooltips verbatim. FullscreenToolbar.update_capture_mode(mode, picked_name, degraded) slot + mode_badge property.
+
+**Test gate:**
+- 31 GREEN in Task 1/2 test files (16 bookmarks + 8 ModeSelector + 7 mode badge)
+- 3620 passed / 0 failed / 111 skipped on client+common (no regressions vs Plan 01 baseline)
+- 3816 passed / 0 failed / 145 skipped on full quick suite (`not wacom_hw and not gpu and not smoke_1h and not latency_bench`)
+
+**DISP-01 + DISP-07 requirement behavior landed:**
+- DISP-01 (per-session monitor mode selector): connect-dialog picker + bookmark persistence + wire push + toolbar badge — all client-side surface complete. Server-side consumption lands in 03-03.
+- DISP-07 (per-monitor fullscreen mode): pick-one sub-selector + ClientHelloMsg.picked_monitor_* fields surface the client half. Server-side crop + fullscreen geometry math lands in 03-03 + 03-04.
+
+**Known deviation (Plan 02):** One Rule 1 test semantics fix (not source fix) — isHidden() replaces isVisible() in two headless badge tests because Qt's effective visibility returns False when parent-chain isn't shown. Production badge behavior is correct; the fix only tightened the headless test assertion. Documented in 03-02-SUMMARY.md.
+
 ---
 
 *Initialized 2026-04-18 by gsd-roadmapper.*
 *Phase 1 context gathered 2026-04-18 by gsd-discuss-phase.*
 *Phase 2 context gathered 2026-04-18 by gsd-discuss-phase.*
 *Phase 3 Plan 01 executed 2026-04-20 by gsd-execute-plan (sequential).*
+*Phase 3 Plan 02 executed 2026-04-20 by gsd-execute-plan (sequential).*
