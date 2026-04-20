@@ -177,6 +177,15 @@ class ClientProtocol:
         # through swap_cmd_ctrl_for_linux_dest() before serializing.
         self._swap_cmd_ctrl: bool = False
 
+        # Phase 3 D-01 / D-02 — capture-mode state baked into the outbound
+        # ClientHelloMsg. Defaults preserve pre-Phase-3 behavior (mirror_all
+        # = ship full virtual desktop unchanged). ``session.py`` flips via
+        # ``set_capture_mode`` before calling ``protocol.connect`` so the
+        # first hello carries the user's picked mode.
+        self._capture_mode: str = "mirror_all"
+        self._picked_monitor_id: int = -1
+        self._picked_monitor_name: str = ""
+
     @property
     def connected(self) -> bool:
         return self._connected
@@ -335,6 +344,32 @@ class ClientProtocol:
         """
         self._swap_cmd_ctrl = bool(enabled)
         logger.debug("client.protocol.swap_cmd_ctrl = %s", self._swap_cmd_ctrl)
+
+    def set_capture_mode(self, mode: str, picked_id: int = -1,
+                         picked_name: str = "") -> None:
+        """Phase 3 D-02 — set the capture-mode fields baked into ClientHelloMsg.
+
+        Server-side ``session_runtime`` (Plan 03) applies the crop rect
+        from these values before the encoder spins up. Defaults preserve
+        pre-Phase-3 behavior (mirror_all → no crop).
+
+        Whitelist enforcement (threat T-03-07): unknown modes fall back
+        to mirror_all with a structlog warning.
+        """
+        if mode not in ("single", "mirror_all", "pick_one"):
+            logger.warning(
+                "protocol.invalid_capture_mode mode=%r → mirror_all", mode)
+            mode = "mirror_all"
+        self._capture_mode = mode
+        self._picked_monitor_id = (
+            int(picked_id) if picked_id is not None else -1
+        )
+        self._picked_monitor_name = str(picked_name or "")
+        logger.debug(
+            "client.protocol.capture_mode=%s picked_id=%s picked_name=%r",
+            self._capture_mode, self._picked_monitor_id,
+            self._picked_monitor_name,
+        )
 
     def send_reset_modifiers(self, reason: str = "unknown") -> None:
         """Phase 2 D-11 — emit a KeyResetModifiersMsg over the wire.
@@ -523,7 +558,11 @@ class ClientProtocol:
                 if self.on_connected:
                     self.on_connected()
 
-                hello = ClientHelloMsg()
+                hello = ClientHelloMsg(
+                    capture_mode=self._capture_mode,
+                    picked_monitor_id=self._picked_monitor_id,
+                    picked_monitor_name=self._picked_monitor_name,
+                )
                 if self._screen_size:
                     hello.screen_width = self._screen_size[0]
                     hello.screen_height = self._screen_size[1]

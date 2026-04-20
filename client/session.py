@@ -125,12 +125,19 @@ class Session(QObject):
     def connect(self, host: str, port: int, username: str = "",
                 password: str = "", use_tls: bool = True,
                 auto_reconnect: bool = True, bookmark_id: str = "",
-                swap_cmd_ctrl: bool = False):
+                swap_cmd_ctrl: bool = False,
+                monitor_mode: str = "mirror_all",
+                picked_monitor_id: int = -1,
+                picked_monitor_name: str = ""):
         self._host = host
         self._port = port
         self._username = username
         self._password = password
         self._bookmark_id = bookmark_id
+        # Phase 3 D-01 — remember per-session mode for toolbar badge updates.
+        self._monitor_mode = monitor_mode
+        self._picked_monitor_id = picked_monitor_id
+        self._picked_monitor_name = picked_monitor_name
 
         self.status_changed.emit("connecting")
         self.title_changed.emit(self.display_name)
@@ -140,10 +147,41 @@ class Session(QObject):
         # outbound key event is rewritten correctly.
         self.protocol.set_swap_cmd_ctrl(swap_cmd_ctrl)
 
+        # Phase 3 D-01 / D-02 — push capture-mode + pick fields BEFORE the
+        # handshake so the first ClientHelloMsg carries the user's picked
+        # mode. Server-side session_runtime (Plan 03) reads these to
+        # configure the encoder crop rect.
+        self.protocol.set_capture_mode(
+            monitor_mode, picked_monitor_id, picked_monitor_name,
+        )
+
         self.protocol.disconnect()
         self.protocol.connect(
             host, port, username=username, password=password,
             use_tls=use_tls, auto_reconnect=auto_reconnect)
+
+    def connect_with_profile(self, profile, password: str = "",
+                             auto_reconnect: bool = True):
+        """Phase 3 D-01 — connect using a ConnectionProfile directly.
+
+        Thin convenience that pulls monitor_mode + picked_monitor_id +
+        picked_monitor_name off the profile and hands them to
+        :meth:`connect`. Mirrors the Phase 2 destination_kind /
+        swap_cmd_ctrl plumbing pattern so Plan 03's wire flow stays
+        readable at the session layer.
+        """
+        self.connect(
+            host=profile.host,
+            port=profile.port,
+            username=profile.username,
+            password=password,
+            use_tls=profile.use_tls,
+            auto_reconnect=auto_reconnect,
+            swap_cmd_ctrl=bool(getattr(profile, "swap_cmd_ctrl", False)),
+            monitor_mode=getattr(profile, "monitor_mode", "mirror_all"),
+            picked_monitor_id=getattr(profile, "picked_monitor_id", -1),
+            picked_monitor_name=getattr(profile, "picked_monitor_name", ""),
+        )
 
     def connect_broker(self, host: str, port: int, username: str = "",
                        password: str = "", use_tls: bool = True,
@@ -361,6 +399,18 @@ class Session(QObject):
             QApplication.clipboard().dataChanged.disconnect(self._on_clipboard_local_changed)
         except RuntimeError:
             pass  # already disconnected
+
+    # ── Phase 3 D-01 — capture-mode getters for the fullscreen toolbar ──
+
+    @property
+    def capture_mode(self) -> str:
+        """Current monitor mode for this session (default mirror_all)."""
+        return getattr(self, "_monitor_mode", "mirror_all")
+
+    @property
+    def picked_monitor_name(self) -> str:
+        """Name of the picked monitor for pick-one sessions (empty otherwise)."""
+        return getattr(self, "_picked_monitor_name", "")
 
     def _on_error(self, error):
         self.status_changed.emit("error")
