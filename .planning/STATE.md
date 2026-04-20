@@ -26,7 +26,7 @@ progress:
 
 **Core value:** A Flame artist can work an 8-hour client session remotely and not notice they're remote — input latency, color accuracy, and reliability all match sitting in front of the machine. If that holds, everything else matters. If it doesn't, the project has failed regardless of feature count.
 
-**Current focus:** Phase 02 — input-color-fidelity
+**Current focus:** Phase 03 — display-multi-monitor-clipboard (PAUSED after Wave 2 — D-08 DXS hardware spike pending)
 
 **Why now:** HP Anyware (PCoIP) end-of-life announced; new sales end May 7 2026, existing customers migrate by Oct 31 2029. Every small independent VFX studio (1-10 person shops) running Flame / Nuke / Resolve over PCoIP is now on a clock. NICE DCV is AWS-only and expensive; Parsec is SaaS-only / 8-bit / Windows-server; Sunshine has no pen tablet support. The gap (self-hosted, OSS, 10-bit, Wacom-first, macOS server) is uncontested.
 
