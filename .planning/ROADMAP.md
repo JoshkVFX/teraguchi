@@ -115,7 +115,13 @@ This is brownfield. A working vibe-coded prototype already covers the happy path
   3. Cursor coordinates land on the correct pixel on a Retina-MacBook + external-4K client driving a 2×2560×1600 Rocky NVIDIA Xorg server — verified on real hardware
   4. Bidirectional text clipboard handles >1MB pastes and CRLF/LF/CR line endings without corruption; bidirectional image clipboard moves PNG and JPEG screenshots either direction; per-direction toggle UI lets the user disable client→server paste for privacy
   5. CustomEDID for Xvfb sessions advertises a Flame-approved monitor model so Flame's monitor-config dialog stops complaining
-**Plans**: TBD
+**Plans**: 6 plans
+  - [ ] 03-01-PLAN.md — Wave 0 TDD scaffolding (wire-protocol extensions + 19 RED test skeletons + ConnectionProfile fields)
+  - [ ] 03-02-PLAN.md — Wave 1 client mode UX (DISP-01/DISP-07): connect-dialog ModeSelector + bookmark migration + MonitorSelector radio mode + toolbar mode badge + ClientHelloMsg push
+  - [ ] 03-03-PLAN.md — Wave 1 server crop pipeline (DISP-04/DISP-07): BGRA + P010 capture_raw_bgra_with_crop + apply_capture_mode + full hot-plug signature + Flame-approved EDID + Mac SCK push delegate
+  - [ ] 03-04-PLAN.md — Wave 2 cursor math (DISP-03/DISP-05): _widget_to_remote rewrite + per-screen DPR + screenChanged hook + F12 dev overlay + D-08 4-corner DXS hardware spike (manual checkpoint)
+  - [ ] 03-05-PLAN.md — Wave 2 hot-plug UX (DISP-02/DISP-06): MonitorListMsg.degradations + auto-fallback iteration + RemapBanner + InfoToast + monitor-switched toast + degraded mode badge
+  - [ ] 03-06-PLAN.md — Wave 3 clipboard (CLIP-01/CLIP-02/CLIP-03): ClipboardChunkAssembler + PNG path on Linux + Mac + CRLF preservation + 4-checkbox toolbar menu + per-direction gating with Pitfall 7 race fix
 **Size**: M
 **UI hint**: yes
 
@@ -252,7 +258,7 @@ For scope discipline (single maintainer):
 |-------|----------------|--------|-----------|
 | 1. Stability + CI + Test Baseline | 17/17 | Complete | 2026-04-19 |
 | 2. Input + Color Fidelity | 12/12 | Complete | 2026-04-19 |
-| 3. Display + Multi-Monitor + Clipboard | 0/0 | Not started | — |
+| 3. Display + Multi-Monitor + Clipboard | 0/6 | Planned | — |
 | 4. Audio | 0/0 | Not started | — |
 | 5. Network, Transport, Side-Channels | 0/0 | Not started | — |
 | 6. Distribution + Security Hardening | 0/0 | Not started | — |
