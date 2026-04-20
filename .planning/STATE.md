@@ -3,7 +3,7 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: In progress (Phase 3)
-last_updated: "2026-04-20T13:22:00.000Z"
+last_updated: "2026-04-20T18:45:00.000Z"
 progress:
   total_phases: 7
   completed_phases: 2
@@ -37,21 +37,21 @@ progress:
 ## Current Position
 
 Phase: 3
-Plan: 03-01 + 03-02 + 03-03 complete; 03-04 next (client cursor math + DPR)
+Plan: 03-04 code complete; D-08 manual hardware gate pending Randy session
 Phase 1: ✓ COMPLETE · 17 of 17 plans · Verification PASSED · 14/14 must-haves · 14/14 REQ-IDs
 Phase 2: ✓ COMPLETE · 12 of 12 plans · Verification human_needed (5 DXS HW checkpoints) · 24/24 REQ-IDs
-Phase 3: IN PROGRESS · 3 of 7 plans complete (03-01 Wave 0 scaffolding + 03-02 client mode UX + 03-03 server capture pipeline)
+Phase 3: IN PROGRESS · 3 of 7 plans + 03-04 code-complete awaiting D-08 hardware spike
 | Field | Value |
 |-------|-------|
 | Milestone | v1.0 |
 | Current phase | Phase 3 — Display + Multi-Monitor + Clipboard |
-| Current plan | 03-03 complete; 03-04 (client cursor math + DPR) next |
-| Status | 03-03 committed: server-side BGRA crop via capture_raw_bgra_with_crop (D-02; mirror_all byte-equal to Phase 2 capture, single+pick_one crop pre-encode); apply_capture_mode with T-03-09 whitelist + D-04 id-wins-name-fallback + D-09 pick_one→primary fallback + capture_mode_degraded=True surface (Plan 05 toast); full (id, w, h, x, y) tuple detect_hotplug signature on Linux + Mac; Mac _DisplayChangeDelegate via NSWorkspaceDidChangeScreenParametersNotification pushes _hotplug_pending for sub-second hotplug; monitor_hotplug poll cadence 5.0s→1.0s; Eizo CG279X EDID name + ENC manufacturer ID (DISP-04). P010 raw-crop seam deferred to Phase 3.5 (docs/release.md). Full quick suite 3838/0/139; ten_bit_smoke gate 7/0/2. DISP-04 + DISP-07 marked complete. |
+| Current plan | 03-04 code complete; D-08 manual gate pending |
+| Status | 03-04 code committed across 3 commits (cursor math + DPR + F12 overlay + docs template): _widget_to_remote returns 4-tuple (rx_norm, ry_norm, server_x_px, server_y_px) per D-05; _current_screen_dpr uses QWindow.windowHandle().screen().devicePixelRatio() per D-06 (Pitfall 1 root-cause fix); showEvent wires QWindow.screenChanged to _on_screen_changed which recomputes scaling cache + re-emits pen_proximity when _pen_was_in_proximity (Pitfall 2 cross-trigger symmetric to Phase 2 D-19); mouse/button/scroll signals extended from 2/4/4 → 4/6/6 args with server_x/server_y; pen_data dict gains server_x/server_y keys; protocol.send_mouse_move/send_mouse_button/send_mouse_scroll/send_pen_event build new dataclass shapes; session._send_mouse_* slots consume 4-arg signals; F12 overlay (client/coord_debug_overlay.py NEW) gated at HANDLER-INSTALL time on TERAGUCHI_DEBUG=1 per Pitfall 8 — release builds leave _coord_overlay=None and F12 falls through; UI-SPEC Surface 6 verbatim copy + zero inline hex (theme.* tokens only); docs/release.md pre-populated with D-08 spike template (8-row matrix, sign-off checkboxes, un-flipped pending). Full quick suite 3850/0/132 (12 new GREEN tests vs Plan 03-03 baseline 3838); target tests 12/12 GREEN. ROADMAP plan 04 checkbox stays un-flipped — flips only after Randy runs D-08 at DXS and records results in docs/release.md. DISP-03 + DISP-05 requirement behavior is shipped in code but NOT marked complete pending hardware verification. |
 | Phases complete | 2 / 7 |
 | Requirements mapped | 108 / 108 (100% coverage) |
-| Resume file | `.planning/phases/03-display-multi-monitor-clipboard/03-04-PLAN.md` |
+| Resume file | `.planning/phases/03-display-multi-monitor-clipboard/03-04-PLAN.md` (continuation after Randy D-08 hardware session) |
 
-**Progress bar:** [██▱▱▱▱▱] 2 / 7 phases complete (Phase 3: 3/7 plans)
+**Progress bar:** [██▱▱▱▱▱] 2 / 7 phases complete (Phase 3: 3/7 plans + 03-04 code-complete awaiting hardware gate)
 
 ---
 
@@ -217,6 +217,37 @@ None at roadmap-lock time. All five PROJECT.md / SUMMARY.md open questions were 
 
 **Known deviations (Plan 03):** Three Rule 1 fixes — (1) defensive getattr fallback in stream_loop for Phase 1 _StubCapture compat; (2) D-10 docstring rephrased to avoid regex false-positive in acceptance gate; (3) 5-line comment added to mac_screen_capture.py observer install so `screenParametersChanged_` grep finds both the Python def + the selector-mapping comment. No source behavior changes in fixes 2+3; fix 1 is a pure additive safety branch. Documented in 03-03-SUMMARY.md.
 
+**Phase 3 — 03-04 Wave 2 code-complete; D-08 hardware gate pending (2026-04-20):**
+
+- `8e3f18c` test(03-04): add failing tests for cursor math + per-screen DPR + screenChanged — 3 files / +312 / -45 lines (RED phase — 12 new tests, 5 Wave 0 skips converted)
+- `a377090` feat(03-04): cursor math + per-screen DPR + screenChanged + server_x/y wire — 3 files / +352 lines (GREEN phase; viewer.py + protocol.py + session.py)
+- `64610c4` feat(03-04): add F12 coord-debug overlay widget (D-07, UI-SPEC Surface 6) — 1 file / +189 lines (NEW client/coord_debug_overlay.py)
+- `78f6be2` docs(03-04): pre-populate D-08 4-corner DXS hardware spike template — 1 file / +59 / -1 lines (docs/release.md recording sheet)
+
+**Plan 04 delivered (code-complete):**
+- `_widget_to_remote` rewritten to return 4-tuple `(rx_norm, ry_norm, server_x_px, server_y_px)` (D-05); both branches (simple + composite past-last-monitor edge case) produce consistent integer outputs.
+- `_current_screen_dpr` helper (D-06) uses `self.window().windowHandle().screen().devicePixelRatio()` — never the primary's DPR (Pitfall 1 / Mozilla bz #794038 root-cause fix). Falls back to `devicePixelRatioF()` when windowHandle is None.
+- `_connect_screen_changed` + `_on_screen_changed` wired inside `showEvent`. Slot recomputes `_update_scaling` + re-emits `pen_proximity` when `_pen_was_in_proximity` (Pitfall 2 — symmetric to Phase 2 D-19 focusIn re-synth). Logs DPR transitions at INFO level.
+- All 5 `_widget_to_remote` call sites (tabletEvent + 4 mouse handlers) unpack the 4-tuple. Qt signals extended: `mouse_moved` 2→4 args, `mouse_button_changed` 4→6 args, `mouse_scrolled` 4→6 args.
+- `client/protocol.py` adds `send_mouse_move` / `send_mouse_button` / `send_mouse_scroll` / `send_pen_event` helpers that build `MouseMoveMsg` / `MouseButtonMsg` / `MouseScrollMsg` / `PenEventMsg` dataclasses with `server_x` / `server_y`. `send_key_event` inline dict adds `server_x` / `server_y` sentinels (-1) so KeyEvent wire carries the fields.
+- `client/session.py::_send_mouse_*` slot signatures updated to accept `server_x` / `server_y` kwargs (default -1 sentinel = backward-compat).
+- F12 dev overlay (D-07) gated at HANDLER-INSTALL time on `TERAGUCHI_DEBUG=1` per Pitfall 8. Release builds leave `_coord_overlay=None`; F12 keyPressEvent branch is `None`-guarded and falls through. UI-SPEC Surface 6 verbatim copy; zero inline hex (theme.* tokens only); `WA_TransparentForMouseEvents` never blocks clicks.
+- `docs/release.md` pre-populated with D-08 4-corner DXS hardware spike template (8-row matrix × 4 corners = 32 measurement cells, sign-off boxes for DISP-03 / DISP-05, pen-interaction row).
+
+**Test gate:**
+- 12 GREEN on Plan 04 target tests (3 cursor_math + 5 viewer_dpr + 4 viewer_screen_changed)
+- 3850 passed / 0 failed / 132 skipped on full quick suite (+12 vs Plan 03-03 baseline 3838)
+- No latency regression — Phase 1 p99<25ms gate unchanged path (cursor math adds 8 bytes on wire + removes a normalize/denormalize step; likely neutral-to-positive per D-18)
+
+**DISP-03 + DISP-05 status:** CODE COMPLETE, NOT YET MARKED COMPLETE.
+- Cursor-math + per-screen DPR + F12 overlay surface lands; synthetic DXS 4-corner CI fixture (2×2560×1600) passes within 1 px tolerance.
+- Real-hardware D-08 spike pending — Randy at DXS with Cintiq Pro 24 + Retina MBP + 2× NVIDIA Xorg server rig. Matrix lives in docs/release.md waiting for sign-off.
+- ROADMAP plan 04 checkbox stays `[ ]` with "(code complete; D-08 gate pending hardware session)" note.
+
+**Next action:** Randy runs the D-08 manual spike at DXS, populates the docs/release.md matrix, checks DISP-03 + DISP-05 sign-off boxes. Once signed, orchestrator spawns a continuation agent that commits docs/release.md + creates 03-04-SUMMARY.md + flips ROADMAP plan 04 to `[x]` + marks DISP-03 + DISP-05 complete in REQUIREMENTS.md.
+
+**Known deviation (Plan 04):** None — plan executed exactly as written for the code-change tasks. No Rule 1/2/3 auto-fixes were needed; all acceptance grep patterns matched on first pass; full quick suite stayed green; zero regressions against the Plan 03-03 baseline.
+
 ---
 
 *Initialized 2026-04-18 by gsd-roadmapper.*
@@ -225,3 +256,4 @@ None at roadmap-lock time. All five PROJECT.md / SUMMARY.md open questions were 
 *Phase 3 Plan 01 executed 2026-04-20 by gsd-execute-plan (sequential).*
 *Phase 3 Plan 02 executed 2026-04-20 by gsd-execute-plan (sequential).*
 *Phase 3 Plan 03 executed 2026-04-20 by gsd-execute-plan (sequential).*
+*Phase 3 Plan 04 code-complete 2026-04-20 by gsd-execute-plan (sequential); D-08 manual hardware spike pending.*
