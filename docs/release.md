@@ -301,6 +301,64 @@ feature-complete sign-off:
   per-session encoder wrap so two concurrent sessions on the same X
   display can each request a different `capture_mode`.
 
+## Phase 3 D-08 4-corner DXS hardware spike
+
+Gate on DISP-03 + DISP-05 — verifies the Plan 03-04 cursor-math /
+per-screen DPR implementation against real Cintiq Pro 24 + Retina MBP
++ 2× NVIDIA Xorg DXS hardware. Status: **pending hardware session**.
+Executor commits the code landed Plan 03-04 Task 1 + Task 2; Randy
+runs the manual spike at the DXS office and records the matrix below.
+
+**Date:** <DEFERRED — Randy to execute at DXS>
+**Tester:** Randy McEntee
+**Hardware (client):** Mac model: ____ macOS version: ____ Internal DPR: 2.0 External monitor: ____ External DPR: ____
+**Hardware (server):** Server: dxs-flame-XX, Rocky 9.X, NVIDIA driver: ____ Monitors: 2× ____
+
+Procedure (from Plan 03-04 Task 3):
+1. Launch client with `TERAGUCHI_DEBUG=1` so F12 toggles the coord overlay.
+2. Connect in each of 3 modes (`single`, `mirror_all`, `pick_one`) to the
+   2× NVIDIA Xorg Rocky server.
+3. Move viewer window between Retina internal (DPR 2.0) and external 4K
+   (DPR 1.0) for each mode.
+4. Click each of the 4 corner pixels of each visible server monitor; read
+   the server-px value from F12 overlay; assert it matches the expected
+   corner within 1 px.
+5. Pen interaction test — ensure Wacom pressure survives screenChanged
+   transitions (Pitfall 2).
+
+Pass criterion: `delta px` row in F12 overlay reads `0, 0` (or within
+1 px) for every test click. Every cell in the matrix below checked off.
+
+| Mode | Client Screen | Server Monitor | NW | NE | SW | SE | Notes |
+|------|---------------|----------------|----|----|----|----|-------|
+| single | Retina | primary | ☐ | ☐ | ☐ | ☐ | |
+| single | External 4K | primary | ☐ | ☐ | ☐ | ☐ | |
+| mirror_all | Retina | mon 1 | ☐ | ☐ | ☐ | ☐ | |
+| mirror_all | Retina | mon 2 | ☐ | ☐ | ☐ | ☐ | |
+| mirror_all | External 4K | mon 1 | ☐ | ☐ | ☐ | ☐ | |
+| mirror_all | External 4K | mon 2 | ☐ | ☐ | ☐ | ☐ | |
+| pick_one (mon 2) | Retina | mon 2 | ☐ | ☐ | ☐ | ☐ | |
+| pick_one (mon 2) | External 4K | mon 2 | ☐ | ☐ | ☐ | ☐ | |
+
+**Pen interaction across screenChanged:** ☐ verified with Wacom ____
+
+**Sign-off:**
+- ☐ DISP-03 verified (cursor lands within 1 px on every corner of every
+  monitor in every mode, across both client screens)
+- ☐ DISP-05 verified (mixed-DPI rendering — DPR lookup was correct per
+  F12 overlay readout on each screen)
+- ☐ Re-scope needed (file issue # ____ — D-05 wire model needs rework
+  before Plan 05 + 06 proceed)
+
+**Fail actions:** File a regression issue capturing (a) which corner,
+(b) which screen, (c) F12 overlay state at failure, (d) measured delta
+px. Per CONTEXT.md D-08, the planner re-scopes D-05 before any later
+Phase 3 plans build further math on top of the broken foundation.
+
+**Plan 03-04 ROADMAP checkbox:** stays un-flipped (code complete only)
+until this table is populated and sign-off boxes checked. See
+`.planning/STATE.md` + `.planning/ROADMAP.md` Plan 04 note.
+
 ---
 
-*Last updated: 2026-04-20 (Phase 3, Plan 03-03 — Phase 3.5 follow-ups for P010 raw-crop seam + multi-session crop per host added).*
+*Last updated: 2026-04-20 (Phase 3, Plan 03-04 — added D-08 4-corner hardware spike template; code complete, hardware gate pending).*
