@@ -130,6 +130,37 @@ class BookmarkManager:
                             prof.swap_cmd_ctrl = pdata.get("swap_cmd_ctrl", False)
                         else:
                             prof.swap_cmd_ctrl = pdata.get("swap_cmd_ctrl", True)
+
+                    # Phase 3 D-01 / D-15 migration — pre-Phase-3 bookmarks
+                    # lack the new display + clipboard fields. Dataclass
+                    # defaults already pick the safe values (mirror_all +
+                    # all clipboard toggles ON per D-16), but we mark the
+                    # bookmark as migrated so _save() persists the new
+                    # shape on this load — that prevents a subtle "user
+                    # enables a toggle but it never persists because the
+                    # field was never in the JSON" bug (Pitfall 9).
+                    phase3_fields = (
+                        "monitor_mode", "picked_monitor_id",
+                        "picked_monitor_name",
+                        "clipboard_text_c2s", "clipboard_text_s2c",
+                        "clipboard_image_c2s", "clipboard_image_s2c",
+                    )
+                    if any(f not in pdata for f in phase3_fields):
+                        migrated = True
+
+                    # Phase 3 T-03-05 (STRIDE) — hand-edited JSON could
+                    # drop a tampered ``monitor_mode`` value through
+                    # ``ConnectionProfile.from_dict``; the dataclass
+                    # has no enum enforcement. Whitelist-check here
+                    # and revert to mirror_all with a logged warning.
+                    prof = self._profiles[bid]
+                    if prof.monitor_mode not in ("single", "mirror_all",
+                                                 "pick_one"):
+                        logger.warning(
+                            "bookmark.invalid_monitor_mode bid=%s mode=%r "
+                            "→ mirror_all", bid, prof.monitor_mode)
+                        prof.monitor_mode = "mirror_all"
+                        migrated = True
                 logger.info("Loaded %d bookmarks", len(self._profiles))
                 if migrated:
                     self._save()

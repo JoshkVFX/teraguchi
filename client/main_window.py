@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QDockWidget, QListWidget, QListWidgetItem, QCheckBox,
     QComboBox, QMenu, QFileDialog,
     QStyledItemDelegate, QStyle, QToolButton,
+    QRadioButton, QButtonGroup,
 )
 
 from client import theme
@@ -42,6 +43,203 @@ from client.quality_control import QualityControlPanel
 from client.fullscreen_toolbar import FullscreenToolbar, REVEAL_ZONE
 
 logger = logging.getLogger(__name__)
+
+
+# ════════════════════════════════════════════════════
+# Phase 3 D-01 / D-04 — Monitor mode picker
+# ════════════════════════════════════════════════════
+
+
+class ModeSelector(QWidget):
+    """Connect-dialog Monitor-mode picker (UI-SPEC Surface 1).
+
+    Three radios (Single monitor / Mirror all / Pick one). When
+    ``Pick one`` is checked, the existing :class:`MonitorSelector`
+    reveals in ``radio`` mode for the sub-selection (D-04).
+
+    Emits ``mode_changed(mode, picked_monitor_id, picked_monitor_name)``
+    on every radio toggle AND on every sub-selector pick — callers
+    can treat it as the canonical live-state signal.
+
+    Copy contract (UI-SPEC Surface 1) is verbatim; do not paraphrase
+    the help strings below — test coverage greps them.
+    """
+
+    # Signal carries (mode, picked_monitor_id, picked_monitor_name)
+    mode_changed = Signal(str, int, str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(4)
+
+        heading = QLabel("Monitor mode")
+        heading.setStyleSheet(
+            f"font-size: 13px; font-weight: 600; color: {theme.TEXT_PRIMARY};"
+        )
+        v.addWidget(heading)
+
+        # Three radios — UI-SPEC Surface 1 verbatim copy.
+        self._group = QButtonGroup(self)
+        self._group.setExclusive(True)
+        self._radio_single = QRadioButton("Single monitor")
+        self._radio_mirror = QRadioButton("Mirror all")
+        self._radio_pick = QRadioButton("Pick one")
+        self._help_single = QLabel(
+            "Show one server monitor at a time. Lowest bandwidth."
+        )
+        self._help_mirror = QLabel(
+            "Show every server monitor in one window. "
+            "Matches client review workflows."
+        )
+        self._help_pick = QLabel(
+            "Choose a specific server monitor. Remembered across sessions."
+        )
+        help_style = (
+            f"font-size: 12px; color: {theme.TEXT_SECONDARY}; "
+            f"padding-left: 24px;"
+        )
+        for helper in (self._help_single, self._help_mirror, self._help_pick):
+            helper.setStyleSheet(help_style)
+            helper.setWordWrap(True)
+
+        self._group.addButton(self._radio_single)
+        v.addWidget(self._radio_single)
+        v.addWidget(self._help_single)
+        self._group.addButton(self._radio_mirror)
+        v.addWidget(self._radio_mirror)
+        v.addWidget(self._help_mirror)
+        self._group.addButton(self._radio_pick)
+        v.addWidget(self._radio_pick)
+        v.addWidget(self._help_pick)
+
+        # Pick-one sub-selector — MonitorSelector in radio mode (D-04).
+        self._pick_label = QLabel("Which monitor?")
+        self._pick_label.setStyleSheet(
+            f"font-size: 12px; color: {theme.TEXT_SECONDARY}; "
+            f"padding-left: 24px;"
+        )
+        from client.monitor_selector import MonitorSelector
+        self._monitor_picker = MonitorSelector()
+        self._monitor_picker.set_mode("radio")
+        self._pick_label.setVisible(False)
+        self._monitor_picker.setVisible(False)
+        v.addWidget(self._pick_label)
+        v.addWidget(self._monitor_picker)
+
+        # Wiring
+        for r in (self._radio_single, self._radio_mirror, self._radio_pick):
+            r.toggled.connect(self._on_radio_toggled)
+        self._monitor_picker.selection_changed.connect(self._on_pick_changed)
+        self._monitor_picker.monitor_missing.connect(self._on_monitor_missing)
+
+        # Default state
+        self._radio_mirror.setChecked(True)
+
+    # ── Pre-fill / update --------------------------------------------
+
+    def set_mode(self, mode: str, picked_id: int = -1,
+                 picked_name: str = "") -> None:
+        """Pre-fill from a saved bookmark (D-01)."""
+        mapping = {
+            "single": self._radio_single,
+            "mirror_all": self._radio_mirror,
+            "pick_one": self._radio_pick,
+        }
+        r = mapping.get(mode, self._radio_mirror)
+        r.setChecked(True)
+        is_pick = (r is self._radio_pick)
+        self._pick_label.setVisible(is_pick)
+        self._monitor_picker.setVisible(is_pick)
+        if is_pick and picked_id >= 0:
+            self._monitor_picker.set_picked(picked_id, picked_name)
+
+    def update_monitors(self, monitors: list) -> None:
+        self._monitor_picker.update_monitors(monitors)
+
+    # ── Accessors ----------------------------------------------------
+
+    @property
+    def monitor_mode(self) -> str:
+        if self._radio_single.isChecked():
+            return "single"
+        if self._radio_mirror.isChecked():
+            return "mirror_all"
+        return "pick_one"
+
+    @property
+    def picked_monitor_id(self) -> int:
+        sel = self._monitor_picker.selected_ids()
+        return sel[0] if sel else -1
+
+    @property
+    def picked_monitor_name(self) -> str:
+        sel = self._monitor_picker.selected_names()
+        return sel[0] if sel else ""
+
+    # ── Internal -----------------------------------------------------
+
+    def _on_radio_toggled(self, checked: bool):
+        """Emit mode_changed ONLY on the checked side of a toggle.
+
+        QButtonGroup exclusive mode fires two ``toggled`` signals per
+        click — one ``False`` for the deselecting radio and one
+        ``True`` for the new one. Filter to the True side so
+        mode_changed emits once per user click.
+        """
+        if not checked:
+            return
+        is_pick = self._radio_pick.isChecked()
+        self._pick_label.setVisible(is_pick)
+        self._monitor_picker.setVisible(is_pick)
+        self.mode_changed.emit(
+            self.monitor_mode,
+            self.picked_monitor_id,
+            self.picked_monitor_name,
+        )
+
+    def _on_pick_changed(self, _ids: list):
+        if self._radio_pick.isChecked():
+            self.mode_changed.emit(
+                "pick_one",
+                self.picked_monitor_id,
+                self.picked_monitor_name,
+            )
+
+    def _on_monitor_missing(self, name: str):
+        # Transient surface handled by the session (Surface 4 toast).
+        # Log here for diagnostics; the emit itself propagates to the
+        # session if it's wired.
+        logger.warning("mode_selector.bookmarked_monitor_missing name=%r", name)
+
+    # ── D-03 mid-session lock ---------------------------------------
+
+    def set_disabled_during_session(self, disabled: bool) -> None:
+        """Gray out the mode widget during an active session (D-03).
+
+        UI-SPEC Surface 3 locks the tooltip copy verbatim —
+        ``Disconnect and reconnect to change monitor mode.`` The
+        Qt ForbiddenCursor reinforces "not interactive right now".
+        No mid-session switch path exists in v1 (see 03-CONTEXT.md).
+        """
+        self.setEnabled(not disabled)
+        tip = (
+            "Disconnect and reconnect to change monitor mode."
+            if disabled else ""
+        )
+        for w in (self._radio_single, self._radio_mirror, self._radio_pick,
+                  self._pick_label, self._monitor_picker):
+            w.setToolTip(tip)
+            if disabled:
+                w.setCursor(Qt.ForbiddenCursor)
+            else:
+                w.unsetCursor()
+        self.setAccessibleName(
+            "Monitor mode, disabled during active session"
+            if disabled else "Monitor mode"
+        )
 
 
 # ════════════════════════════════════════════════════
@@ -122,6 +320,11 @@ class ConnectionDialog(QDialog):
             BookmarkManager.default_swap_for_destination("linux")
         )
         layout.addRow(self.swap_cmd_ctrl_check)
+
+        # Phase 3 D-01 / D-04 — Monitor mode picker (per-session, locked
+        # at connect per 03-CONTEXT.md). UI-SPEC Surface 1.
+        self.mode_selector = ModeSelector()
+        layout.addRow(self.mode_selector)
 
         self.save_bookmark_check = QCheckBox("Save as bookmark")
         layout.addRow(self.save_bookmark_check)
@@ -206,6 +409,23 @@ class ConnectionDialog(QDialog):
         """
         data = self.destination_kind_combo.currentData()
         return data if data in ("linux", "mac") else "linux"
+
+    # ── Phase 3 D-01 — Monitor mode picker accessors ──────────────
+
+    @property
+    def monitor_mode(self) -> str:
+        """Chosen capture mode: 'single' | 'mirror_all' | 'pick_one'."""
+        return self.mode_selector.monitor_mode
+
+    @property
+    def picked_monitor_id(self) -> int:
+        """Bookmarked/newly-picked monitor id (-1 if not pick_one)."""
+        return self.mode_selector.picked_monitor_id
+
+    @property
+    def picked_monitor_name(self) -> str:
+        """Bookmarked/newly-picked monitor name ("" if not pick_one)."""
+        return self.mode_selector.picked_monitor_name
 
 
 # ════════════════════════════════════════════════════
