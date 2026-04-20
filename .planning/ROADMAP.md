@@ -116,7 +116,7 @@ This is brownfield. A working vibe-coded prototype already covers the happy path
   4. Bidirectional text clipboard handles >1MB pastes and CRLF/LF/CR line endings without corruption; bidirectional image clipboard moves PNG and JPEG screenshots either direction; per-direction toggle UI lets the user disable client→server paste for privacy
   5. CustomEDID for Xvfb sessions advertises a Flame-approved monitor model so Flame's monitor-config dialog stops complaining
 **Plans**: 7 plans
-  - [ ] 03-01-PLAN.md — Wave 0 TDD scaffolding (wire-protocol extensions + 19 RED test skeletons + ConnectionProfile fields)
+  - [x] 03-01-PLAN.md — Wave 0 TDD scaffolding (wire-protocol extensions + 19 RED test skeletons + ConnectionProfile fields)
   - [ ] 03-02-PLAN.md — Wave 1 client mode UX (DISP-01/DISP-07): connect-dialog ModeSelector + bookmark migration + MonitorSelector radio mode + toolbar mode badge + ClientHelloMsg push
   - [ ] 03-03-PLAN.md — Wave 1 server crop pipeline (DISP-04/DISP-07): BGRA capture_raw_bgra_with_crop + apply_capture_mode + full hot-plug signature + Flame-approved EDID + Mac SCK push delegate (P010 raw-crop seam deferred to Phase 3.5)
   - [ ] 03-04-PLAN.md — Wave 2 cursor math (DISP-03/DISP-05): _widget_to_remote rewrite + per-screen DPR + screenChanged hook + F12 dev overlay + D-08 4-corner DXS hardware spike (manual checkpoint)

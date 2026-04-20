@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: Ready to execute
-last_updated: "2026-04-20T07:16:01.957Z"
+status: In progress (Phase 3)
+last_updated: "2026-04-20T07:45:00.000Z"
 progress:
   total_phases: 7
   completed_phases: 2
   total_plans: 36
-  completed_plans: 29
-  percent: 81
+  completed_plans: 30
+  percent: 83
 ---
 
 # Teraguchi — Project State
@@ -37,20 +37,21 @@ progress:
 ## Current Position
 
 Phase: 3
-Plan: Not started
+Plan: 03-01 complete; 03-02 + 03-03 next (Wave 1 parallelizable)
 Phase 1: ✓ COMPLETE · 17 of 17 plans · Verification PASSED · 14/14 must-haves · 14/14 REQ-IDs
 Phase 2: ✓ COMPLETE · 12 of 12 plans · Verification human_needed (5 DXS HW checkpoints) · 24/24 REQ-IDs
+Phase 3: IN PROGRESS · 1 of 7 plans complete (03-01 Wave 0 TDD scaffolding)
 | Field | Value |
 |-------|-------|
 | Milestone | v1.0 |
-| Current phase | Phase 3 — Display + Multi-Monitor + Clipboard (context locked) |
-| Current plan | Run `/gsd-plan-phase 3` to decompose Phase 3 into plans |
-| Status | Phase 3 CONTEXT.md committed (862a6a9); 18 implementation decisions across 4 gray areas + latency gate; 10 requirements (DISP-01..07, CLIP-01..03) scoped |
+| Current phase | Phase 3 — Display + Multi-Monitor + Clipboard |
+| Current plan | 03-01 complete; 03-02 + 03-03 next (Wave 1 parallelizable) |
+| Status | 03-01 Wave 0 TDD scaffolding committed: wire-shape contract (D-02 / D-05 / D-13 / D-17 / ConnectionProfile 7 fields) + 19 RED test skeletons + 3 conftest fixtures. 3798 passed / 152 skipped / 0 failed on quick suite. Plans 02-06 have TDD targets ready. |
 | Phases complete | 2 / 7 |
 | Requirements mapped | 108 / 108 (100% coverage) |
-| Resume file | `.planning/phases/03-display-multi-monitor-clipboard/03-CONTEXT.md` |
+| Resume file | `.planning/phases/03-display-multi-monitor-clipboard/03-02-PLAN.md` |
 
-**Progress bar:** [██▱▱▱▱▱] 2 / 7 phases complete
+**Progress bar:** [██▱▱▱▱▱] 2 / 7 phases complete (Phase 3: 1/7 plans)
 
 ---
 
@@ -143,10 +144,32 @@ None at roadmap-lock time. All five PROJECT.md / SUMMARY.md open questions were 
 - Wacom HW verification: one-shot gate + per-release runbook ritual (no self-hosted runners); hybrid protocol + automated counters + video; RMS < 1% on known-ramp for INPUT-12; proximity synthesis on focusIn/showEvent; TCC detect + guide in client
 - Latency: keep Phase 1 synthetic p99<25ms gate; add one-time DXS real-HW measurement to docs/release.md
 
-**Next action:** `/gsd-plan-phase 2` to decompose Phase 2 into executable plans.
+**Next action:** Run `/gsd-execute-phase 3` again (or the equivalent plan executor) to tackle 03-02 (client mode UX) and 03-03 (server crop pipeline) — both are Wave 1 plans with `depends_on: [01]` and can execute in parallel.
+
+**Phase 3 — 03-01 Wave 0 TDD scaffolding completed (2026-04-20):**
+
+- `a24ea35` feat(03-01): extend common/messages.py with Phase 3 wire shapes — 2 files / +352 lines
+- `40cc866` test(03-01): add Phase 3 RED test skeletons + conftest fixtures — 21 files / +667 lines
+
+**Wire-shape contract locked:**
+- MsgType.SESSION_CONFIGURE + MsgType.CLIPBOARD_CHUNK constants
+- MouseMoveMsg / MouseButtonMsg / MouseScrollMsg promoted to dataclasses (were raw dicts)
+- server_x / server_y integer fields on all 5 input message dataclasses (D-05 physical-px)
+- ClipboardChunkMsg dataclass (D-17 chunk envelope)
+- ClientHelloMsg.capture_mode + picked_monitor_id + picked_monitor_name (D-02)
+- ConnectionProfile: 7 Phase 3 fields with D-16 secure defaults (all clipboard directions ON)
+
+**Test scaffolding ready:**
+- 3 shared fixtures (mock_nsscreen, fake_mss_monitor_list, fixture_png)
+- 19 RED skeleton test files + 2 extensions to existing files
+- 51 new Wave 0 skeleton skips on the quick suite
+- 3798 passed / 152 skipped / 0 failed on quick suite (no regressions)
+
+**Known deviation:** `tests/server/test_clipboard.py` was listed as "existing" in the plan but did not exist in the repo (Phase 2 shipped clipboard code without unit tests). Auto-created as a new file with only the Wave 0 skeleton per Rule 3. Plan 06 fleshes out the real CLIP-01/D-16 tests.
 
 ---
 
 *Initialized 2026-04-18 by gsd-roadmapper.*
 *Phase 1 context gathered 2026-04-18 by gsd-discuss-phase.*
 *Phase 2 context gathered 2026-04-18 by gsd-discuss-phase.*
+*Phase 3 Plan 01 executed 2026-04-20 by gsd-execute-plan (sequential).*
