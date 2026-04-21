@@ -595,6 +595,11 @@ class SessionRuntime:
         inbound assemblers dedupe on ``sequence_id`` so the wrap is
         benign unless a single client receives 2³² clipboard events in
         one session (not a real threat).
+
+        WR-04: the 32-bit wrap could theoretically collide with a stale
+        entry in per-session ``_dropped_seqs``. The WR-02 cap on that
+        set (_DROPPED_SEQS_MAX=4096 via track_dropped_seq) keeps the
+        collision probability negligible in practice.
         """
         if not hasattr(self, "_clipboard_seq"):
             self._clipboard_seq = 0
