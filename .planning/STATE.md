@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: In progress (Phase 3)
-last_updated: "2026-04-20T18:45:00.000Z"
+last_updated: "2026-04-20T19:40:00.000Z"
 progress:
   total_phases: 7
   completed_phases: 2
   total_plans: 36
-  completed_plans: 32
-  percent: 89
+  completed_plans: 33
+  percent: 91
 ---
 
 # Teraguchi — Project State
@@ -37,21 +37,21 @@ progress:
 ## Current Position
 
 Phase: 3
-Plan: 03-04 code complete; D-08 manual hardware gate pending Randy session
+Plan: 03-05 COMPLETE; 03-04 code complete (D-08 manual hardware gate pending); 03-06 and 03-07 next
 Phase 1: ✓ COMPLETE · 17 of 17 plans · Verification PASSED · 14/14 must-haves · 14/14 REQ-IDs
 Phase 2: ✓ COMPLETE · 12 of 12 plans · Verification human_needed (5 DXS HW checkpoints) · 24/24 REQ-IDs
-Phase 3: IN PROGRESS · 3 of 7 plans + 03-04 code-complete awaiting D-08 hardware spike
+Phase 3: IN PROGRESS · 4 of 7 plans (01, 02, 03, 05) + 03-04 code-complete awaiting D-08 hardware spike
 | Field | Value |
 |-------|-------|
 | Milestone | v1.0 |
 | Current phase | Phase 3 — Display + Multi-Monitor + Clipboard |
-| Current plan | 03-04 code complete; D-08 manual gate pending |
+| Current plan | 03-05 COMPLETE; 03-04 code complete (D-08 manual gate pending); 03-06 next |
 | Status | 03-04 code committed across 3 commits (cursor math + DPR + F12 overlay + docs template): _widget_to_remote returns 4-tuple (rx_norm, ry_norm, server_x_px, server_y_px) per D-05; _current_screen_dpr uses QWindow.windowHandle().screen().devicePixelRatio() per D-06 (Pitfall 1 root-cause fix); showEvent wires QWindow.screenChanged to _on_screen_changed which recomputes scaling cache + re-emits pen_proximity when _pen_was_in_proximity (Pitfall 2 cross-trigger symmetric to Phase 2 D-19); mouse/button/scroll signals extended from 2/4/4 → 4/6/6 args with server_x/server_y; pen_data dict gains server_x/server_y keys; protocol.send_mouse_move/send_mouse_button/send_mouse_scroll/send_pen_event build new dataclass shapes; session._send_mouse_* slots consume 4-arg signals; F12 overlay (client/coord_debug_overlay.py NEW) gated at HANDLER-INSTALL time on TERAGUCHI_DEBUG=1 per Pitfall 8 — release builds leave _coord_overlay=None and F12 falls through; UI-SPEC Surface 6 verbatim copy + zero inline hex (theme.* tokens only); docs/release.md pre-populated with D-08 spike template (8-row matrix, sign-off checkboxes, un-flipped pending). Full quick suite 3850/0/132 (12 new GREEN tests vs Plan 03-03 baseline 3838); target tests 12/12 GREEN. ROADMAP plan 04 checkbox stays un-flipped — flips only after Randy runs D-08 at DXS and records results in docs/release.md. DISP-03 + DISP-05 requirement behavior is shipped in code but NOT marked complete pending hardware verification. |
 | Phases complete | 2 / 7 |
 | Requirements mapped | 108 / 108 (100% coverage) |
-| Resume file | `.planning/phases/03-display-multi-monitor-clipboard/03-04-PLAN.md` (continuation after Randy D-08 hardware session) |
+| Resume file | `.planning/phases/03-display-multi-monitor-clipboard/03-06-PLAN.md` (next Wave 4 plan); 03-04 continuation pending D-08 hardware session |
 
-**Progress bar:** [██▱▱▱▱▱] 2 / 7 phases complete (Phase 3: 3/7 plans + 03-04 code-complete awaiting hardware gate)
+**Progress bar:** [██▱▱▱▱▱] 2 / 7 phases complete (Phase 3: 4/7 plans + 03-04 code-complete awaiting hardware gate)
 
 ---
 
@@ -248,6 +248,34 @@ None at roadmap-lock time. All five PROJECT.md / SUMMARY.md open questions were 
 
 **Known deviation (Plan 04):** None — plan executed exactly as written for the code-change tasks. No Rule 1/2/3 auto-fixes were needed; all acceptance grep patterns matched on first pass; full quick suite stayed green; zero regressions against the Plan 03-03 baseline.
 
+**Phase 3 — 03-05 Wave 3 hot-plug UX + auto-fallback completed (2026-04-20):**
+
+- `50b9ee7` test(03-05): add failing tests for MonitorListMsg.degradations + hotplug fallback — 3 files / +405 lines (RED phase — 6 new tests)
+- `ae7b185` feat(03-05): server hot-plug auto-fallback harvests degradations payload — 2 files / +105 / -51 lines (GREEN phase; MonitorListMsg.degradations field + server iteration restructure + D-18 telemetry)
+- `5120ba3` test(03-05): add failing tests for RemapBanner + InfoToast + icon_clipboard + session wiring — 4 files / +538 lines (RED phase — 19 new tests)
+- `3c27a2c` feat(03-05): RemapBanner + InfoToast + icon_clipboard + session degradation wiring — 7 files / +590 / -16 lines (GREEN phase; 2 new client modules + session wiring + protocol dispatch upgrade)
+
+**Plan 05 delivered:**
+- `MonitorListMsg.degradations: list = []` field added to common/messages.py carrying per-client fallback events `{client_token, previous_pick, now_showing}`. Empty list = pre-Plan-05 wire-compat default.
+- server/monitor_hotplug.py iteration restructured so `apply_capture_mode` runs BEFORE the broadcast: per-session re-apply builds the degradations list in a single pass (apply_capture_mode returns False + previous_pick present → emit entry keyed by `ClientSession.client_id`); unified MonitorListMsg broadcast carries new topology + fallback events. `encoder_lifecycle.restart` stays sole encoder re-init entry. D-11 1s cadence preserved. D-10 NVIDIA xrandr-SET guard preserved (zero set operations).
+- D-18 telemetry: `monitor_hotplug.broadcast` (monitor_count + degradation_count) + `monitor_hotplug.fallback` (events count) fire per iteration with counts only — no payload bytes, no monitor names (T-03-13).
+- client/icons.py::icon_clipboard — UI-SPEC Surface 7 SVG body verbatim (clipboard silhouette). Plan 06 will consume for toolbar toggle.
+- client/toasts.py NEW — `InfoToast` 360 px reusable widget; `show_monitor_switched_toast` (Surface 9, Plan 05); `show_oversize_image_toast` (Surface 8, Plan 06 use). Fade 120/200 ms; hover-pause; max 3 visible (T-03-19 mitigation); Esc/click dismiss. Theme tokens only, zero inline hex.
+- client/remap_banner.py NEW — `RemapBanner` single-instance 48 px full-width banner per UI-SPEC Surface 5; 4-case verbatim copy dictionary (pick_missing / mirror_add / mirror_remove / single_change); only pick_missing renders "Choose monitor →" action link; sticky (no auto-timeout); Esc-dismiss + Enter-activate-action; 200 ms OutCubic slide-in; WARNING 3 px left border; theme tokens only.
+- client/protocol.py MONITOR_LIST branch passes full msg dict (was `msg.get("monitors", [])`) so degradations payload reaches the session handler.
+- client/session.py `_Bridge.monitor_list` Signal(list)→Signal(dict); Session.__init__ adds `remap_banner` / `toolbar` / `_client_token` / `_last_monitor_count` state; NEW `_on_monitor_list_with_degradations(msg)` handler: degradation matching our token → pick_missing banner + monitor-switched toast + toolbar.update_capture_mode(degraded=True); topology count delta without degradation → mirror_add / mirror_remove / single_change banner per capture_mode; T-03-18 mitigation filters entries by client_token (graceful single-session fallback when token empty, guarded to pick_one mode).
+
+**Test gate:**
+- 25 GREEN on Plan 05 target tests (1 messages round-trip + 2 hotplug iteration unit + 3 integration loopback + 2 icon + 6 toast + 8 banner + 3 session wiring)
+- 3875 passed / 0 failed / 130 skipped on full quick suite (+25 vs Plan 04 code-complete baseline 3850; -2 Wave 0 skips converted GREEN)
+- No latency regression — encoder restart path unchanged; banner + toast are presentation-layer only
+
+**DISP-02 + DISP-06 requirement behavior landed:**
+- DISP-02 (monitor hot-plug during session gracefully handled): auto-fallback to primary (Plan 03 foundation + Plan 05 iteration reorder) + RemapBanner pick_missing case + monitor-switched InfoToast + degraded mode badge. End-to-end: server detects topology change → re-applies per-session capture_mode → broadcasts MonitorListMsg with degradations → client shows non-modal banner + toast + flips mode badge. No crash path; session continues.
+- DISP-06 (ScreenCaptureKit display-change handler): Plan 03 landed the `_DisplayChangeDelegate` (NSWorkspaceDidChangeScreenParametersNotification); Plan 05 completes the UX path that consumes the 1s-poll push-signaled hot-plug events. DISP-06 is now end-to-end code-complete on both Mac and Linux server paths.
+
+**Known deviations (Plan 05):** Three Rule 1 inline fixes — (1) integration test strategy uses a `types.SimpleNamespace` fake runtime + apply_capture_mode closure instead of full websocket TLS loopback (already covered by `test_reconnect.py` for the unrelated supervisor path); (2) test assertions use `isHidden()` instead of `isVisible()` in 4 headless action-link tests because Qt offscreen visibility cascades from the parent chain — matches the Plan 02 Rule 1 pattern; (3) `test_info_toast_hover_stops_timer` uses a real QEnterEvent instead of a mock to satisfy super()-chain type-strict dispatch. Production behavior is correct in all three cases; fixes only tightened test harness. Documented in 03-05-SUMMARY.md.
+
 ---
 
 *Initialized 2026-04-18 by gsd-roadmapper.*
@@ -257,3 +285,4 @@ None at roadmap-lock time. All five PROJECT.md / SUMMARY.md open questions were 
 *Phase 3 Plan 02 executed 2026-04-20 by gsd-execute-plan (sequential).*
 *Phase 3 Plan 03 executed 2026-04-20 by gsd-execute-plan (sequential).*
 *Phase 3 Plan 04 code-complete 2026-04-20 by gsd-execute-plan (sequential); D-08 manual hardware spike pending.*
+*Phase 3 Plan 05 executed 2026-04-20 by gsd-execute-plan (sequential).*

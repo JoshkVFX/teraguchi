@@ -65,11 +65,11 @@
 ### Display + Multi-Monitor (DISP)
 
 - [ ] **DISP-01**: Per-session multi-monitor mode selector at connect time: single-monitor / mirror-all-server-monitors / pick-one
-- [ ] **DISP-02**: Monitor hot-plug during session gracefully handled (no crash, offer remap UI)
+- [x] **DISP-02**: Monitor hot-plug during session gracefully handled (no crash, offer remap UI)
 - [ ] **DISP-03**: Cursor coordinates always computed in server physical pixels regardless of client DPR / retina / zoom
 - [x] **DISP-04**: CustomEDID for Xvfb sessions matching Flame's monitor-config-dialog expectations
 - [ ] **DISP-05**: Mixed-DPI client rendering (retina + external non-retina) without distortion
-- [ ] **DISP-06**: ScreenCaptureKit display-change handler for macOS server monitor hot-plug
+- [x] **DISP-06**: ScreenCaptureKit display-change handler for macOS server monitor hot-plug
 - [x] **DISP-07**: Per-monitor fullscreen mode (client chooses which server monitor the client window corresponds to)
 
 ### Audio (AUDIO)
@@ -233,11 +233,11 @@ Every v1 requirement is mapped to exactly one phase. Coverage: 108/108 (100%).
 | VIDEO-11 | Phase 2 | Pending |
 | VIDEO-12 | Phase 2 | Pending |
 | DISP-01 | Phase 3 | Pending |
-| DISP-02 | Phase 3 | Pending |
+| DISP-02 | Phase 3 | Complete (Plan 03-05) |
 | DISP-03 | Phase 3 | Pending |
 | DISP-04 | Phase 3 | Complete (Plan 03-03) |
 | DISP-05 | Phase 3 | Pending |
-| DISP-06 | Phase 3 | Pending |
+| DISP-06 | Phase 3 | Complete (Plan 03-05 completes the UX consumer for Plan 03-03 SCK delegate) |
 | DISP-07 | Phase 3 | Complete (Plan 03-02 client UX + Plan 03-03 server crop) |
 | CLIP-01 | Phase 3 | Pending |
 | CLIP-02 | Phase 3 | Pending |
