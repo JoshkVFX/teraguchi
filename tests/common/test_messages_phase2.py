@@ -345,3 +345,38 @@ def test_connection_profile_filters_unknown_keys():
     assert not hasattr(p, "__evil__")
     # Known defaults still populate.
     assert p.monitor_mode == "mirror_all"
+
+
+def test_monitor_list_with_degradations():
+    """Plan 03-05 / D-09 — MonitorListMsg carries per-client fallback events.
+
+    Each entry in ``degradations`` is a dict of:
+      - ``client_token``: server-side session identifier (currently
+        ``ClientSession.client_id``)
+      - ``previous_pick``: the monitor name the client was bookmarked to
+      - ``now_showing``: the fallback monitor (typically the primary)
+
+    Empty ``degradations`` list is the pre-Plan-05 wire-compat default
+    (topology changed but no sessions needed fall-back).
+    """
+    from common.messages import MonitorListMsg, MsgType, parse_message
+    m = MonitorListMsg(
+        monitors=[{"id": 1, "name": "DP-1"}],
+        degradations=[{
+            "client_token": "tok1",
+            "previous_pick": "DP-2",
+            "now_showing": "DP-1",
+        }],
+    )
+    parsed = parse_message(m.to_json())
+    assert parsed["type"] == MsgType.MONITOR_LIST
+    assert parsed["monitors"] == [{"id": 1, "name": "DP-1"}]
+    assert len(parsed["degradations"]) == 1
+    assert parsed["degradations"][0]["previous_pick"] == "DP-2"
+    assert parsed["degradations"][0]["now_showing"] == "DP-1"
+    assert parsed["degradations"][0]["client_token"] == "tok1"
+
+    # Default-constructed instance keeps empty degradations list
+    # (pre-Plan-05 wire-compat).
+    default_parsed = parse_message(MonitorListMsg().to_json())
+    assert default_parsed["degradations"] == []
