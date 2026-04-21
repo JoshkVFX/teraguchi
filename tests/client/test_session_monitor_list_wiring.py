@@ -38,7 +38,7 @@ def test_session_on_monitor_list_degradation_triggers_banner_and_toast(qapp):
     """
     # Set up a minimal fake Session-like harness: the handler we want
     # to test reads self.viewer, self.toolbar, self._client_token,
-    # self._capture_mode, self.remap_banner, self._last_monitor_count.
+    # self._monitor_mode, self.remap_banner, self._last_monitor_count.
     import client.session as session_mod
     import client.toasts as toasts_mod
     import client.remap_banner as banner_mod
@@ -76,7 +76,7 @@ def test_session_on_monitor_list_degradation_triggers_banner_and_toast(qapp):
         session.toolbar = None
         session.remap_banner = None
         session._client_token = "sid-A"
-        session._capture_mode = "pick_one"
+        session._monitor_mode = "pick_one"
         session._last_monitor_count = None
 
         # Invoke the handler the way _Bridge.monitor_list.emit would.
@@ -139,7 +139,7 @@ def test_session_on_monitor_list_no_match_no_banner(qapp):
         session.toolbar = None
         session.remap_banner = None
         session._client_token = "sid-A"
-        session._capture_mode = "mirror_all"
+        session._monitor_mode = "mirror_all"
         session._last_monitor_count = 2  # previous count
 
         # Degradation is for a DIFFERENT session.
@@ -194,7 +194,7 @@ def test_session_on_monitor_list_mirror_remove_banner(qapp):
         session.toolbar = None
         session.remap_banner = None
         session._client_token = "sid-A"
-        session._capture_mode = "mirror_all"
+        session._monitor_mode = "mirror_all"
         session._last_monitor_count = 2
 
         # 1 monitor now; we had 2. No degradation for us.

@@ -608,7 +608,7 @@ class Session(QObject):
                 None,
             )
         elif (len(degradations) == 1
-              and getattr(self, "_capture_mode", "mirror_all") == "pick_one"):
+              and getattr(self, "_monitor_mode", "mirror_all") == "pick_one"):
             my_event = degradations[0]
 
         if my_event:
@@ -646,7 +646,7 @@ class Session(QObject):
         prev_count = self._last_monitor_count
         cur_count = len(msg.get("monitors", []) or [])
         if prev_count is not None and prev_count != cur_count:
-            mode = getattr(self, "_capture_mode", "mirror_all")
+            mode = getattr(self, "_monitor_mode", "mirror_all")
             if mode == "mirror_all":
                 case = "mirror_add" if cur_count > prev_count else "mirror_remove"
             else:
