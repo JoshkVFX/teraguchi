@@ -304,10 +304,16 @@ feature-complete sign-off:
 ## Phase 3 D-08 4-corner DXS hardware spike
 
 Gate on DISP-03 + DISP-05 — verifies the Plan 03-04 cursor-math /
-per-screen DPR implementation against real Cintiq Pro 24 + Retina MBP
-+ 2× NVIDIA Xorg DXS hardware. Status: **pending hardware session**.
+per-screen DPR implementation against a real mixed-DPI client
+(Retina MBP + external non-Retina monitor) driving a 2× NVIDIA Xorg
+Rocky server in the DXS lab. Status: **pending hardware session**.
 Executor commits the code landed Plan 03-04 Task 1 + Task 2; Randy
 runs the manual spike at the DXS office and records the matrix below.
+
+> **Hardware note:** D-08 tests *mixed-DPI cursor math*, not a specific
+> display tablet. Any Retina MBP + any external non-Retina monitor
+> satisfies the client topology. Pen interaction row below is
+> satisfied with an Intuos Pro (no display tablet required).
 
 **Date:** <DEFERRED — Randy to execute at DXS>
 **Tester:** Randy McEntee

@@ -31,7 +31,7 @@ created: 2026-04-19
 
 - **After every task commit:** Run quick command scoped to the file changed: `pytest tests/{server,client,common}/test_<file>.py -x`
 - **After every plan wave:** Run quick command across all phase tests
-- **Before `/gsd-verify-work`:** Full suite must be green; D-08 4-corner cursor test executed manually on real Cintiq Pro 24 + Retina + 2× NVIDIA Xorg topology; ten_bit_smoke fixture re-run with crop active
+- **Before `/gsd-verify-work`:** Full suite must be green; D-08 4-corner cursor test executed manually on real mixed-DPI client (Retina MBP + external non-Retina monitor) + 2× NVIDIA Xorg topology; ten_bit_smoke fixture re-run with crop active
 - **Max feedback latency:** 30s (quick), 3min (full)
 
 ---
@@ -99,7 +99,7 @@ The 19 test files marked `❌ Wave 0` above must be created (skeleton + fixtures
 
 | Behavior | Requirement | Why Manual | Test Instructions |
 |----------|-------------|------------|-------------------|
-| 4-corner cursor accuracy on real DXS hardware | DISP-03 / D-08 | Cursor math depends on physical pixel topology that cannot be faithfully mocked (Cintiq Pro 24 + Retina + 2× NVIDIA Xorg) | Spike: open viewer fullscreen, click each of 4 corners on remote desktop, confirm server cursor lands within 1 px of corner. Repeat at all 3 monitor mode settings. |
+| 4-corner cursor accuracy on real DXS hardware | DISP-03 / D-08 | Cursor math depends on physical pixel topology that cannot be faithfully mocked (Retina MBP + external non-Retina monitor + 2× NVIDIA Xorg) | Spike: open viewer fullscreen, click each of 4 corners on remote desktop, confirm server cursor lands within 1 px of corner. Repeat at all 3 monitor mode settings. |
 | HEVC Main10 fidelity preserved with crop active | DISP-07 / VIDEO-01 | Visual color verification against ten_bit_smoke fixture must be eyeballed on a 10-bit Eizo CG | Run ten_bit_smoke fixture in pick-one mode + crop active. Compare against reference frame on Eizo CG279X. No banding, no posterization. |
 | Hot-plug auto-fallback UX feel | DISP-02 / D-12 | Banner + toast timing/UX subjective | Connect Mac client to remote, start session in pick-one mode, physically unplug bookmarked monitor on host. Observe banner + toast within 250 ms. |
 | Clipboard interop with Flame in-app paste | CLIP-01/CLIP-02 | Flame's clipboard handling has known quirks (TIFF preference, large-text drops) | Copy 4K PNG from Mac client, paste into Flame on host. Copy 5 MB project notes from Flame, paste into Mac client TextEdit. |

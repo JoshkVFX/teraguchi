@@ -74,7 +74,7 @@ requirements-completed: []
 # D-08 status
 d-08:
   status: pending
-  reason: "Manual hardware spike — Randy at DXS office with Cintiq Pro 24 + Retina MBP + 2× NVIDIA Xorg server rig. Template pre-populated in docs/release.md; orchestrator handed checkpoint back."
+  reason: "Manual hardware spike — Randy at DXS office with mixed-DPI client (Retina MBP + external non-Retina monitor) + 2× NVIDIA Xorg server rig. Pen row satisfied with Intuos Pro. Template pre-populated in docs/release.md; orchestrator handed checkpoint back."
   blocks: [DISP-03, DISP-05, "ROADMAP 03-04 checkbox flip"]
 
 # Metrics
@@ -213,7 +213,8 @@ None. Every wire-format field is populated (server_x / server_y carry real clien
 The DXS 4-corner hardware spike is the gate on DISP-03 + DISP-05. Code complete; manual session awaits.
 
 **What's needed:** Randy at DXS office with:
-- Cintiq Pro 24 + Retina MacBook Pro (mixed-DPI client)
+- Retina MacBook Pro + external non-Retina monitor (mixed-DPI client)
+- Intuos Pro (for pen interaction row — no display tablet required)
 - 2× NVIDIA Xorg server rig (dxs-flame-XX)
 
 **What happens next:**

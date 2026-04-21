@@ -115,7 +115,7 @@ All five open questions in research/SUMMARY.md were resolved by REQUIREMENTS.md 
 |-------|-------|----------|---------------------|
 | IOHIDUserDevice pen pressure on macOS | Phase 2 | 2 days | INPUT-08 re-scoped to "Mac-server pen pressure unsupported in v1" |
 | Wacom hardware matrix session | Phase 2 | 1 day | INPUT-09/-10/-11/-12 verification deferred or device set narrowed |
-| Mixed-DPI hardware session (Cintiq Pro 24 + Retina) | Phase 3 | 1 day | DISP-03/-05/-07 verification deferred to post-v1 |
+| Mixed-DPI hardware session (Retina MBP + external non-Retina monitor) | Phase 3 | 1 day | DISP-03/-05/-07 verification deferred to post-v1 |
 | USB/IP target on macOS server | Phase 5 | 2 days | USB-02 re-scoped to "Mac server cannot receive USB/IP in v1; Linux server only" |
 
 ### Todos / Carry-Forward Notes
@@ -244,7 +244,7 @@ None at roadmap-lock time. All five PROJECT.md / SUMMARY.md open questions were 
 - Real-hardware D-08 spike pending — Randy at DXS with Cintiq Pro 24 + Retina MBP + 2× NVIDIA Xorg server rig. Matrix lives in docs/release.md waiting for sign-off.
 - ROADMAP plan 04 checkbox stays `[ ]` with "(code complete; D-08 gate pending hardware session)" note.
 
-**Next action:** Randy runs the D-08 manual spike at DXS, populates the docs/release.md matrix, checks DISP-03 + DISP-05 sign-off boxes. Once signed, orchestrator spawns a continuation agent that commits docs/release.md + creates 03-04-SUMMARY.md + flips ROADMAP plan 04 to `[x]` + marks DISP-03 + DISP-05 complete in REQUIREMENTS.md.
+**Next action:** Randy runs the D-08 manual spike at DXS when back from travel (mixed-DPI client: Retina MBP + external non-Retina monitor; pen row satisfied with Intuos Pro — no display tablet required), populates the docs/release.md matrix, checks DISP-03 + DISP-05 sign-off boxes. Once signed, orchestrator spawns a continuation agent that commits docs/release.md + creates 03-04-SUMMARY.md + flips ROADMAP plan 04 to `[x]` + marks DISP-03 + DISP-05 complete in REQUIREMENTS.md.
 
 **Known deviation (Plan 04):** None — plan executed exactly as written for the code-change tasks. No Rule 1/2/3 auto-fixes were needed; all acceptance grep patterns matched on first pass; full quick suite stayed green; zero regressions against the Plan 03-03 baseline.
 

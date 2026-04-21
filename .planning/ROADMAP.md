@@ -105,7 +105,7 @@ This is brownfield. A working vibe-coded prototype already covers the happy path
 **Goal**: Match how Flame artists actually use displays — different topologies for client review (mirror), solo work (single fullscreen), and laptop-on-the-go (pick-one). Plus the clipboard / image clipboard / per-direction toggle UX that artists expect.
 
 **Pre-phase spike** (1 day):
-- Real Cintiq Pro 24 + Retina (mixed-DPI) hardware session: validate cursor-coord math (DISP-03), per-monitor fullscreen (DISP-07), mixed-DPI rendering (DISP-05). The "client has Retina internal + external 4K, server has 2× Xorg screens" topology is exactly where the bugs live.
+- Real mixed-DPI hardware session (Retina MBP + external non-Retina monitor): validate cursor-coord math (DISP-03), per-monitor fullscreen (DISP-07), mixed-DPI rendering (DISP-05). The "client has Retina internal + external 4K, server has 2× Xorg screens" topology is exactly where the bugs live.
 
 **Depends on**: Phase 2 (cursor coord math depends on a clean input pipeline; clipboard depends on Phase 1's bounded queues for the side channel)
 **Requirements**: DISP-01, DISP-02, DISP-03, DISP-04, DISP-05, DISP-06, DISP-07, CLIP-01, CLIP-02, CLIP-03
@@ -223,7 +223,7 @@ This is brownfield. A working vibe-coded prototype already covers the happy path
 |-------|-------|-----------|--------|
 | IOHIDUserDevice pen pressure feasibility on macOS | Phase 2 (pre-phase) | 2 days | INPUT-08 (and the macOS server's claim to be "Flame-usable") |
 | Real-hardware Wacom matrix (Intuos Pro L + Cintiq Pro 24, Sonoma + Sequoia) | Phase 2 (in-phase) | 1 day | INPUT-09, -10, -11, -12 |
-| Real-hardware mixed-DPI session (Cintiq Pro 24 + Retina) | Phase 3 (pre-phase) | 1 day | DISP-03, -05, -07 |
+| Real-hardware mixed-DPI session (Retina MBP + external non-Retina monitor) | Phase 3 (pre-phase) | 1 day | DISP-03, -05, -07 |
 | USB/IP target on macOS-as-server feasibility | Phase 5 (in-phase) | 2 days | USB-02 (may re-scope to Linux-only USB target) |
 
 ## Critical-Path Notes (from research/SUMMARY.md)
