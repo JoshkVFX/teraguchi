@@ -579,14 +579,30 @@ class SessionRuntime:
                 data_b64 = base64.b64encode(payload).decode("ascii")
                 self._enqueue_chunked_clipboard(cs, content_type, data_b64)
             else:
-                msg_json = ClipboardMsg(
-                    type=MsgType.CLIPBOARD_RECV,
-                    content_type="text/plain",
-                    data=payload,
-                ).to_json()
-                asyncio.run_coroutine_threadsafe(
-                    cs.enqueue(msg_json), self._event_loop,
-                )
+                # WR-06: large text chunks symmetrically with the client's
+                # _send_chunked path — a single-message send of a multi-MB
+                # paste would block the per-client send_queue (maxsize=4)
+                # and could trigger drop-OLDEST IDR-on-drop noise on video
+                # frames. Threshold matches _enqueue_chunked_clipboard's
+                # internal CHUNK_BYTES so small text (<1 MB) still rides
+                # the zero-overhead CLIPBOARD_RECV envelope.
+                CHUNK_BYTES = 1024 * 1024
+                if len(payload) <= CHUNK_BYTES:
+                    msg_json = ClipboardMsg(
+                        type=MsgType.CLIPBOARD_RECV,
+                        content_type="text/plain",
+                        data=payload,
+                    ).to_json()
+                    asyncio.run_coroutine_threadsafe(
+                        cs.enqueue(msg_json), self._event_loop,
+                    )
+                else:
+                    # Text chunks are raw UTF-8 slices (not base64) — the
+                    # client _handle_clipboard_chunk text branch
+                    # (client/protocol.py:~1411) reassembles by simple
+                    # concatenation. Consistent with client outbound
+                    # _send_chunked text path.
+                    self._enqueue_chunked_clipboard(cs, content_type, payload)
 
     def _next_clipboard_seq(self) -> int:
         """Phase 3 D-17 — monotonic per-runtime clipboard sequence_id allocator.
