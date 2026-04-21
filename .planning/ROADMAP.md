@@ -122,7 +122,7 @@ This is brownfield. A working vibe-coded prototype already covers the happy path
   - [ ] 03-04-PLAN.md — Wave 2 cursor math (DISP-03/DISP-05): _widget_to_remote rewrite + per-screen DPR + screenChanged hook + F12 dev overlay + D-08 4-corner DXS hardware spike (code complete; D-08 gate pending hardware session)
   - [x] 03-05-PLAN.md — Wave 3 hot-plug UX (DISP-02/DISP-06): MonitorListMsg.degradations + auto-fallback iteration + RemapBanner + InfoToast + monitor-switched toast + degraded mode badge
   - [x] 03-06-PLAN.md — Wave 4 server clipboard (CLIP-01/CLIP-02/CLIP-03): ClipboardChunkAssembler + PNG path on Linux + Mac + CRLF preservation + server-side per-direction gating with Pitfall 7 race fix
-  - [ ] 03-07-PLAN.md — Wave 4 client clipboard UI + integration (CLIP-01/CLIP-02/CLIP-03): ClipboardToggleButton + protocol send_clipboard refactor with W-6 per-chunk mid-stream cancellation + session wiring + integration tests
+  - [x] 03-07-PLAN.md — Wave 4 client clipboard UI + integration (CLIP-01/CLIP-02/CLIP-03): ClipboardToggleButton + protocol send_clipboard refactor with W-6 per-chunk mid-stream cancellation + session wiring + integration tests
 **Size**: M
 **UI hint**: yes
 
