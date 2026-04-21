@@ -713,7 +713,17 @@ class SessionRuntime:
             # Capture not initialized yet (unit test path). Record the
             # intent; the stream loop will use crop=None until the
             # capture is wired up.
+            # WR-05: defense-in-depth — if a future refactor collapses
+            # the early `mirror_all` return above into a unified code
+            # path, make sure the no-capture branch still clears the
+            # pick fields on mirror_all so toolbar-badge /
+            # picked_monitor_name consumers never display stale data.
+            # Today this is dead code (mirror_all returns at line 710)
+            # but it's cheap safety on the path most likely to drift.
             session.crop_rect = None
+            if mode == "mirror_all":
+                session.picked_monitor_id = -1
+                session.picked_monitor_name = ""
             return True
 
         try:
