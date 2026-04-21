@@ -96,9 +96,15 @@ def test_info_toast_max_3_visible(qapp, toast_parent):
 
 
 def test_info_toast_hover_stops_timer(qapp, toast_parent):
-    """UI-SPEC Surface 8 / 9 — hover pauses auto-dismiss."""
+    """UI-SPEC Surface 8 / 9 — hover pauses auto-dismiss.
+
+    The hover gesture maps to QEvent::Enter on the widget; enterEvent
+    stops the _timer. We construct a real QEnterEvent so the super()
+    chain's type-strict dispatch accepts the call.
+    """
     from client.toasts import InfoToast
-    from PySide6.QtCore import QEvent
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QEnterEvent
     t = InfoToast(
         parent=toast_parent, icon=None,
         title="Test", body="Body", duration_ms=6000,
@@ -106,11 +112,9 @@ def test_info_toast_hover_stops_timer(qapp, toast_parent):
     t.show()
     # Timer active after show
     assert t._timer.isActive() is True
-    # Simulate enterEvent — the hover should stop the timer.
-    # We pass a mock event object because enterEvent signature varies.
-    class _FakeEv:
-        pass
-    t.enterEvent(_FakeEv())
+    # Real QEnterEvent (localPos, windowPos, screenPos).
+    ev = QEnterEvent(QPointF(10, 10), QPointF(10, 10), QPointF(10, 10))
+    t.enterEvent(ev)
     assert t._timer.isActive() is False
 
 

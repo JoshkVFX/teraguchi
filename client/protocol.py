@@ -1056,7 +1056,10 @@ class ClientProtocol:
                     self.on_health_stats(msg)
             elif msg_type == MsgType.MONITOR_LIST:
                 if self.on_monitor_list:
-                    self.on_monitor_list(msg.get("monitors", []))
+                    # Phase 3 D-09 / Plan 03-05 — pass the full message
+                    # so the session handler can read the ``degradations``
+                    # payload alongside the monitor list.
+                    self.on_monitor_list(msg)
             elif msg_type == MsgType.CLIPBOARD_RECV:
                 if self.on_clipboard:
                     self.on_clipboard(msg.get("data", ""))

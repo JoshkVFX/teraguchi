@@ -48,7 +48,13 @@ def test_remap_banner_mounts_inside_viewer_at_48_px_tall(qapp, banner_parent):
 
 def test_remap_banner_pick_missing_renders_action_link(qapp, banner_parent):
     """UI-SPEC Surface 5 — pick_missing case renders title + verbatim
-    body + action link."""
+    body + action link.
+
+    Uses isHidden() (not isVisible()) per the Plan 02 Rule 1 convention —
+    Qt's effective visibility cascades from the parent chain which is
+    False in headless tests even when the widget was never hidden
+    explicitly. isHidden() reflects the explicit setVisible(False) call.
+    """
     from client.remap_banner import RemapBanner
     banner = RemapBanner(banner_parent)
     banner.show_for_case("pick_missing", picked_name="DP-1")
@@ -56,8 +62,9 @@ def test_remap_banner_pick_missing_renders_action_link(qapp, banner_parent):
     assert banner._body.text() == (
         "Showing primary monitor. Click to choose a different one."
     )
-    # Action link only visible in pick_missing case
-    assert banner._action.isVisible() is True
+    # Action link only visible in pick_missing case. isHidden() is False
+    # because show_for_case() called setVisible(True) on it.
+    assert banner._action.isHidden() is False
     assert banner._action.text() == "Choose monitor →"
 
 
@@ -67,7 +74,8 @@ def test_remap_banner_mirror_add_body(qapp, banner_parent):
     banner = RemapBanner(banner_parent)
     banner.show_for_case("mirror_add")
     assert banner._body.text() == "A new monitor is now visible."
-    assert banner._action.isVisible() is False
+    # Action link hidden — setVisible(False) was called.
+    assert banner._action.isHidden() is True
 
 
 def test_remap_banner_mirror_remove_body(qapp, banner_parent):
@@ -78,7 +86,7 @@ def test_remap_banner_mirror_remove_body(qapp, banner_parent):
     assert banner._body.text() == (
         "A monitor was removed. Continuing with the rest."
     )
-    assert banner._action.isVisible() is False
+    assert banner._action.isHidden() is True
 
 
 def test_remap_banner_single_change_body(qapp, banner_parent):
@@ -89,7 +97,7 @@ def test_remap_banner_single_change_body(qapp, banner_parent):
     assert banner._body.text() == (
         "Monitor layout changed. Continuing on primary."
     )
-    assert banner._action.isVisible() is False
+    assert banner._action.isHidden() is True
 
 
 def test_remap_banner_sticky_no_auto_timeout(qapp, banner_parent):

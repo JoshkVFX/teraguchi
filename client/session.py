@@ -42,7 +42,11 @@ class _Bridge(QObject):
     auth_required = Signal(str)
     auth_result = Signal(bool, str)
     health_stats = Signal(dict)
-    monitor_list = Signal(list)
+    # Phase 3 D-09 / Plan 03-05 — full MonitorListMsg dict (includes
+    # ``degradations`` payload). Downstream signal ``monitor_list_received``
+    # still emits a plain list of monitors for back-compat with
+    # main_window._on_monitor_list.
+    monitor_list = Signal(dict)
     clipboard_recv = Signal(str)
     file_response = Signal(dict)
     usb_response = Signal(dict)
@@ -96,6 +100,24 @@ class Session(QObject):
         # Health overlay on viewer
         self.overlay = HealthOverlay(self.viewer)
         self.overlay.data = self.health
+
+        # Phase 3 D-09 / Plan 03-05 — remap-banner surface state.
+        # Lazily instantiated on first MonitorListMsg with degradations
+        # so the asyncio I/O thread doesn't construct Qt widgets. The
+        # ``toolbar`` attribute is populated by main_window when the
+        # session binds to a FullscreenToolbar instance; None until then.
+        self.remap_banner = None
+        self.toolbar = None
+        # Cached server-side session identifier for degradation routing.
+        # Currently mirrors ``ClientSession.client_id`` on the server
+        # (``str(id(ws))``). Populated via ``set_client_token`` once the
+        # server surfaces a session id on the wire (future work); until
+        # then the client checks for its presence in any degradation
+        # entry (best-effort single-session match).
+        self._client_token = ""
+        # Monitor-count cache so we can derive mirror_add / mirror_remove
+        # banner cases from the delta between broadcasts.
+        self._last_monitor_count: int | None = None
 
         # Wire everything
         self._wire_protocol()
@@ -437,8 +459,119 @@ class Session(QObject):
     def _on_health_stats(self, stats):
         self.health.update_from_server(stats)
 
-    def _on_monitor_list(self, monitors):
+    def _on_monitor_list(self, msg):
+        """Phase 3 D-09 / Plan 03-05 — bridge MonitorListMsg to downstream.
+
+        The protocol bridge now emits the full dict (to surface
+        ``degradations``). Downstream ``monitor_list_received`` keeps the
+        pre-Plan-05 list shape so main_window._on_monitor_list continues
+        to work. The degradation-aware handler below reacts to the
+        banner + toast surface.
+        """
+        if isinstance(msg, dict):
+            monitors = msg.get("monitors", []) or []
+            self._on_monitor_list_with_degradations(msg)
+        else:
+            # Back-compat: pre-Plan-05 callers that still pass a plain list.
+            monitors = msg or []
         self.monitor_list_received.emit(monitors)
+
+    def _on_monitor_list_with_degradations(self, msg: dict):
+        """Phase 3 D-09 — react to topology change + degradation events.
+
+        Lazily instantiates ``RemapBanner`` on first use (avoids
+        constructing Qt widgets from the asyncio I/O thread — handler
+        runs on the GUI thread via the _Bridge queued signal).
+
+        Behavior per UI-SPEC Surface 5:
+          - If any degradation entry matches ``self._client_token`` (or
+            the session-token field is empty, which is the current
+            single-session default), show ``pick_missing`` banner +
+            monitor-switched toast + toolbar badge flip (degraded=True).
+          - Else if the topology count changed vs ``_last_monitor_count``,
+            show the appropriate topology-change banner based on
+            ``_capture_mode`` (mirror_add / mirror_remove / single_change).
+          - Else do nothing (server broadcast, nothing user-facing).
+
+        T-03-18 mitigation: entries are filtered by client_token so a
+        malicious server can't spoof another session's degradation into
+        our UI.
+        """
+        # Late imports — banner + toast modules pull in PySide6 widgets
+        # that are only available on the GUI thread.
+        from client.remap_banner import RemapBanner
+        from client.toasts import show_monitor_switched_toast
+
+        if self.remap_banner is None and self.viewer is not None:
+            self.remap_banner = RemapBanner(self.viewer)
+        if self.remap_banner is None:
+            # Viewer not mounted yet — skip the banner surface. Toolbar
+            # badge + toast still fire below because they don't depend
+            # on the banner widget.
+            pass
+
+        degradations = msg.get("degradations", []) or []
+        my_token = self._client_token
+        # Match semantics:
+        #   - If self._client_token is set, require exact match.
+        #   - If self._client_token is empty (current default — server
+        #     hasn't surfaced a session id yet), accept any degradation
+        #     as "ours" ONLY when there is exactly one entry AND we're
+        #     in pick_one mode. This is the single-session-per-host
+        #     reality of v1; T-03-18 is mitigated by the pick_one check.
+        my_event = None
+        if my_token:
+            my_event = next(
+                (d for d in degradations if d.get("client_token") == my_token),
+                None,
+            )
+        elif (len(degradations) == 1
+              and getattr(self, "_capture_mode", "mirror_all") == "pick_one"):
+            my_event = degradations[0]
+
+        if my_event:
+            picked = my_event.get("previous_pick", "")
+            now = my_event.get("now_showing", "primary")
+            if self.remap_banner is not None:
+                self.remap_banner.show_for_case(
+                    "pick_missing", picked_name=picked,
+                )
+            if self.viewer is not None:
+                show_monitor_switched_toast(
+                    self.viewer, monitor_name=picked,
+                )
+            if self.toolbar is not None:
+                try:
+                    self.toolbar.update_capture_mode(
+                        mode="pick_one",
+                        picked_name=now,
+                        degraded=True,
+                    )
+                except Exception as e:
+                    logger.debug(
+                        "session.toolbar.update_capture_mode_failed err=%s", e,
+                    )
+            logger.info(
+                "session.fallback_received previous=%r now=%r",
+                picked, now,
+            )
+            # Update monitor-count cache for future deltas.
+            self._last_monitor_count = len(msg.get("monitors", []) or [])
+            return
+
+        # No degradation for us — derive the topology-change banner case
+        # from the monitor-count delta.
+        prev_count = self._last_monitor_count
+        cur_count = len(msg.get("monitors", []) or [])
+        if prev_count is not None and prev_count != cur_count:
+            mode = getattr(self, "_capture_mode", "mirror_all")
+            if mode == "mirror_all":
+                case = "mirror_add" if cur_count > prev_count else "mirror_remove"
+            else:
+                case = "single_change"
+            if self.remap_banner is not None:
+                self.remap_banner.show_for_case(case)
+        self._last_monitor_count = cur_count
 
     def _on_clipboard_recv(self, text):
         self._clipboard_from_server = True
