@@ -35,6 +35,25 @@ if TYPE_CHECKING:
 logger = logging.getLogger("teraguchi.server.client_session")
 
 
+# Phase 3 WR-02 — bounded _dropped_seqs cap (mirrors client-side). Prevents
+# soft-DoS memory growth from attacker-controlled peers spamming chunk-0
+# with random sequence_ids. See client/protocol.py._track_dropped_seq for
+# the rationale + ordering notes.
+_DROPPED_SEQS_MAX = 4096
+
+
+def track_dropped_seq(dropped_seqs: set, seq_id: int) -> None:
+    """WR-02 — add ``seq_id`` to ``dropped_seqs`` with bounded growth.
+
+    Pops an arbitrary existing entry when the set reaches
+    ``_DROPPED_SEQS_MAX``. Module-level helper so session_runtime.py can
+    apply the cap without duplicating the constant.
+    """
+    if len(dropped_seqs) >= _DROPPED_SEQS_MAX:
+        dropped_seqs.pop()
+    dropped_seqs.add(seq_id)
+
+
 class ClientSession:
     """Tracks per-client connection state."""
 
@@ -91,6 +110,7 @@ class ClientSession:
         # that were disabled at chunk-0 boundary (Pitfall 7 mid-stream
         # toggle race fix) so subsequent chunks of the same sequence
         # drop silently without re-checking the toggle.
+        # WR-02: growth capped at _DROPPED_SEQS_MAX via track_dropped_seq().
         self._clipboard_chunks: dict = {}
         self._dropped_seqs: set = set()
 

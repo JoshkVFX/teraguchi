@@ -85,6 +85,16 @@ from common.jitter_buffer import JitterBuffer
 logger = logging.getLogger(__name__)
 
 
+# Phase 3 WR-02 — upper bound on _dropped_seqs cardinality. Prevents
+# soft-DoS memory growth from attacker-controlled peers spamming
+# chunk-0 ClipboardChunkMsg with random sequence_ids. On overflow we
+# pop() an arbitrary entry — CPython set pop() drains in hash order,
+# not insertion order, so this is NOT strict FIFO, but the security
+# invariant is "bounded size" not ordering. 4096 entries ~= 32 KiB at
+# 8 bytes/int — well below any realistic chunk lifetime window.
+_DROPPED_SEQS_MAX = 4096
+
+
 # ---------------------------------------------------------------------------
 # Phase 3 D-13 / D-14 / D-17 — clipboard transport constants (Plan 03-07).
 #
@@ -218,6 +228,9 @@ class ClientProtocol:
         # ``_dropped_seqs`` tracks sequences whose chunk-0 was gated off
         # so subsequent chunks for the same sequence silently no-op
         # (Pitfall 7 continuation on the client-inbound path).
+        # WR-02: bounded to _DROPPED_SEQS_MAX entries to prevent soft DoS
+        # from attacker-controlled peers spamming chunk-0 with random
+        # sequence_ids over a long-lived connection.
         self._clipboard_chunks: dict = {}
         self._dropped_seqs: set = set()
         # Phase 3 D-17 — monotonic outbound sequence_id allocator.
@@ -480,10 +493,27 @@ class ClientProtocol:
 
         Wraps at 32-bit to keep the wire integer bounded. Server-side
         assembler dedupes on ``sequence_id`` per client so the wrap is
-        benign in practice.
+        benign in practice. WR-04: the wrap collision window with
+        ``_dropped_seqs`` is kept negligible by the WR-02 bounded-size
+        cap on that set (see ``_track_dropped_seq``).
         """
         self._clipboard_seq = (self._clipboard_seq + 1) & 0xFFFFFFFF
         return self._clipboard_seq
+
+    def _track_dropped_seq(self, seq_id: int) -> None:
+        """WR-02 — add ``seq_id`` to ``_dropped_seqs`` with bounded growth.
+
+        Pops an arbitrary existing entry when the set reaches
+        ``_DROPPED_SEQS_MAX``. This caps memory from attacker spam
+        (chunk-0 with random sequence_ids) without needing a scheduler
+        for TTL cleanup. See module docstring for ordering notes.
+        """
+        if len(self._dropped_seqs) >= _DROPPED_SEQS_MAX:
+            # set.pop() removes an arbitrary element — good enough to
+            # bound the set; NOT strict FIFO. The seq_id we're about
+            # to add will survive this eviction.
+            self._dropped_seqs.pop()
+        self._dropped_seqs.add(seq_id)
 
     def _oversize_callback(self, size_mb: float) -> None:
         """Phase 3 D-14 — fire the oversize-image toast hook if wired.
@@ -1319,14 +1349,14 @@ class ClientProtocol:
         # sequence hit the _dropped_seqs silent no-op path.
         if chunk_index == 0:
             if content_type == "image/png" and not self._clipboard_image_s2c:
-                self._dropped_seqs.add(seq_id)
+                self._track_dropped_seq(seq_id)
                 logger.info(
                     "clipboard.chunk_dropped_toggle seq=%d content_type=%s",
                     seq_id, content_type,
                 )
                 return
             if content_type == "text/plain" and not self._clipboard_text_s2c:
-                self._dropped_seqs.add(seq_id)
+                self._track_dropped_seq(seq_id)
                 logger.info(
                     "clipboard.chunk_dropped_toggle seq=%d content_type=%s",
                     seq_id, content_type,

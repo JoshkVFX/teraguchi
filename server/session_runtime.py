@@ -80,6 +80,8 @@ from server.health_loop import HealthLoop
 from server.encoder_lifecycle import EncoderLifecycle
 from server.monitor_hotplug import MonitorHotplug
 from server.pipelines import CaptureQueue, EncoderQueue
+# WR-02: bounded-size helper for per-session _dropped_seqs.
+from server.client_session import track_dropped_seq
 
 if TYPE_CHECKING:
     from server.client_session import ClientSession
@@ -1111,7 +1113,7 @@ class SessionRuntime:
                 if content_type == "image/png" and not getattr(
                     session, "clipboard_image_c2s", True,
                 ):
-                    dropped_seqs.add(seq_id)
+                    track_dropped_seq(dropped_seqs, seq_id)
                     logger.info(
                         "clipboard.chunk_dropped_toggle seq=%d content_type=%s",
                         seq_id, content_type,
@@ -1120,7 +1122,7 @@ class SessionRuntime:
                 if content_type == "text/plain" and not getattr(
                     session, "clipboard_text_c2s", True,
                 ):
-                    dropped_seqs.add(seq_id)
+                    track_dropped_seq(dropped_seqs, seq_id)
                     logger.info(
                         "clipboard.chunk_dropped_toggle seq=%d content_type=%s",
                         seq_id, content_type,
