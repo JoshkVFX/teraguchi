@@ -77,6 +77,22 @@ class ClientSession:
         self.picked_monitor_name: str = ""
         self.crop_rect: Optional[Tuple[int, int, int, int]] = None
         self.capture_mode_degraded: bool = False
+        # Phase 3 D-15 / Plan 03-06 — per-direction clipboard toggles.
+        # Defaults all True: D-16 "secure defaults = all directions ON"
+        # + preserves pre-Phase-3 always-on clipboard behavior for
+        # legacy clients that don't negotiate toggles. Populated from
+        # ClientHelloMsg at handshake time in SessionRuntime.handle_input.
+        self.clipboard_text_c2s: bool = True
+        self.clipboard_text_s2c: bool = True
+        self.clipboard_image_c2s: bool = True
+        self.clipboard_image_s2c: bool = True
+        # Phase 3 D-17 / Plan 03-06 — per-session chunk-assembler state.
+        # Keyed by sequence_id. ``_dropped_seqs`` tracks sequence_ids
+        # that were disabled at chunk-0 boundary (Pitfall 7 mid-stream
+        # toggle race fix) so subsequent chunks of the same sequence
+        # drop silently without re-checking the toggle.
+        self._clipboard_chunks: dict = {}
+        self._dropped_seqs: set = set()
 
     def start_sender(self):
         self._send_task = asyncio.create_task(self._send_loop())

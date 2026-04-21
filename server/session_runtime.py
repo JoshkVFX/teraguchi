@@ -48,6 +48,7 @@ from websockets.server import WebSocketServerProtocol
 
 from common.messages import (
     AudioCodec,
+    ClipboardChunkMsg,
     ClipboardMsg,
     FrameType,
     MsgType,
@@ -57,6 +58,7 @@ from common.messages import (
     encode_audio_header,
     encode_video_header,
 )
+from common.clipboard_chunks import ClipboardChunkAssembler
 from common.session_fsm import PenFSM, is_state_pair_allowed
 from common.keymap import qt_key_to_linux_scancode
 from server.health_loop import check_state_pair  # Plan 01-14: structured ERROR emit
@@ -534,11 +536,93 @@ class SessionRuntime:
             msg_json = json.dumps(msg_dict)
             asyncio.run_coroutine_threadsafe(session.enqueue(msg_json), self._event_loop)
 
-    def _on_clipboard_change(self, text: str):
-        msg_json = ClipboardMsg(type=MsgType.CLIPBOARD_RECV, data=text).to_json()
+    def _on_clipboard_change(self, content_type, payload=None):
+        """Phase 3 D-15 / Plan 03-06 — per-direction gating + text/image dispatch.
+
+        Two-arg form ``_on_clipboard_change(content_type, payload)`` — matches
+        the Plan 03-06 ClipboardSync / MacClipboardSync ``start_monitoring``
+        callback contract. ``content_type`` is ``"text/plain"`` or
+        ``"image/png"``; text payload is ``str``, image payload is raw PNG
+        ``bytes``.
+
+        Per-client s2c gate: if the client's ``clipboard_text_s2c`` (or
+        image variant) is False, skip the enqueue entirely — zero wire
+        traffic leaves the server for that direction. Text payloads ride
+        a single :class:`ClipboardMsg`; image payloads go through
+        :meth:`_enqueue_chunked_clipboard` which splits the base64-
+        encoded PNG into 1 MB :class:`ClipboardChunkMsg` frames (D-17).
+
+        Backward-compat: callers that pass a single ``str`` argument
+        (pre-Plan-03-06 clipboards + tests that still construct the old
+        single-arg callback) are routed to the text path.
+        """
+        # Backward-compat with single-arg callers (legacy tests /
+        # Phase-2-era ClipboardSync stubs that didn't pass content_type).
+        if payload is None:
+            payload = content_type
+            content_type = "text/plain"
+
+        is_image = content_type == "image/png"
         for ws, cs in list(self.clients.items()):
-            if cs.authenticated and self._event_loop:
-                asyncio.run_coroutine_threadsafe(cs.enqueue(msg_json), self._event_loop)
+            if not (cs.authenticated and self._event_loop):
+                continue
+            # Outbound s2c gate — short-circuit BEFORE JSON encode.
+            if is_image and not getattr(cs, "clipboard_image_s2c", True):
+                continue
+            if (not is_image) and not getattr(cs, "clipboard_text_s2c", True):
+                continue
+            if is_image:
+                import base64
+                # Base64 encode once; _enqueue_chunked_clipboard splits into 1MB frames.
+                data_b64 = base64.b64encode(payload).decode("ascii")
+                self._enqueue_chunked_clipboard(cs, content_type, data_b64)
+            else:
+                msg_json = ClipboardMsg(
+                    type=MsgType.CLIPBOARD_RECV,
+                    content_type="text/plain",
+                    data=payload,
+                ).to_json()
+                asyncio.run_coroutine_threadsafe(
+                    cs.enqueue(msg_json), self._event_loop,
+                )
+
+    def _next_clipboard_seq(self) -> int:
+        """Phase 3 D-17 — monotonic per-runtime clipboard sequence_id allocator.
+
+        Wraps at 32-bit to keep the wire integer bounded. Per-client
+        inbound assemblers dedupe on ``sequence_id`` so the wrap is
+        benign unless a single client receives 2³² clipboard events in
+        one session (not a real threat).
+        """
+        if not hasattr(self, "_clipboard_seq"):
+            self._clipboard_seq = 0
+        self._clipboard_seq = (self._clipboard_seq + 1) & 0xFFFFFFFF
+        return self._clipboard_seq
+
+    def _enqueue_chunked_clipboard(self, cs: "ClientSession", content_type: str,
+                                    data_b64: str) -> None:
+        """D-17 — split base64 payload into 1 MB chunks; emit one
+        :class:`ClipboardChunkMsg` per chunk. Each chunk enqueues
+        through the existing per-client bounded send_queue so STAB-07
+        queue-depth invariants stay intact."""
+        CHUNK_BYTES = 1024 * 1024
+        total = max(1, (len(data_b64) + CHUNK_BYTES - 1) // CHUNK_BYTES)
+        seq = self._next_clipboard_seq()
+        for i in range(total):
+            chunk = data_b64[i * CHUNK_BYTES : (i + 1) * CHUNK_BYTES]
+            msg_json = ClipboardChunkMsg(
+                sequence_id=seq,
+                chunk_index=i,
+                total_chunks=total,
+                content_type=content_type,
+                data=chunk,
+            ).to_json()
+            asyncio.run_coroutine_threadsafe(cs.enqueue(msg_json), self._event_loop)
+        # Telemetry — size counts only, NEVER payload bytes (T-03-32).
+        logger.info(
+            "clipboard.outbound_chunked content_type=%s seq=%d total_chunks=%d",
+            content_type, seq, total,
+        )
 
     def _on_cursor_shape_change(self, update: dict):
         """Called from the CursorTracker polling thread whenever Flame
@@ -981,8 +1065,129 @@ class SessionRuntime:
                 pass
 
         elif msg_type == MsgType.CLIPBOARD_SEND:
-            if self.clipboard:
+            if not self.clipboard:
+                return
+            content_type = msg.get("content_type", "text/plain")
+            # Phase 3 D-15 — per-direction c2s gate. Drop silently
+            # (no error response) so a misconfigured peer doesn't learn
+            # the toggle state from server-side side effects.
+            if content_type == "image/png":
+                if not getattr(session, "clipboard_image_c2s", True):
+                    return
+            else:
+                if not getattr(session, "clipboard_text_c2s", True):
+                    return
+            # Single-shot text path. Image payloads arrive via
+            # CLIPBOARD_CHUNK even for small PNGs — this branch only
+            # handles text.
+            if content_type == "text/plain":
                 self.clipboard.set_clipboard(msg.get("data", ""))
+
+        elif msg_type == MsgType.CLIPBOARD_CHUNK:
+            if not self.clipboard:
+                return
+            content_type = msg.get("content_type", "text/plain")
+            try:
+                seq_id = int(msg.get("sequence_id", 0))
+                chunk_index = int(msg.get("chunk_index", 0))
+                total_chunks = int(msg.get("total_chunks", 1))
+            except (TypeError, ValueError):
+                logger.warning("clipboard.chunk_bad_fields msg_keys=%s",
+                                list(msg.keys()))
+                return
+
+            # Phase 3 Pitfall 7 — toggle gating at the chunk-0 boundary,
+            # NOT per-chunk. If the client disables the direction AFTER
+            # chunk 0 arrived, the in-flight sequence still completes
+            # (the payload was already authorized when chunk 0 crossed
+            # the boundary). The toggle applies to the NEXT sequence_id.
+            # Subsequent chunks of a dropped sequence check
+            # ``_dropped_seqs`` and silently no-op.
+            dropped_seqs = getattr(session, "_dropped_seqs", None)
+            if dropped_seqs is None:
+                dropped_seqs = set()
+                session._dropped_seqs = dropped_seqs
+            if chunk_index == 0:
+                if content_type == "image/png" and not getattr(
+                    session, "clipboard_image_c2s", True,
+                ):
+                    dropped_seqs.add(seq_id)
+                    logger.info(
+                        "clipboard.chunk_dropped_toggle seq=%d content_type=%s",
+                        seq_id, content_type,
+                    )
+                    return
+                if content_type == "text/plain" and not getattr(
+                    session, "clipboard_text_c2s", True,
+                ):
+                    dropped_seqs.add(seq_id)
+                    logger.info(
+                        "clipboard.chunk_dropped_toggle seq=%d content_type=%s",
+                        seq_id, content_type,
+                    )
+                    return
+            if seq_id in dropped_seqs:
+                # Mid-stream drop continuation — chunks arriving after
+                # the chunk-0 drop decision no-op silently.
+                return
+
+            assemblers = getattr(session, "_clipboard_chunks", None)
+            if assemblers is None:
+                assemblers = {}
+                session._clipboard_chunks = assemblers
+
+            asm = assemblers.get(seq_id)
+            if asm is None:
+                try:
+                    asm = ClipboardChunkAssembler(
+                        sequence_id=seq_id,
+                        total_chunks=total_chunks,
+                        content_type=content_type,
+                    )
+                except ValueError:
+                    logger.warning(
+                        "clipboard.chunk_invalid_total seq=%d total=%s",
+                        seq_id, total_chunks,
+                    )
+                    return
+                assemblers[seq_id] = asm
+
+            full_b64 = asm.add(chunk_index, msg.get("data", ""))
+            if full_b64 is not None:
+                import base64
+                try:
+                    raw = base64.b64decode(full_b64)
+                except Exception:
+                    logger.warning(
+                        "clipboard.chunk_b64_decode_failed seq=%d", seq_id,
+                    )
+                    del assemblers[seq_id]
+                    return
+                # D-16 defense-in-depth — re-validate magic byte + size
+                # on receive BEFORE touching the system clipboard.
+                if content_type == "image/png":
+                    # Local import to avoid boot-time coupling.
+                    from server.clipboard import validate_png_payload
+                    if validate_png_payload(raw):
+                        self.clipboard.set_clipboard_image(raw)
+                else:
+                    self.clipboard.set_clipboard(
+                        raw.decode("utf-8", errors="replace"),
+                    )
+                del assemblers[seq_id]
+                logger.info(
+                    "clipboard.chunk_assembled seq=%d content_type=%s size=%d",
+                    seq_id, content_type, len(raw),
+                )
+
+            # T-03-25 periodic stale cleanup — runs on every inbound
+            # chunk so an attacker who starts a sequence and abandons
+            # it can't pin memory past CHUNK_TIMEOUT_S.
+            now = time.monotonic()
+            stale = [s for s, a in assemblers.items() if a.is_stale(now)]
+            for s in stale:
+                logger.warning("clipboard.chunk_timeout seq=%d", s)
+                del assemblers[s]
 
         elif msg_type in (MsgType.FILE_OFFER, MsgType.FILE_CHUNK,
                           MsgType.FILE_DONE, MsgType.FILE_CANCEL):
@@ -1019,6 +1224,25 @@ class SessionRuntime:
                 logger.warning(
                     "session.apply_capture_mode_failed err=%s", e,
                 )
+            # Phase 3 D-15 / Plan 03-06 — per-direction clipboard toggles.
+            # Defaults True preserve pre-Phase-3 legacy clipboard behavior
+            # (client hello omitting the fields → all 4 directions ON).
+            # Pitfall 7 race: re-reading toggles on every hello is safe
+            # because in-flight CLIPBOARD_CHUNK sequences are keyed on
+            # session._dropped_seqs and session._clipboard_chunks, not
+            # on the toggle value at chunk-N arrival time.
+            session.clipboard_text_c2s = bool(
+                msg.get("clipboard_text_c2s", True),
+            )
+            session.clipboard_text_s2c = bool(
+                msg.get("clipboard_text_s2c", True),
+            )
+            session.clipboard_image_c2s = bool(
+                msg.get("clipboard_image_c2s", True),
+            )
+            session.clipboard_image_s2c = bool(
+                msg.get("clipboard_image_s2c", True),
+            )
             # STAB-06 / Plan 01-08 — capability_exchange → streaming.
             try:
                 session.fsm.send("client_hello")

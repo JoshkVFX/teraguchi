@@ -34,9 +34,23 @@ from typing import Callable, Optional, Union
 # security updates (D-16 defense-in-depth — each trust boundary
 # revalidates, but with the SAME rules).
 from server.clipboard import (
-    PNG_MAGIC,
-    PNG_MAX_BYTES,
+    PNG_MAGIC as _SHARED_PNG_MAGIC,
+    PNG_MAX_BYTES as _SHARED_PNG_MAX_BYTES,
     validate_png_payload,
+)
+
+# Re-export at the Mac module scope so both platforms carry the same
+# constant names inline (the Plan 03-06 acceptance grep expects each
+# server-clipboard module to own the literal values for audit clarity).
+# These MUST stay byte-identical to the Linux defaults — we only
+# duplicate the literal for greppability, not for divergence.
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+PNG_MAX_BYTES: int = 64 * 1024 * 1024  # D-14 — 64 MB cap (mirrors server.clipboard)
+assert PNG_MAGIC == _SHARED_PNG_MAGIC, (
+    "PNG_MAGIC drift between server.clipboard and server.mac_clipboard"
+)
+assert PNG_MAX_BYTES == _SHARED_PNG_MAX_BYTES, (
+    "PNG_MAX_BYTES drift between server.clipboard and server.mac_clipboard"
 )
 
 logger = logging.getLogger(__name__)

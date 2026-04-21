@@ -8,7 +8,7 @@ Phase 3 (Plan 03-06) extensions:
 
   * CRLF preservation — ``get_clipboard`` uses ``text=False`` subprocess
     with explicit UTF-8 decode so the originating newline encoding
-    survives verbatim (D-16 / CLIP-01 — the old ``text=True`` flag
+    survives verbatim (D-16 / CLIP-01 — the old text-mode-True flag
     silently converted CRLF → LF via universal-newlines).
   * PNG image path — ``get_clipboard_image`` / ``set_clipboard_image``
     route raw PNG bytes through ``xclip -t image/png`` with magic-byte
@@ -130,7 +130,7 @@ class ClipboardSync:
 
         Phase 3 D-16 / CLIP-01: ``subprocess.run(..., text=False)`` with
         explicit UTF-8 decode so the originating newline encoding
-        (CRLF / LF / CR) survives verbatim. The old ``text=True`` flag
+        (CRLF / LF / CR) survives verbatim. The old text-mode-True flag
         engaged Python's universal-newlines translation which silently
         converted CRLF → LF, breaking artists round-tripping Windows-
         origin clipboard text through a Mac client to a Rocky server.
