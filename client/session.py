@@ -47,7 +47,12 @@ class _Bridge(QObject):
     # still emits a plain list of monitors for back-compat with
     # main_window._on_monitor_list.
     monitor_list = Signal(dict)
-    clipboard_recv = Signal(str)
+    # Phase 3 D-13 / Plan 03-07 — clipboard recv now carries (content_type,
+    # payload). ``object`` permits both str (text/plain) and bytes
+    # (image/png) without a second signal definition.
+    clipboard_recv = Signal(str, object)
+    # Phase 3 D-14 / Plan 03-07 — oversize-image toast bridge (size in MB).
+    oversize_image = Signal(float)
     file_response = Signal(dict)
     usb_response = Signal(dict)
     broker_machine_needed = Signal(list)
@@ -108,6 +113,10 @@ class Session(QObject):
         # session binds to a FullscreenToolbar instance; None until then.
         self.remap_banner = None
         self.toolbar = None
+        # Phase 3 D-15 / Plan 03-07 — bookmark manager reference for
+        # clipboard-toggle persistence. main_window binds via bind_bookmark_manager
+        # so _on_clipboard_toggles_changed can update the saved profile.
+        self.bookmark_manager = None
         # Cached server-side session identifier for degradation routing.
         # Currently mirrors ``ClientSession.client_id`` on the server
         # (``str(id(ws))``). Populated via ``set_client_token`` once the
@@ -150,7 +159,11 @@ class Session(QObject):
                 swap_cmd_ctrl: bool = False,
                 monitor_mode: str = "mirror_all",
                 picked_monitor_id: int = -1,
-                picked_monitor_name: str = ""):
+                picked_monitor_name: str = "",
+                clipboard_text_c2s: bool = True,
+                clipboard_text_s2c: bool = True,
+                clipboard_image_c2s: bool = True,
+                clipboard_image_s2c: bool = True):
         self._host = host
         self._port = port
         self._username = username
@@ -176,6 +189,31 @@ class Session(QObject):
         self.protocol.set_capture_mode(
             monitor_mode, picked_monitor_id, picked_monitor_name,
         )
+
+        # Phase 3 D-15 / Plan 03-07 — push bookmark clipboard toggles into
+        # the protocol BEFORE connect so the first ClientHelloMsg carries
+        # the saved toggle state. Mirrors the capture_mode pattern.
+        self.protocol.set_clipboard_toggles(
+            text_c2s=bool(clipboard_text_c2s),
+            text_s2c=bool(clipboard_text_s2c),
+            image_c2s=bool(clipboard_image_c2s),
+            image_s2c=bool(clipboard_image_s2c),
+        )
+        # Sync the toolbar button (if one is bound) so the UI matches the
+        # bookmark's saved state without re-emitting toggles_changed.
+        tb = getattr(self, "toolbar", None)
+        if tb is not None:
+            try:
+                tb.clipboard_toggle.set_state(
+                    text_c2s=bool(clipboard_text_c2s),
+                    text_s2c=bool(clipboard_text_s2c),
+                    image_c2s=bool(clipboard_image_c2s),
+                    image_s2c=bool(clipboard_image_s2c),
+                )
+            except Exception as e:
+                logger.debug(
+                    "session.toolbar.clipboard_toggle.set_state_failed err=%s", e,
+                )
 
         self.protocol.disconnect()
         self.protocol.connect(
@@ -203,6 +241,19 @@ class Session(QObject):
             monitor_mode=getattr(profile, "monitor_mode", "mirror_all"),
             picked_monitor_id=getattr(profile, "picked_monitor_id", -1),
             picked_monitor_name=getattr(profile, "picked_monitor_name", ""),
+            # Phase 3 D-15 / Plan 03-07 — bookmark clipboard toggles.
+            clipboard_text_c2s=bool(
+                getattr(profile, "clipboard_text_c2s", True),
+            ),
+            clipboard_text_s2c=bool(
+                getattr(profile, "clipboard_text_s2c", True),
+            ),
+            clipboard_image_c2s=bool(
+                getattr(profile, "clipboard_image_c2s", True),
+            ),
+            clipboard_image_s2c=bool(
+                getattr(profile, "clipboard_image_s2c", True),
+            ),
         )
 
     def connect_broker(self, host: str, port: int, username: str = "",
@@ -289,7 +340,11 @@ class Session(QObject):
         p.on_auth_result = b.auth_result.emit
         p.on_health_stats = b.health_stats.emit
         p.on_monitor_list = b.monitor_list.emit
-        p.on_clipboard = b.clipboard_recv.emit
+        # Phase 3 D-13 / Plan 03-07 — on_clipboard now takes
+        # (content_type, payload). bridge re-emits both to the GUI thread.
+        p.on_clipboard = lambda ct, data: b.clipboard_recv.emit(ct, data)
+        # Phase 3 D-14 / Plan 03-07 — oversize-image toast bridge.
+        p.on_oversize_image = lambda size_mb: b.oversize_image.emit(float(size_mb))
         p.on_file_response = b.file_response.emit
         p.on_usb_response = b.usb_response.emit
         p.on_broker_machine_needed = b.broker_machine_needed.emit
@@ -306,6 +361,7 @@ class Session(QObject):
         b.health_stats.connect(self._on_health_stats)
         b.monitor_list.connect(self._on_monitor_list)
         b.clipboard_recv.connect(self._on_clipboard_recv)
+        b.oversize_image.connect(self._on_oversize_image)
         b.file_response.connect(self._on_file_response)
 
         # File sender: chunks go out via protocol, responses come back via bridge
@@ -372,13 +428,39 @@ class Session(QObject):
         self.protocol.send_input(data)
 
     def _push_clipboard_for_paste(self):
-        """Explicitly push local clipboard to server right before Ctrl+V."""
+        """Phase 3 D-13 — explicitly push local clipboard to server before Ctrl+V.
+
+        Image support added for Plan 03-07: if the local clipboard holds
+        a QImage (Finder/Preview/screenshot copy), encode to PNG and
+        push via the image path. Text is always checked after image so
+        a clipboard carrying both (rare, but possible) pushes both.
+        """
         if not self.is_connected:
             return
-        text = QApplication.clipboard().text()
-        if text:
-            logger.debug("Paste detected — pushing %d chars to server clipboard", len(text))
-            self.protocol.send_clipboard(text)
+        from PySide6.QtCore import QBuffer, QIODevice
+        from PySide6.QtGui import QImage
+        cb = QApplication.clipboard()
+        md = cb.mimeData()
+        if md is not None and md.hasImage():
+            img: QImage = cb.image()
+            if not img.isNull():
+                buf = QBuffer()
+                buf.open(QIODevice.WriteOnly)
+                img.save(buf, "PNG")
+                png_bytes = bytes(buf.data())
+                logger.debug(
+                    "Paste detected — pushing %d-byte PNG to server clipboard",
+                    len(png_bytes),
+                )
+                self.protocol.send_clipboard("image/png", png_bytes)
+        if md is not None and md.hasText():
+            text = cb.text()
+            if text:
+                logger.debug(
+                    "Paste detected — pushing %d chars to server clipboard",
+                    len(text),
+                )
+                self.protocol.send_clipboard("text/plain", text)
 
     # ── Protocol Event Handlers ──────────────────
 
@@ -573,9 +655,84 @@ class Session(QObject):
                 self.remap_banner.show_for_case(case)
         self._last_monitor_count = cur_count
 
-    def _on_clipboard_recv(self, text):
+    def _on_clipboard_recv(self, content_type, data):
+        """Phase 3 D-13 / Plan 03-07 — text + image inbound dispatch.
+
+        content_type ``"image/png"`` routes through ``QImage.fromData``
+        into ``QApplication.clipboard().setPixmap``. Anything else is
+        treated as text and set via ``.setText``. Echo-suppression flag
+        (``_clipboard_from_server``) blocks the dataChanged feedback
+        loop from re-uploading what the server just sent us.
+        """
+        from PySide6.QtGui import QImage, QPixmap
+
+        cb = QApplication.clipboard()
+        # Echo suppression — set BEFORE touching the clipboard so the
+        # dataChanged slot is guaranteed to see the flag.
         self._clipboard_from_server = True
-        QApplication.clipboard().setText(text)
+        try:
+            if content_type == "image/png" and isinstance(data, (bytes, bytearray)):
+                img = QImage.fromData(bytes(data), "PNG")
+                if not img.isNull():
+                    cb.setPixmap(QPixmap.fromImage(img))
+                    logger.info("clipboard.image_recv_set size=%d", len(data))
+                else:
+                    logger.warning(
+                        "clipboard.image_recv_qimage_null size=%d", len(data),
+                    )
+            else:
+                # Text path (or fallback for unknown content_type).
+                text = data if isinstance(data, str) else str(data)
+                cb.setText(text)
+        finally:
+            # Reset flag in a finally so exceptions can't wedge future
+            # local-clipboard pushes.
+            self._clipboard_from_server = False
+
+    def _on_oversize_image(self, size_mb: float):
+        """Phase 3 D-14 / Plan 03-07 — show the oversize-image toast.
+
+        Triggered by ``ClientProtocol._oversize_callback`` via the
+        ``oversize_image`` bridge signal. Guards against a detached
+        viewer (early disconnect) by falling back to a log-only path.
+        """
+        from client.toasts import show_oversize_image_toast
+        if self.viewer is not None:
+            show_oversize_image_toast(self.viewer, size_mb)
+        else:
+            logger.warning(
+                "clipboard.oversize_image size_mb=%.1f (no viewer)", size_mb,
+            )
+
+    def _on_clipboard_toggles_changed(self, state: dict):
+        """Phase 3 D-15 / Plan 03-07 — react to ClipboardToggleButton changes.
+
+        Pushes the new toggle state into the protocol (gates the next
+        outbound send + inbound CLIPBOARD_CHUNK) and persists to the
+        current bookmark so the UI preference rides across sessions.
+        """
+        self.protocol.set_clipboard_toggles(
+            text_c2s=bool(state.get("text_c2s", True)),
+            text_s2c=bool(state.get("text_s2c", True)),
+            image_c2s=bool(state.get("image_c2s", True)),
+            image_s2c=bool(state.get("image_s2c", True)),
+        )
+        # Persist to bookmark if we have one wired.
+        bm = getattr(self, "bookmark_manager", None)
+        bid = getattr(self, "_bookmark_id", "")
+        if bm is not None and bid:
+            try:
+                bm.update(
+                    bid,
+                    clipboard_text_c2s=bool(state.get("text_c2s", True)),
+                    clipboard_text_s2c=bool(state.get("text_s2c", True)),
+                    clipboard_image_c2s=bool(state.get("image_c2s", True)),
+                    clipboard_image_s2c=bool(state.get("image_s2c", True)),
+                )
+            except Exception as e:
+                logger.debug(
+                    "session.bookmark_update_failed id=%s err=%s", bid, e,
+                )
 
     def _on_clipboard_local_changed(self):
         """Local clipboard changed — send to server if it wasn't from the server."""
@@ -586,7 +743,7 @@ class Session(QObject):
             return
         text = QApplication.clipboard().text()
         if text:
-            self.protocol.send_clipboard(text)
+            self.protocol.send_clipboard("text/plain", text)
 
     def _on_file_response(self, msg):
         """Route file transfer responses to FileSender."""
@@ -666,3 +823,36 @@ class Session(QObject):
     def usb_refresh(self):
         """Re-enumerate and send device list."""
         self._send_usb_device_list()
+
+    # ── Phase 3 D-15 / Plan 03-07 — toolbar + bookmark_manager binding ──
+
+    def bind_toolbar(self, toolbar):
+        """Attach a FullscreenToolbar to this session.
+
+        Wires the ClipboardToggleButton's ``toggles_changed`` signal into
+        :meth:`_on_clipboard_toggles_changed` so UI changes flow through
+        to the protocol + bookmark. Safe to call multiple times — the
+        second call re-binds (disconnects the old connection first).
+        """
+        if self.toolbar is toolbar:
+            return
+        self.toolbar = toolbar
+        if toolbar is None:
+            return
+        try:
+            toolbar.clipboard_toggle.toggles_changed.connect(
+                self._on_clipboard_toggles_changed
+            )
+        except Exception as e:
+            logger.debug(
+                "session.bind_toolbar.connect_failed err=%s", e,
+            )
+
+    def bind_bookmark_manager(self, manager):
+        """Attach the BookmarkManager for clipboard-toggle persistence.
+
+        main_window calls this after constructing the session so
+        :meth:`_on_clipboard_toggles_changed` can persist UI changes
+        to the active ConnectionProfile.
+        """
+        self.bookmark_manager = manager

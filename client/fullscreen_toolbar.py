@@ -196,7 +196,14 @@ class FullscreenToolbar(QWidget):
         self._monitor_selector.setMaximumWidth(200)
         layout.addWidget(self._monitor_selector)
 
-        # Plan 06 inserts ClipboardToggleButton here (UI-SPEC Surface 7).
+        # Phase 3 D-15 / UI-SPEC Surface 7 / Plan 03-07 — clipboard direction
+        # toggle button (4-checkbox nested menu). Inserts between the
+        # MonitorSelector and the mode badge so the clipboard and monitor
+        # affordances sit side-by-side in the left half of the toolbar.
+        from client.clipboard_toggle_menu import ClipboardToggleButton
+        self._clipboard_toggle = ClipboardToggleButton()
+        layout.addSpacing(8)   # sm token
+        layout.addWidget(self._clipboard_toggle)
 
         # Phase 3 D-01 / UI-SPEC Surface 2 — read-only mode badge.
         # Inserts between monitor selector and the addStretch so the
@@ -323,3 +330,8 @@ class FullscreenToolbar(QWidget):
     @property
     def mode_badge(self):
         return self._mode_badge
+
+    @property
+    def clipboard_toggle(self):
+        """Phase 3 D-15 / UI-SPEC Surface 7 — clipboard direction button."""
+        return self._clipboard_toggle

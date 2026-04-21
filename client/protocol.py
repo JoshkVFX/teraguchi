@@ -31,6 +31,8 @@ from common.messages import (
     KeyResetModifiersMsg, TextCommitMsg,
     # Phase 3 D-05 — input messages carrying server_x / server_y.
     MouseMoveMsg, MouseButtonMsg, MouseScrollMsg, PenEventMsg,
+    # Phase 3 D-17 — chunked clipboard wire envelope (Plan 03-06/03-07).
+    ClipboardChunkMsg,
 )
 from common.keymap import swap_cmd_ctrl_for_linux_dest
 from common.session_fsm import ClientFSM
@@ -81,6 +83,19 @@ from common.hybrid_transport import HybridClientTransport, TransportMsg
 from common.jitter_buffer import JitterBuffer
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 D-13 / D-14 / D-17 — clipboard transport constants (Plan 03-07).
+#
+# Mirror of the server-side constants in ``server/clipboard.py``. Kept in
+# sync via the Plan 06/07 acceptance grep battery. Shared-constants module
+# is deferred to v1.1 — both ends live in the same repo so the drift
+# surface is reviewable at every commit boundary.
+# ---------------------------------------------------------------------------
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+PNG_MAX_BYTES = 64 * 1024 * 1024   # D-14 oversize cap
+CHUNK_BYTES = 1024 * 1024          # D-17 per-chunk target
 
 
 class ClientProtocol:
@@ -187,6 +202,31 @@ class ClientProtocol:
         self._capture_mode: str = "mirror_all"
         self._picked_monitor_id: int = -1
         self._picked_monitor_name: str = ""
+
+        # Phase 3 D-15 / D-16 — per-direction clipboard toggles (Plan 03-07).
+        # Defaults True preserve pre-Phase-3 always-on clipboard behavior
+        # and match D-16's "secure defaults = all directions ON". session.py
+        # flips via ``set_clipboard_toggles`` on bookmark connect so the
+        # first hello carries the user's saved toggle state.
+        self._clipboard_text_c2s: bool = True
+        self._clipboard_text_s2c: bool = True
+        self._clipboard_image_c2s: bool = True
+        self._clipboard_image_s2c: bool = True
+
+        # Phase 3 D-17 — per-protocol chunk reassembly state (Plan 03-07).
+        # ``_clipboard_chunks`` maps sequence_id -> ClipboardChunkAssembler.
+        # ``_dropped_seqs`` tracks sequences whose chunk-0 was gated off
+        # so subsequent chunks for the same sequence silently no-op
+        # (Pitfall 7 continuation on the client-inbound path).
+        self._clipboard_chunks: dict = {}
+        self._dropped_seqs: set = set()
+        # Phase 3 D-17 — monotonic outbound sequence_id allocator.
+        self._clipboard_seq: int = 0
+
+        # Phase 3 D-14 — oversize-image toast bridge. session.py assigns a
+        # GUI-thread callback taking a single float (size in MB). Absent
+        # assignment, the oversize path just logs.
+        self.on_oversize_image: Optional[Callable[[float], None]] = None
 
     @property
     def connected(self) -> bool:
@@ -323,9 +363,161 @@ class ClientProtocol:
             # Loop stopped — ignore
             pass
 
-    def send_clipboard(self, text: str):
-        self.send_input({"type": MsgType.CLIPBOARD_SEND,
-                         "content_type": "text/plain", "data": text})
+    def send_clipboard(self, content_type, data=None):
+        """Phase 3 D-13 / D-15 / D-17 — content-type-aware clipboard send.
+
+        Dispatch contract:
+          - ``send_clipboard("text/plain", text)`` — 1-shot for <=1MB,
+            chunked via ``_send_chunked`` for >1MB. Gated on
+            ``_clipboard_text_c2s``.
+          - ``send_clipboard("image/png", png_bytes)`` — validates PNG
+            magic + <=64MB cap (triggers ``on_oversize_image`` on
+            overflow per D-14), base64-encodes, and ships chunked.
+            Gated on ``_clipboard_image_c2s``.
+
+        Backward-compat: legacy callers that passed a single ``str``
+        (pre-Phase-3-07) are routed to the text path.
+        """
+        # Legacy single-arg (pre-Plan-07) compat: send_clipboard("hello")
+        if data is None:
+            data = content_type
+            content_type = "text/plain"
+
+        is_image = (content_type == "image/png")
+
+        # D-15 outbound c2s gating at send-start (primary gate — per-chunk
+        # re-check lives inside _send_chunked for the Pitfall 7 mid-stream
+        # race.)
+        if is_image:
+            if not self._clipboard_image_c2s:
+                return
+        else:
+            if not self._clipboard_text_c2s:
+                return
+
+        if is_image:
+            if not isinstance(data, (bytes, bytearray)):
+                logger.warning(
+                    "clipboard.image_send_invalid_type type=%s",
+                    type(data).__name__,
+                )
+                return
+            size = len(data)
+            if size > PNG_MAX_BYTES:
+                logger.warning(
+                    "clipboard.image_oversize size=%d cap=%d",
+                    size, PNG_MAX_BYTES,
+                )
+                self._oversize_callback(size / (1024 * 1024))
+                return
+            if size < 8 or bytes(data[:8]) != PNG_MAGIC:
+                logger.warning("clipboard.image_bad_magic size=%d", size)
+                return
+            import base64
+            payload = base64.b64encode(bytes(data)).decode("ascii")
+            self._send_chunked("image/png", payload)
+            return
+
+        # text/plain path
+        if isinstance(data, bytes):
+            data = data.decode("utf-8", errors="replace")
+        if len(data) <= CHUNK_BYTES:
+            self.send_input({
+                "type": MsgType.CLIPBOARD_SEND,
+                "content_type": "text/plain",
+                "data": data,
+            })
+        else:
+            self._send_chunked("text/plain", data)
+
+    def _send_chunked(self, content_type: str, payload: str) -> None:
+        """Phase 3 D-17 — emit ClipboardChunkMsg per 1 MB chunk.
+
+        W-6 Pitfall 7 mid-stream cancellation: the c2s toggle state is
+        captured at sequence start AND re-checked per-chunk. If the user
+        toggles the relevant c2s direction OFF mid-payload (e.g. they
+        realize they are screen-sharing and disable client->server image
+        paste while a 30 MB PNG is still chunking), the loop breaks
+        immediately and the partial sequence is abandoned. The server's
+        ``_dropped_seqs`` assembler will drop the orphan chunks at
+        CHUNK_TIMEOUT_S; no extra wire signal is needed because
+        absence-of-final-chunk + timeout is the contract.
+        """
+        is_image = (content_type == "image/png")
+        # Snapshot toggle state at sequence start (Pitfall 7 boundary).
+        c2s_at_start = (
+            self._clipboard_image_c2s if is_image else self._clipboard_text_c2s
+        )
+        if not c2s_at_start:
+            return  # double-defence; primary gate is in send_clipboard()
+
+        seq = self._next_clipboard_seq()
+        total = max(1, (len(payload) + CHUNK_BYTES - 1) // CHUNK_BYTES)
+        for i in range(total):
+            # Per-chunk re-check — mid-stream toggle-off cancels remaining.
+            current_c2s = (
+                self._clipboard_image_c2s if is_image else self._clipboard_text_c2s
+            )
+            if not current_c2s:
+                logger.info(
+                    "clipboard.chunk_send_cancelled_mid_stream seq=%d "
+                    "sent_chunks=%d total=%d content_type=%s",
+                    seq, i, total, content_type,
+                )
+                break  # abandon sequence; server drops orphans on timeout
+            chunk = payload[i * CHUNK_BYTES : (i + 1) * CHUNK_BYTES]
+            msg = ClipboardChunkMsg(
+                sequence_id=seq,
+                chunk_index=i,
+                total_chunks=total,
+                content_type=content_type,
+                data=chunk,
+            )
+            self.send_input(json.loads(msg.to_json()))
+
+    def _next_clipboard_seq(self) -> int:
+        """Phase 3 D-17 — monotonic per-protocol clipboard sequence_id.
+
+        Wraps at 32-bit to keep the wire integer bounded. Server-side
+        assembler dedupes on ``sequence_id`` per client so the wrap is
+        benign in practice.
+        """
+        self._clipboard_seq = (self._clipboard_seq + 1) & 0xFFFFFFFF
+        return self._clipboard_seq
+
+    def _oversize_callback(self, size_mb: float) -> None:
+        """Phase 3 D-14 — fire the oversize-image toast hook if wired.
+
+        Decoupled from Qt so ``client/protocol.py`` stays UI-free;
+        session.py bridges the call into ``show_oversize_image_toast``.
+        """
+        cb = self.on_oversize_image
+        if cb is None:
+            return
+        try:
+            cb(size_mb)
+        except Exception as e:
+            logger.debug("clipboard.oversize_callback_failed err=%s", e)
+
+    def set_clipboard_toggles(self, text_c2s: bool, text_s2c: bool,
+                              image_c2s: bool, image_s2c: bool) -> None:
+        """Phase 3 D-15 — update per-direction clipboard toggles.
+
+        Called from session.py on bookmark connect and when the
+        ClipboardToggleButton emits a change. Updates take effect
+        on the next outbound send / inbound CLIPBOARD_CHUNK boundary
+        (per-chunk re-check in ``_send_chunked`` handles the Pitfall 7
+        mid-stream race).
+        """
+        self._clipboard_text_c2s = bool(text_c2s)
+        self._clipboard_text_s2c = bool(text_s2c)
+        self._clipboard_image_c2s = bool(image_c2s)
+        self._clipboard_image_s2c = bool(image_s2c)
+        logger.debug(
+            "client.protocol.clipboard_toggles t_c2s=%s t_s2c=%s i_c2s=%s i_s2c=%s",
+            self._clipboard_text_c2s, self._clipboard_text_s2c,
+            self._clipboard_image_c2s, self._clipboard_image_s2c,
+        )
 
     # ------------------------------------------------------------------
     # Phase 2 D-10 / D-11 / D-14 / D-15 — modifier-state plumbing
@@ -627,6 +819,14 @@ class ClientProtocol:
                     capture_mode=self._capture_mode,
                     picked_monitor_id=self._picked_monitor_id,
                     picked_monitor_name=self._picked_monitor_name,
+                    # Phase 3 D-15 / Plan 03-07 — per-direction clipboard
+                    # toggles ride the hello so the server mirrors them
+                    # onto ClientSession on first packet (secure defaults
+                    # land via set_clipboard_toggles before connect).
+                    clipboard_text_c2s=self._clipboard_text_c2s,
+                    clipboard_text_s2c=self._clipboard_text_s2c,
+                    clipboard_image_c2s=self._clipboard_image_c2s,
+                    clipboard_image_s2c=self._clipboard_image_s2c,
                 )
                 if self._screen_size:
                     hello.screen_width = self._screen_size[0]
@@ -1061,8 +1261,15 @@ class ClientProtocol:
                     # payload alongside the monitor list.
                     self.on_monitor_list(msg)
             elif msg_type == MsgType.CLIPBOARD_RECV:
+                # Phase 3 D-13 / Plan 03-07 — 1-shot text path. Image
+                # payloads arrive via CLIPBOARD_CHUNK (server chunks
+                # every image even <1MB per Plan 06). on_clipboard
+                # signature is now (content_type, payload).
                 if self.on_clipboard:
-                    self.on_clipboard(msg.get("data", ""))
+                    content_type = msg.get("content_type", "text/plain")
+                    self.on_clipboard(content_type, msg.get("data", ""))
+            elif msg_type == MsgType.CLIPBOARD_CHUNK:
+                self._handle_clipboard_chunk(msg)
             elif msg_type in (MsgType.FILE_ACCEPT, MsgType.FILE_ACK,
                               MsgType.FILE_CANCEL):
                 if self.on_file_response:
@@ -1082,6 +1289,115 @@ class ClientProtocol:
                     self.on_cursor_update(msg)
         except json.JSONDecodeError:
             pass
+
+    def _handle_clipboard_chunk(self, msg: dict):
+        """Phase 3 D-17 / Plan 03-07 — inbound CLIPBOARD_CHUNK handler.
+
+        Uses ``ClipboardChunkAssembler`` (Plan 06) for reassembly. Gates
+        s2c at the chunk-0 boundary (Pitfall 7) with ``_dropped_seqs``
+        continuation so subsequent chunks for the same sequence no-op.
+        D-16 defense-in-depth re-validates PNG magic + size cap on
+        completion BEFORE invoking ``on_clipboard``.
+        """
+        try:
+            seq_id = int(msg.get("sequence_id", 0))
+            chunk_index = int(msg.get("chunk_index", 0))
+            total_chunks = int(msg.get("total_chunks", 1))
+        except (TypeError, ValueError):
+            logger.warning(
+                "clipboard.chunk_bad_fields msg_keys=%s",
+                list(msg.keys()),
+            )
+            return
+
+        content_type = msg.get("content_type", "text/plain")
+
+        # D-15 inbound s2c gating at chunk-0 boundary (Pitfall 7). If
+        # the user disables the direction AFTER chunk 0 arrived, the
+        # in-flight sequence still completes (payload was authorized
+        # when chunk 0 crossed). Subsequent chunks of a dropped
+        # sequence hit the _dropped_seqs silent no-op path.
+        if chunk_index == 0:
+            if content_type == "image/png" and not self._clipboard_image_s2c:
+                self._dropped_seqs.add(seq_id)
+                logger.info(
+                    "clipboard.chunk_dropped_toggle seq=%d content_type=%s",
+                    seq_id, content_type,
+                )
+                return
+            if content_type == "text/plain" and not self._clipboard_text_s2c:
+                self._dropped_seqs.add(seq_id)
+                logger.info(
+                    "clipboard.chunk_dropped_toggle seq=%d content_type=%s",
+                    seq_id, content_type,
+                )
+                return
+        if seq_id in self._dropped_seqs:
+            # Mid-stream drop continuation — silently no-op.
+            return
+
+        asm = self._clipboard_chunks.get(seq_id)
+        if asm is None:
+            from common.clipboard_chunks import ClipboardChunkAssembler
+            try:
+                asm = ClipboardChunkAssembler(
+                    sequence_id=seq_id,
+                    total_chunks=total_chunks,
+                    content_type=content_type,
+                )
+            except ValueError:
+                logger.warning(
+                    "clipboard.chunk_invalid_total seq=%d total=%s",
+                    seq_id, total_chunks,
+                )
+                return
+            self._clipboard_chunks[seq_id] = asm
+
+        full_payload = asm.add(chunk_index, msg.get("data", ""))
+        if full_payload is not None:
+            del self._clipboard_chunks[seq_id]
+            if content_type == "image/png":
+                import base64
+                try:
+                    raw = base64.b64decode(full_payload)
+                except Exception:
+                    logger.warning(
+                        "clipboard.chunk_b64_decode_failed seq=%d", seq_id,
+                    )
+                    return
+                # D-16 defense-in-depth re-validate magic + size cap.
+                if len(raw) < 8 or raw[:8] != PNG_MAGIC or len(raw) > PNG_MAX_BYTES:
+                    logger.warning(
+                        "clipboard.image_recv_invalid seq=%d size=%d",
+                        seq_id, len(raw),
+                    )
+                    return
+                if self.on_clipboard:
+                    self.on_clipboard("image/png", raw)
+                logger.info(
+                    "clipboard.chunk_assembled seq=%d content_type=%s size=%d",
+                    seq_id, content_type, len(raw),
+                )
+            else:
+                # text/plain — chunks are raw UTF-8 text slices (not
+                # base64) matching client outbound _send_chunked. The
+                # server currently emits text only via 1-shot
+                # CLIPBOARD_RECV, so this branch is exercised by the
+                # round-trip tests + any future server that chunks text.
+                text = full_payload
+                if self.on_clipboard:
+                    self.on_clipboard("text/plain", text)
+                logger.info(
+                    "clipboard.chunk_assembled seq=%d content_type=%s size=%d",
+                    seq_id, content_type, len(text),
+                )
+
+        # Cheap stale cleanup — bounded by number of concurrent sequences.
+        now = time.monotonic()
+        stale = [s for s, a in self._clipboard_chunks.items() if a.is_stale(now)]
+        for s in stale:
+            logger.warning("clipboard.chunk_timeout seq=%d", s)
+            del self._clipboard_chunks[s]
 
     def _handle_binary(self, data: bytes):
         if len(data) < 2:
