@@ -213,3 +213,131 @@ def test_session_on_monitor_list_mirror_remove_banner(qapp):
         assert session._last_monitor_count == 1
     finally:
         banner_mod.RemapBanner = orig_banner
+
+
+def test_pick_one_single_session_heuristic_fires_pick_missing(qapp):
+    """CR-01 regression — when _client_token is empty and we're in
+    pick_one mode, a single degradation entry should match as "ours"
+    via the single-session heuristic and trigger the pick_missing
+    banner + monitor-switched toast.
+
+    Before the fix, _on_monitor_list_with_degradations read
+    ``self._capture_mode`` (which was never set; ``connect()`` sets
+    ``self._monitor_mode``), so the heuristic check always evaluated
+    False and fell through to the mirror_add / mirror_remove selector.
+    This test asserts the pick_missing case fires — would have failed
+    pre-fix (heuristic never matched, no pick_missing banner).
+    """
+    import client.session as session_mod
+    import client.toasts as toasts_mod
+    import client.remap_banner as banner_mod
+
+    from PySide6.QtWidgets import QWidget
+    viewer = QWidget()
+    viewer.resize(1200, 800)
+
+    banner_calls: list = []
+    toast_calls: list = []
+
+    class _SpyBanner:
+        def __init__(self, parent):
+            self._parent = parent
+
+        def show_for_case(self, case, picked_name=""):
+            banner_calls.append((case, picked_name))
+
+    def _spy_toast(parent, monitor_name):
+        toast_calls.append(("monitor_switched", monitor_name))
+
+    orig_banner = banner_mod.RemapBanner
+    orig_toast = toasts_mod.show_monitor_switched_toast
+    banner_mod.RemapBanner = _SpyBanner
+    toasts_mod.show_monitor_switched_toast = _spy_toast
+
+    try:
+        from types import SimpleNamespace
+        session = SimpleNamespace()
+        session.viewer = viewer
+        session.toolbar = None
+        session.remap_banner = None
+        # _client_token empty (server hasn't surfaced a session id yet).
+        session._client_token = ""
+        # Session is in pick_one mode — the single-session heuristic
+        # should accept the sole degradation entry as "ours".
+        session._monitor_mode = "pick_one"
+        session._last_monitor_count = None
+
+        msg = {
+            "type": "monitor_list",
+            "monitors": [{"id": 1, "name": "DP-1"}],
+            "degradations": [{
+                "client_token": "sid-unknown",
+                "previous_pick": "DP-2",
+                "now_showing": "DP-1",
+            }],
+        }
+        handler = session_mod.Session._on_monitor_list_with_degradations
+        handler(session, msg)
+
+        # pick_missing banner fired via the single-session heuristic.
+        assert banner_calls == [("pick_missing", "DP-2")]
+        assert toast_calls == [("monitor_switched", "DP-2")]
+    finally:
+        banner_mod.RemapBanner = orig_banner
+        toasts_mod.show_monitor_switched_toast = orig_toast
+
+
+def test_pick_one_topology_change_uses_single_change_banner(qapp):
+    """CR-01 regression — on topology change (no degradation for us),
+    a pick_one session should select the ``single_change`` banner case,
+    NOT ``mirror_add`` / ``mirror_remove``.
+
+    Before the fix, the topology-change case selector read
+    ``self._capture_mode`` (never set), defaulted to ``mirror_all``,
+    and picked the wrong branch. This test would have failed pre-fix
+    (would have seen mirror_add / mirror_remove, not single_change).
+    """
+    import client.session as session_mod
+    import client.remap_banner as banner_mod
+
+    from PySide6.QtWidgets import QWidget
+    viewer = QWidget()
+    viewer.resize(1200, 800)
+
+    banner_calls: list = []
+
+    class _SpyBanner:
+        def __init__(self, parent):
+            self._parent = parent
+
+        def show_for_case(self, case, picked_name=""):
+            banner_calls.append((case, picked_name))
+
+    orig_banner = banner_mod.RemapBanner
+    banner_mod.RemapBanner = _SpyBanner
+
+    try:
+        from types import SimpleNamespace
+        session = SimpleNamespace()
+        session.viewer = viewer
+        session.toolbar = None
+        session.remap_banner = None
+        session._client_token = "sid-A"
+        session._monitor_mode = "pick_one"
+        session._last_monitor_count = 2
+
+        # No degradation for us; monitor count dropped 2 -> 1.
+        msg = {
+            "type": "monitor_list",
+            "monitors": [{"id": 1, "name": "DP-1"}],
+            "degradations": [],
+        }
+        handler = session_mod.Session._on_monitor_list_with_degradations
+        handler(session, msg)
+
+        cases = [c for (c, _) in banner_calls]
+        assert "single_change" in cases
+        assert "mirror_remove" not in cases
+        assert "mirror_add" not in cases
+    finally:
+        banner_mod.RemapBanner = orig_banner
