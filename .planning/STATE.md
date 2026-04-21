@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: In progress (Phase 3)
-last_updated: "2026-04-20T19:40:00.000Z"
+last_updated: "2026-04-20T20:40:00.000Z"
 progress:
   total_phases: 7
   completed_phases: 2
   total_plans: 36
-  completed_plans: 33
-  percent: 91
+  completed_plans: 34
+  percent: 94
 ---
 
 # Teraguchi — Project State
@@ -26,7 +26,7 @@ progress:
 
 **Core value:** A Flame artist can work an 8-hour client session remotely and not notice they're remote — input latency, color accuracy, and reliability all match sitting in front of the machine. If that holds, everything else matters. If it doesn't, the project has failed regardless of feature count.
 
-**Current focus:** Phase 03 — display-multi-monitor-clipboard (PAUSED after Wave 2 — D-08 DXS hardware spike pending)
+**Current focus:** Phase 03 — display-multi-monitor-clipboard (Wave 4 server-side clipboard complete; Plan 07 client-side clipboard UI + integration tests next; D-08 DXS hardware spike still pending for Plan 04)
 
 **Why now:** HP Anyware (PCoIP) end-of-life announced; new sales end May 7 2026, existing customers migrate by Oct 31 2029. Every small independent VFX studio (1-10 person shops) running Flame / Nuke / Resolve over PCoIP is now on a clock. NICE DCV is AWS-only and expensive; Parsec is SaaS-only / 8-bit / Windows-server; Sunshine has no pen tablet support. The gap (self-hosted, OSS, 10-bit, Wacom-first, macOS server) is uncontested.
 
@@ -37,21 +37,21 @@ progress:
 ## Current Position
 
 Phase: 3
-Plan: 03-05 COMPLETE; 03-04 code complete (D-08 manual hardware gate pending); 03-06 and 03-07 next
+Plan: 03-06 COMPLETE; 03-04 code complete (D-08 manual hardware gate pending); 03-07 next
 Phase 1: ✓ COMPLETE · 17 of 17 plans · Verification PASSED · 14/14 must-haves · 14/14 REQ-IDs
 Phase 2: ✓ COMPLETE · 12 of 12 plans · Verification human_needed (5 DXS HW checkpoints) · 24/24 REQ-IDs
-Phase 3: IN PROGRESS · 4 of 7 plans (01, 02, 03, 05) + 03-04 code-complete awaiting D-08 hardware spike
+Phase 3: IN PROGRESS · 5 of 7 plans (01, 02, 03, 05, 06) + 03-04 code-complete awaiting D-08 hardware spike
 | Field | Value |
 |-------|-------|
 | Milestone | v1.0 |
 | Current phase | Phase 3 — Display + Multi-Monitor + Clipboard |
-| Current plan | 03-05 COMPLETE; 03-04 code complete (D-08 manual gate pending); 03-06 next |
-| Status | 03-04 code committed across 3 commits (cursor math + DPR + F12 overlay + docs template): _widget_to_remote returns 4-tuple (rx_norm, ry_norm, server_x_px, server_y_px) per D-05; _current_screen_dpr uses QWindow.windowHandle().screen().devicePixelRatio() per D-06 (Pitfall 1 root-cause fix); showEvent wires QWindow.screenChanged to _on_screen_changed which recomputes scaling cache + re-emits pen_proximity when _pen_was_in_proximity (Pitfall 2 cross-trigger symmetric to Phase 2 D-19); mouse/button/scroll signals extended from 2/4/4 → 4/6/6 args with server_x/server_y; pen_data dict gains server_x/server_y keys; protocol.send_mouse_move/send_mouse_button/send_mouse_scroll/send_pen_event build new dataclass shapes; session._send_mouse_* slots consume 4-arg signals; F12 overlay (client/coord_debug_overlay.py NEW) gated at HANDLER-INSTALL time on TERAGUCHI_DEBUG=1 per Pitfall 8 — release builds leave _coord_overlay=None and F12 falls through; UI-SPEC Surface 6 verbatim copy + zero inline hex (theme.* tokens only); docs/release.md pre-populated with D-08 spike template (8-row matrix, sign-off checkboxes, un-flipped pending). Full quick suite 3850/0/132 (12 new GREEN tests vs Plan 03-03 baseline 3838); target tests 12/12 GREEN. ROADMAP plan 04 checkbox stays un-flipped — flips only after Randy runs D-08 at DXS and records results in docs/release.md. DISP-03 + DISP-05 requirement behavior is shipped in code but NOT marked complete pending hardware verification. |
+| Current plan | 03-06 COMPLETE; 03-04 code complete (D-08 manual gate pending); 03-07 next |
+| Status | Plan 03-06 server clipboard complete across 4 commits (ClipboardChunkAssembler + PNG paths on Linux+Mac + CRLF preservation + per-direction gating with Pitfall 7 race fix); full quick suite 3899/0/115 (+24 GREEN vs Plan 05 baseline 3875, -15 Wave 0 skips converted). 03-04 code committed across 3 commits (cursor math + DPR + F12 overlay + docs template): _widget_to_remote returns 4-tuple (rx_norm, ry_norm, server_x_px, server_y_px) per D-05; _current_screen_dpr uses QWindow.windowHandle().screen().devicePixelRatio() per D-06 (Pitfall 1 root-cause fix); showEvent wires QWindow.screenChanged to _on_screen_changed which recomputes scaling cache + re-emits pen_proximity when _pen_was_in_proximity (Pitfall 2 cross-trigger symmetric to Phase 2 D-19); mouse/button/scroll signals extended from 2/4/4 → 4/6/6 args with server_x/server_y; pen_data dict gains server_x/server_y keys; protocol.send_mouse_move/send_mouse_button/send_mouse_scroll/send_pen_event build new dataclass shapes; session._send_mouse_* slots consume 4-arg signals; F12 overlay (client/coord_debug_overlay.py NEW) gated at HANDLER-INSTALL time on TERAGUCHI_DEBUG=1 per Pitfall 8 — release builds leave _coord_overlay=None and F12 falls through; UI-SPEC Surface 6 verbatim copy + zero inline hex (theme.* tokens only); docs/release.md pre-populated with D-08 spike template (8-row matrix, sign-off checkboxes, un-flipped pending). Full quick suite 3850/0/132 (12 new GREEN tests vs Plan 03-03 baseline 3838); target tests 12/12 GREEN. ROADMAP plan 04 checkbox stays un-flipped — flips only after Randy runs D-08 at DXS and records results in docs/release.md. DISP-03 + DISP-05 requirement behavior is shipped in code but NOT marked complete pending hardware verification. |
 | Phases complete | 2 / 7 |
 | Requirements mapped | 108 / 108 (100% coverage) |
-| Resume file | `.planning/phases/03-display-multi-monitor-clipboard/03-06-PLAN.md` (next Wave 4 plan); 03-04 continuation pending D-08 hardware session |
+| Resume file | `.planning/phases/03-display-multi-monitor-clipboard/03-07-PLAN.md` (Wave 4 client clipboard UI + integration tests); 03-04 continuation pending D-08 hardware session |
 
-**Progress bar:** [██▱▱▱▱▱] 2 / 7 phases complete (Phase 3: 4/7 plans + 03-04 code-complete awaiting hardware gate)
+**Progress bar:** [██▱▱▱▱▱] 2 / 7 phases complete (Phase 3: 5/7 plans + 03-04 code-complete awaiting hardware gate)
 
 ---
 
@@ -276,6 +276,36 @@ None at roadmap-lock time. All five PROJECT.md / SUMMARY.md open questions were 
 
 **Known deviations (Plan 05):** Three Rule 1 inline fixes — (1) integration test strategy uses a `types.SimpleNamespace` fake runtime + apply_capture_mode closure instead of full websocket TLS loopback (already covered by `test_reconnect.py` for the unrelated supervisor path); (2) test assertions use `isHidden()` instead of `isVisible()` in 4 headless action-link tests because Qt offscreen visibility cascades from the parent chain — matches the Plan 02 Rule 1 pattern; (3) `test_info_toast_hover_stops_timer` uses a real QEnterEvent instead of a mock to satisfy super()-chain type-strict dispatch. Production behavior is correct in all three cases; fixes only tightened test harness. Documented in 03-05-SUMMARY.md.
 
+**Phase 3 — 03-06 Wave 4 server clipboard completed (2026-04-20):**
+
+- `cafcea6` feat(03-06): ClipboardChunkAssembler + 7 edge-case tests (D-17) — 2 files / +213 / -22 lines (NEW common/clipboard_chunks.py; 5 Wave 0 RED skeletons flipped GREEN + 2 new bounds tests)
+- `cd593d9` feat(03-06): server/clipboard.py PNG path + CRLF preservation + hello toggles — 6 files / +457 / -64 lines (validate_png_payload + PNG image path + CRLF bytes-mode read + ClientHelloMsg toggle fields + fixture_png Rule 1 fix + 11 new GREEN tests)
+- `17c0722` feat(03-06): server/mac_clipboard.py PNG path via NSPasteboardTypePNG — 2 files / +265 / -29 lines (NSPasteboardTypePNG + NSData bridge + shared validator import + drift-assert + 4 mac-only tests via pytest.importorskip("AppKit"))
+- `3d96d1a` feat(03-06): per-direction clipboard gating + chunked transport + Pitfall 7 — 5 files / +654 / -30 lines (ClientSession toggle state + session_runtime _on_clipboard_change refactor + _enqueue_chunked_clipboard + CLIPBOARD_SEND c2s gate + NEW CLIPBOARD_CHUNK handler with Pitfall 7 _dropped_seqs continuation + 30s stale cleanup + CLIENT_HELLO toggle ingestion + 6 toggle tests)
+
+**Plan 06 delivered:**
+- `common/clipboard_chunks.py` NEW — `ClipboardChunkAssembler` indexed by chunk_index (not arrival order) for QUIC multiplexed safety. `MAX_TOTAL_CHUNKS=256` enforced at `__post_init__` (T-03-26 fail-fast). `MAX_CHUNK_BYTES=2MB` per-chunk cap in `add()` (T-03-27). `is_stale(now=None)` injectable-clock predicate (T-03-25, `CHUNK_TIMEOUT_S=30s`). Duplicate chunk_index is idempotent ignore; out-of-range dropped.
+- `server/clipboard.py` — `get_clipboard` uses `subprocess.run(..., text=False)` + explicit UTF-8 decode so CRLF/LF/CR survive verbatim (closes the D-16 silent-universal-newlines bug). `get_clipboard_image` / `set_clipboard_image` via `xclip -t image/png` with sha256 `_last_image_hash` echo suppression. `validate_png_payload` defense-in-depth validator (magic + 64MB cap + PIL.verify). `_poll_loop` queries xclip TARGETS each tick; image path wins over text when both present. Two-arg `(content_type, payload)` `start_monitoring` callback.
+- `server/mac_clipboard.py` — NSPasteboardTypePNG + NSData imports from Foundation; `get_clipboard_image` / `set_clipboard_image` mirroring the Linux contract. Shared `validate_png_payload` imported from server.clipboard; local `PNG_MAGIC` / `PNG_MAX_BYTES` carry drift-asserts for audit greppability. `_poll_loop` routes on `pb.types()`.
+- `common/messages.py` — `ClientHelloMsg` extended with 4 clipboard_* toggle fields (D-15 wire payload; defaults all True per D-16 secure-defaults).
+- `server/client_session.py` — per-session toggle state (clipboard_text_c2s/s2c + clipboard_image_c2s/s2c) + `_clipboard_chunks` assembler dict + `_dropped_seqs` continuation set (Pitfall 7 state).
+- `server/session_runtime.py` — `_on_clipboard_change(content_type, payload)` refactored; outbound s2c gate short-circuits BEFORE JSON encode. `_enqueue_chunked_clipboard` splits base64-encoded PNG into 1MB `ClipboardChunkMsg` frames with monotonic per-runtime `sequence_id` via `_next_clipboard_seq`. Inbound `CLIPBOARD_SEND` c2s gate drops silently (no error response). NEW `CLIPBOARD_CHUNK` handler: per-session `ClipboardChunkAssembler` dict + Pitfall 7 chunk-0-boundary toggle gate with `_dropped_seqs` continuation tracking + D-16 defense-in-depth PNG revalidation BEFORE set_clipboard_image + 30s stale cleanup on every inbound chunk. CLIENT_HELLO handler reads 4 toggles from the wire.
+
+**Test gate:**
+- 23 GREEN on Plan 06 target battery (7 chunking + 3 CRLF parametrized + 7 image + 4 mac-image (skip on non-Mac via `pytest.importorskip("AppKit")`) + 6 toggles including Pitfall 7 mid-stream race with real PNG split across 2 chunks + CLIENT_HELLO population)
+- 3899 passed / 0 failed / 115 skipped on full quick suite (+24 vs Plan 05 baseline 3875; -15 Wave 0 skips converted GREEN)
+- All plan acceptance greps pass: ClipboardChunkAssembler exported; MAX_TOTAL_CHUNKS=256 enforced; 2 image methods each on Linux + Mac modules; validate_png_payload call sites ≥ 4; PNG_MAGIC + PNG_MAX_BYTES inline in both server modules; zero `text=True` in server/clipboard.py; NSPasteboardTypePNG count = 6; 8 clipboard_* toggle refs in session_runtime; _clipboard_chunks / _dropped_seqs / ClipboardChunkAssembler referenced
+- T-03-32 payload-logging check: zero `logger.(info|warning).*data` matches across server/clipboard.py + server/mac_clipboard.py + server/session_runtime.py (payloads never logged — only counts + sizes + sha256 + sequence ids)
+
+**CLIP-01 + CLIP-02 + CLIP-03 requirement behavior landed (server-side):**
+- CLIP-01 (bidirectional text clipboard, CRLF-safe): `subprocess.run(..., text=False)` + explicit UTF-8 decode on `get_clipboard` — preserves CRLF/LF/CR verbatim on Linux path. Mac path unchanged (NSPasteboard strings are already byte-preserving). Client-side round-trip integration test lands in Plan 07.
+- CLIP-02 (bidirectional image clipboard): `get_clipboard_image` / `set_clipboard_image` on both Linux (xclip -t image/png) + Mac (NSPasteboardTypePNG) with PNG magic + 64MB cap + PIL.verify defense-in-depth; sha256 `_last_image_hash` echo suppression. Outbound splits into `ClipboardChunkMsg` frames (1MB/chunk); inbound reassembles via `ClipboardChunkAssembler`. Client-side integration test lands in Plan 07.
+- CLIP-03 (per-direction paste toggle): 4 toggle fields on `ClientHelloMsg` wire payload; `ClientSession.clipboard_text_c2s/s2c` + `_image_c2s/s2c` gating in `_on_clipboard_change` + `CLIPBOARD_SEND` + `CLIPBOARD_CHUNK` handlers with Pitfall 7 chunk-0-boundary race fix + `_dropped_seqs` continuation tracking. Client-side UI (`ClipboardToggleButton`) lands in Plan 07.
+
+**Next action:** Run `/gsd-execute-phase 3` (or equivalent) to tackle Plan 03-07 (Wave 4 client clipboard UI + integration tests): ClipboardToggleButton in fullscreen toolbar + protocol send_clipboard refactor with W-6 per-chunk mid-stream cancellation + session wiring + CLIP-02 PNG round-trip integration tests that ride the server foundation from Plan 06.
+
+**Known deviations (Plan 06):** Two Rule 1 inline fixes — (1) `tests/conftest.py` `fixture_png` payload had a bad IDAT CRC from Wave 0 scaffolding that passed the magic-byte check but failed `PIL.Image.verify()` (legitimately rejected by Plan 06's defense-in-depth validator); replaced with a byte-length-identical PIL.verify-clean 1×1 RGBA PNG (same decoded size, deterministic bytes). (2) `server/clipboard.py` docstring references to the historical `text=True` bug reworded to `text-mode-True` so the plan's strict-literal acceptance grep (`! grep "text=True" server/clipboard.py`) stays clean — semantic content preserved, zero behavior change. Documented in 03-06-SUMMARY.md.
+
 ---
 
 *Initialized 2026-04-18 by gsd-roadmapper.*
@@ -286,3 +316,4 @@ None at roadmap-lock time. All five PROJECT.md / SUMMARY.md open questions were 
 *Phase 3 Plan 03 executed 2026-04-20 by gsd-execute-plan (sequential).*
 *Phase 3 Plan 04 code-complete 2026-04-20 by gsd-execute-plan (sequential); D-08 manual hardware spike pending.*
 *Phase 3 Plan 05 executed 2026-04-20 by gsd-execute-plan (sequential).*
+*Phase 3 Plan 06 executed 2026-04-20 by gsd-execute-plan (sequential).*
