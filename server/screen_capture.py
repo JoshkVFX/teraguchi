@@ -449,6 +449,12 @@ class ScreenCapture:
                 pass
             self._sct = new_sct
             self._refresh_monitor_info()
+            # WR-01: Re-select monitor so self._monitor references the NEW
+            # _sct.monitors dict — otherwise capture_raw_bgra() calls
+            # self._sct.grab(self._monitor) with coordinates from the old
+            # topology, which can crash on physical monitor removal.
+            # _select_monitor clamps out-of-range indices back to primary.
+            self._select_monitor(self.monitor_index)
             new_sig = [
                 (m.id, m.width, m.height, m.x, m.y)
                 for m in self.list_monitors()
