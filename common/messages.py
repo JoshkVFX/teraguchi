@@ -526,6 +526,18 @@ class ClientHelloMsg:
     capture_mode: str = "mirror_all"   # "single" | "mirror_all" | "pick_one"
     picked_monitor_id: int = -1
     picked_monitor_name: str = ""
+    # Phase 3 D-15 — per-direction clipboard toggles (Plan 06). Defaults
+    # preserve pre-Phase-3 always-on clipboard behavior + D-16 "secure
+    # defaults = all directions ON". Wire field names match the bookmark
+    # field names on ConnectionProfile so the mental model stays simple:
+    # client reads toggles from ConnectionProfile → pushes them on the
+    # hello → server mirrors them onto ClientSession.clipboard_* and
+    # gates outbound broadcast + inbound dispatch at the chunk-0
+    # boundary (Pitfall 7 mid-stream toggle race fix).
+    clipboard_text_c2s: bool = True
+    clipboard_text_s2c: bool = True
+    clipboard_image_c2s: bool = True
+    clipboard_image_s2c: bool = True
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))

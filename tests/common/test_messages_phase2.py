@@ -284,6 +284,36 @@ def test_client_hello_capture_mode_extension():
     assert default_parsed["picked_monitor_name"] == ""
 
 
+def test_client_hello_clipboard_toggle_extension():
+    """D-15 / Plan 03-06 — ClientHelloMsg carries the 4 per-direction clipboard toggles.
+
+    Wire field names match :class:`ConnectionProfile` so the client
+    can push its bookmark's toggle state straight through. Defaults are
+    all True (D-16 "secure defaults = all directions ON"), preserving
+    pre-Phase-3 always-on clipboard behavior for legacy clients.
+    """
+    from common.messages import ClientHelloMsg, MsgType, parse_message
+    hello = ClientHelloMsg(
+        clipboard_text_c2s=False,
+        clipboard_text_s2c=True,
+        clipboard_image_c2s=True,
+        clipboard_image_s2c=False,
+    )
+    parsed = parse_message(hello.to_json())
+    assert parsed["type"] == MsgType.CLIENT_HELLO
+    assert parsed["clipboard_text_c2s"] is False
+    assert parsed["clipboard_text_s2c"] is True
+    assert parsed["clipboard_image_c2s"] is True
+    assert parsed["clipboard_image_s2c"] is False
+
+    # Defaults are all True (pre-Phase-3 legacy behavior + D-16 security default).
+    default_parsed = parse_message(ClientHelloMsg().to_json())
+    assert default_parsed["clipboard_text_c2s"] is True
+    assert default_parsed["clipboard_text_s2c"] is True
+    assert default_parsed["clipboard_image_c2s"] is True
+    assert default_parsed["clipboard_image_s2c"] is True
+
+
 def test_connection_profile_phase3_field_defaults():
     """ConnectionProfile — the 7 Phase 3 fields load safely from legacy JSON.
 

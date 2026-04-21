@@ -158,13 +158,19 @@ def fake_mss_monitor_list():
 def fixture_png():
     """Generate a tiny valid 1×1 PNG for clipboard-image tests (D-16).
 
-    Returns raw bytes of a deterministic 1×1 black pixel PNG — the 8-byte
-    magic signature + IHDR + IDAT + IEND — so tests can assert magic-byte
-    validation without depending on Pillow at fixture time. Threat T-03-04
-    disposition: accept — no PII risk in a single black pixel.
+    Returns raw bytes of a deterministic 1×1 black-with-alpha RGBA pixel
+    PNG — the 8-byte magic signature + IHDR + IDAT + IEND — valid
+    through PIL.Image.verify() so Plan 03-06's defense-in-depth path
+    (magic-byte + PIL.verify) accepts it. Threat T-03-04 disposition:
+    accept — no PII risk in a single black pixel.
+
+    Plan 03-06 fix (Rule 1): the Wave 0 scaffold payload had a bad
+    IDAT checksum which passed the magic-byte check but failed
+    ``PIL.Image.verify``. Replaced with a byte-identical-length 1×1
+    RGBA PNG whose CRCs round-trip cleanly.
     """
     import base64
     return base64.b64decode(
-        b"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4"
-        b"2mNkYPj/HwAEAQH/iZbtCgAAAABJRU5ErkJggg=="
+        b"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlE"
+        b"QVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg=="
     )
