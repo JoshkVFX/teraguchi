@@ -70,6 +70,10 @@ class InfoToast(QFrame):
         self.setFixedWidth(_WIDTH)
         self.setMinimumHeight(_MIN_HEIGHT)
         self._duration = duration_ms
+        # WR-03: track fade-out pending state so _enforce_max_visible
+        # can skip toasts that are already dismissing without relying
+        # on the fade-out animation to prune _toast_stack synchronously.
+        self._dismiss_started = False
 
         border = border_color or theme.INFO
         self.setStyleSheet(
@@ -149,6 +153,9 @@ class InfoToast(QFrame):
         super().keyPressEvent(ev)
 
     def dismiss(self):
+        # WR-03: mark as dismissing so _enforce_max_visible can skip this
+        # entry while it's still in _toast_stack waiting for fade-out.
+        self._dismiss_started = True
         self._timer.stop()
         self._fade_out.start()
 
@@ -160,20 +167,31 @@ class InfoToast(QFrame):
 
 
 def _enforce_max_visible():
-    """Dismiss oldest toasts when the stack exceeds _MAX_VISIBLE.
+    """Dismiss oldest toasts when the active stack exceeds _MAX_VISIBLE.
 
     T-03-19 mitigation — caps on-screen widget count regardless of how
     many toast-invoking events the server emits.
+
+    WR-03: Count only toasts that haven't begun fade-out yet (the
+    ``_dismiss_started`` flag). During burst arrivals (e.g. 5 chained
+    monitor-switched events), dismiss enough entries in a single pass
+    so the active visible count drops to _MAX_VISIBLE — don't rely on
+    fade-out finishing between ``show()`` calls to drain the stack.
+
+    Iteration bounded by ``_toast_stack`` snapshot so a pathological
+    ``dismiss()`` implementation can't hang the GUI thread.
     """
-    # Count only toasts that haven't started their fade-out already.
-    while len(_toast_stack) > _MAX_VISIBLE:
-        oldest = _toast_stack[0]
-        oldest.dismiss()
-        # dismiss() stops the timer but fade-out removes from _toast_stack
-        # only on finished — in headless tests the animation still runs
-        # but _toast_stack may not drain synchronously. Break after one
-        # pass so we don't infinite-loop on the same non-draining entry.
-        break
+    # Snapshot the active (not-yet-dismissing) toasts in arrival order.
+    active = [t for t in _toast_stack if not getattr(t, "_dismiss_started", False)]
+    overflow = len(active) - _MAX_VISIBLE
+    if overflow <= 0:
+        return
+    # Dismiss the oldest `overflow` active toasts in one pass. Slicing
+    # into the snapshot prevents mutation-during-iteration hazards even
+    # if dismiss() triggered a synchronous fade-out that mutated
+    # _toast_stack (it doesn't currently, but stays defensive).
+    for t in active[:overflow]:
+        t.dismiss()
 
 
 def _relayout_stack(parent: Optional[QWidget]):
