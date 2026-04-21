@@ -426,6 +426,17 @@ class MonitorInfo:
 class MonitorListMsg:
     type: str = MsgType.MONITOR_LIST
     monitors: list = field(default_factory=list)
+    # Phase 3 D-09 / Plan 03-05 — per-client fallback events triggered
+    # by this hot-plug. Each entry is a dict of:
+    #   - ``client_token``: server-side session identifier
+    #     (currently ``ClientSession.client_id``)
+    #   - ``previous_pick``: the monitor name the client was bookmarked to
+    #   - ``now_showing``: the fallback monitor (typically the primary)
+    # Empty list when no sessions needed auto-fallback (mirror_all
+    # sessions, or pick_one sessions whose picked monitor stayed
+    # present). Pre-Plan-05 servers ship an empty list — wire-compat for
+    # older clients that ignore the field.
+    degradations: list = field(default_factory=list)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
