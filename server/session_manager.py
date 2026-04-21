@@ -256,7 +256,7 @@ def _generate_edid(path: str, width: int, height: int):
     name_offset = 72
     edid[name_offset:name_offset + 5] = b'\x00\x00\x00\xFC\x00'
     name = "Eizo CG279X"
-    name_bytes = name.encode('ascii')[:13].ljust(13, b'\x0a')
+    name_bytes = (name.encode('ascii')[:12] + b'\x0a').ljust(13, b'\x20')
     edid[name_offset + 5:name_offset + 18] = name_bytes
 
     # Descriptor #3: Monitor range limits

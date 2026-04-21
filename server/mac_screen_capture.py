@@ -419,6 +419,7 @@ class MacScreenCapture:
                 "Recording permission. Grant it in System Settings → "
                 "Privacy & Security → Screen & System Audio Recording."
             )
+        # list(...) detaches from the NSArray whose lifetime is tied to `content`.
         displays = list(content.displays())
         if not displays:
             raise MacScreenCaptureError(

@@ -269,6 +269,16 @@ caveats so far:
   Re-evaluate in v1.1 if a real studio commits to Flame-on-Mac as
   load-bearing.
 
+- **Bookmark password storage is pseudo-obfuscated, not encrypted:**
+  `client/bookmarks.py::_encrypt_password` uses XOR against a
+  SHA-256 of a host-identity key (machine-id on Linux,
+  `platform.node()` + `platform.machine()` + home-dir on macOS). This
+  prevents casual reading of a saved bookmark file but is not
+  cryptographic protection — anyone with shell access on the machine
+  can reverse it. v1.1 follow-up is macOS Keychain-backed storage
+  (tracked under Phase 6 SEC hardening). Treat saved passwords as
+  obfuscated convenience, not a secure store.
+
 - **Multi-session crop per host (v1.1 follow-up):** v1 supports one
   active streaming session per server host with per-session capture
   crop. When a second concurrent session attaches with a different

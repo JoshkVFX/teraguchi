@@ -10,10 +10,10 @@ import logging
 from PySide6.QtCore import (
     Qt, QTimer, QPropertyAnimation, QPoint, QEasingCurve, Signal,
 )
-from PySide6.QtGui import QColor, QPainter, QFont
+from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
-    QWidget, QHBoxLayout, QLabel, QPushButton, QComboBox,
-    QGraphicsDropShadowEffect, QApplication, QFrame,
+    QWidget, QHBoxLayout, QLabel, QPushButton,
+    QGraphicsDropShadowEffect, QFrame,
 )
 
 from client import theme

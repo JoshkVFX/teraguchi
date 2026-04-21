@@ -354,6 +354,11 @@ class ScreenCapture:
         """Select which monitor to capture."""
         monitors = self._sct.monitors
         if index >= len(monitors):
+            logger.warning(
+                "screen_capture.monitor_index_out_of_range requested=%d "
+                "available=%d → primary",
+                index, len(monitors),
+            )
             index = 1  # Fall back to primary
         self.monitor_index = index
         self._monitor = monitors[index]
