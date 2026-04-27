@@ -14,3 +14,6 @@ venv/
 # Compiled NvFBC capture helper (built per-host by install-server.sh)
 server/nvfbc/nvfbc_capture
 server/nvfbc/*.o
+
+# TLS certificates — generated per-host, never committed
+certs/
